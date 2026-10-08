@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.58-beta
+// @version      0.1.59-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -789,6 +789,9 @@
       const miss = rest.slice(0, 3).map(e => { const t = near(e); return e.qty + '× ' + e.item + ' at ' + fdate(e.ts) + (t ? ' (nearest send with that item and quantity: ' + fdate(t.ts) + (t.src === 'receipt' ? ', already valued differently' : '') + ')' : ' (no send with that item and quantity)'); });
       why = ' You have ' + sends1.length + ' single-item sends. Unmatched examples: ' + miss.join('; ') + '.';
     }
+    const roles = {}; itemEv.forEach(e => { roles[e.role] = (roles[e.role] || 0) + 1; });
+    const dupEx = itemEv.filter(e => !matched.has(e) && done(e)).slice(0, 2).map(e => e.qty + '× ' + e.item + ' ' + fmt(e.total) + ' ' + e.role + ' at ' + fdate(e.ts) + ' = send at ' + fdate(near(e).ts));
+    if (already) why += ' Roles on the page: ' + Object.entries(roles).map(([r, n]) => r + ' ' + n).join(', ') + '. Already-applied examples: ' + dupEx.join('; ') + '.';
     return 'PawnHub balance: valued ' + hits.length + ' of ' + itemEvents + ' item events' + (already ? ', ' + already + ' more were already applied (imported before, or listed twice on the page)' : '') + (rest.length ? ', ' + rest.length + ' have no send with the same item, quantity and time (or the send is not in your log yet)' : '') + '. The Balance page starts ' + (earliest ? fdate(earliest) : '?') + (olderCount ? ', so ' + olderCount + ' older send(s) have no PawnHub entry (see Profit, needs a value).' : '.') + why;
   }
   async function handleReceipt(rc) {
