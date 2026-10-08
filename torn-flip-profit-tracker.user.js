@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.18-beta
+// @version      0.1.19-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -379,7 +379,7 @@
   let itemNames = sget('items', null) || {};
   let lastRaw = [];
   let lastSyncInfo = null;
-  const ui = { open: false, tab: 'flips', items: false, range: 30, editing: null, msg: '', pendingReceipt: null, candidates: [], busy: false };
+  const ui = { open: false, tab: 'profit', items: false, breakdown: false, more: false, showPending: false, range: 30, editing: null, msg: '', pendingReceipt: null, candidates: [], busy: false };
   const save = () => sset('state', state);
   const flipOpts = () => ({ marketFee: Math.min(100, Math.max(0, Number(sget('marketFee', 5)) || 0)) / 100 });
   const nameOf = id => itemNames[id] || ('Item ' + id);
@@ -472,7 +472,7 @@
       state.txs[id] = tx;
     });
     // The log arrives newest-first, so if we stopped at the page cap, older entries were not read: keep the old cursor.
-    if (!capped) state.lastSync = newest;
+    if (!capped) { state.lastSync = newest; state.syncedAt = Math.floor(Date.now() / 1000); }
     save();
     if (capped) throw new Error('Stopped after 100 pages. ' + added + ' record(s) saved so far. Lower the look-back days and use Re-sync from start.');
     return added;
@@ -540,6 +540,8 @@
   .tfp-ta{min-height:70px}
   .tfp-msg{background:#2a2a2a;border-radius:8px;padding:8px;margin:6px 0}
   .tfp-gap{height:6px}
+  .tfp-sel{width:auto;padding:4px}
+  #tfp-card a{color:#7fb0ff}
   .tfp-disc{width:100%;border-collapse:collapse;margin-top:6px;font-size:12px}
   .tfp-disc td{border:1px solid #444;padding:4px;vertical-align:top}
   .tfp-disc td:first-child{color:#999;white-space:nowrap;padding-right:10px}
@@ -550,33 +552,54 @@
   const itemSummary = tx => tx.items.map(i => i.qty + '× ' + esc(i.name || nameOf(i.id))).join(', ');
   const chanLabel = c => ({ market: 'Market', bazaar: 'Bazaar', trade: 'Trade', send: 'Send', recv: 'Received' }[c] || c);
 
-  const rangeButtons = () => `<div><button class="tfp-b" data-act="range" data-v="1">24h</button> <button class="tfp-b" data-act="range" data-v="7">7d</button> <button class="tfp-b" data-act="range" data-v="30">30d</button> <button class="tfp-b" data-act="range" data-v="0">All</button></div>`;
+  const rangeSelect = () => `<select class="tfp-in tfp-sel" data-act="range">${[[1, 'Last 24h'], [7, 'Last 7 days'], [30, 'Last 30 days'], [0, 'All time']].map(r => `<option value="${r[0]}"${ui.range === r[0] ? ' selected' : ''}>${r[1]}</option>`).join('')}</select>`;
   const pnlCls = n => n == null ? 'tfp-warn' : n >= 0 ? 'tfp-pos' : 'tfp-neg';
-  function pnlHtml() {
-    const cutoff = ui.range ? Date.now() / 1000 - ui.range * 86400 : 0;
-    const fl = computeFlips(state.txs, flipOpts()).flips.filter(f => f.tx.ts >= cutoff);
-    const done = fl.filter(f => f.profit != null);
-    const sum = (arr, fn) => arr.reduce((a, x) => a + fn(x), 0);
+  const link = (key, label) => `<a href="#" data-act="toggle" data-v="${key}">${ui[key] ? '▾' : '▸'} ${label}</a>`;
+  function breakdownHtml(done) {
     const lines = done.reduce((a, f) => a.concat(f.lines.filter(l => l.matched > 0).map(l => Object.assign({ chan: f.tx.channel }, l))), []);
-    const revenue = sum(lines, l => l.proceeds), cost = sum(lines, l => l.cost || 0), profit = sum(done, f => f.profit);
-    const wins = done.filter(f => f.profit > 0).length;
     const group = (keyFn, labelFn) => {
       const m = {};
-      lines.forEach(l => { const k = keyFn(l); const g = m[k] = m[k] || { label: labelFn(l), qty: 0, revenue: 0, cost: 0, profit: 0 }; g.qty += l.matched; g.revenue += l.proceeds; g.cost += l.cost || 0; g.profit += l.profit || 0; });
+      lines.forEach(l => { const k = keyFn(l); const g = m[k] = m[k] || { label: labelFn(l), qty: 0, profit: 0 }; g.qty += l.matched; g.profit += l.profit || 0; });
       return Object.values(m).sort((a, b) => b.profit - a.profit);
     };
     const row = g => `<div class="tfp-line"><span>${esc(g.label)} · ${g.qty} units</span><span class="${pnlCls(g.profit)}">${fmt(g.profit)}</span></div>`;
-    let h = `<div class="tfp-h"><div><b>Profit &amp; loss</b></div>${rangeButtons()}</div>
-      <div class="tfp-row"><div class="tfp-top"><span>Net profit</span><b class="${pnlCls(profit)}" style="font-size:16px">${fmt(profit)}</b></div>
-      <div class="tfp-top tfp-sub"><span>Revenue</span><span>${fmt(revenue)}</span></div>
-      <div class="tfp-top tfp-sub"><span>Cost of goods sold</span><span>${fmt(cost)}</span></div>
-      <div class="tfp-top tfp-sub"><span>Return on cost</span><span>${cost > 0 ? (profit / cost * 100).toFixed(1) + '%' : '-'}</span></div>
-      <div class="tfp-top tfp-sub"><span>Flips</span><span>${done.length} (${wins} profitable, ${done.length - wins} not)</span></div></div>`;
-    if (fl.length > done.length) h += `<div class="tfp-msg tfp-warn">⚠️ ${fl.length - done.length} sale(s) left out because they have no matching buy or a buy with no value.</div>`;
-    if (!done.length) return h + '<div class="tfp-msg">No completed flips in this range yet.</div>';
-    h += '<div class="tfp-row"><b>By channel</b>' + group(l => l.chan, l => chanLabel(l.chan)).map(row).join('') + '</div>';
     const items = group(l => l.itemId, l => l.name || nameOf(l.itemId));
-    h += '<div class="tfp-row"><b>By item</b>' + items.slice(0, 15).map(row).join('') + (items.length > 15 ? `<div class="tfp-sub">+ ${items.length - 15} more</div>` : '') + '</div>';
+    return '<div class="tfp-row"><b>By channel</b>' + group(l => l.chan, l => chanLabel(l.chan)).map(row).join('') + '</div>'
+      + '<div class="tfp-row"><b>By item</b>' + items.slice(0, 15).map(row).join('') + (items.length > 15 ? `<div class="tfp-sub">+ ${items.length - 15} more</div>` : '') + '</div>';
+  }
+  function profitHtml() {
+    const cutoff = ui.range ? Date.now() / 1000 - ui.range * 86400 : 0;
+    const res = computeFlips(state.txs, flipOpts());
+    const flips = res.flips.filter(f => f.tx.ts >= cutoff).sort((a, b) => b.tx.ts - a.tx.ts);
+    const done = flips.filter(f => f.profit != null);
+    const lines = done.reduce((a, f) => a.concat(f.lines.filter(l => l.matched > 0)), []);
+    const revenue = lines.reduce((a, l) => a + l.proceeds, 0), cost = lines.reduce((a, l) => a + (l.cost || 0), 0);
+    const profit = done.reduce((a, f) => a + f.profit, 0);
+    let h = `<div class="tfp-h"><div><span class="${pnlCls(profit)}" style="font-size:20px"><b>${fmt(profit)}</b></span>
+      <div class="tfp-sub">${done.length} flip${done.length === 1 ? '' : 's'}${cost > 0 ? ' · ' + (profit / cost * 100).toFixed(1) + '% return' : ''}</div></div>${rangeSelect()}</div>
+      <div class="tfp-sub">Sold for ${fmt(revenue)} · cost ${fmt(cost)}</div>`;
+    if (res.pending.length) {
+      h += `<div class="tfp-msg tfp-warn"><a href="#" data-act="toggle" data-v="showPending">⚠️ ${res.pending.length} need${res.pending.length === 1 ? 's' : ''} a value ${ui.showPending ? '▾' : '▸'}</a></div>`;
+      if (ui.showPending) h += pendingHtml();
+    }
+    if (flips.length > done.length) h += `<div class="tfp-sub tfp-warn">${flips.length - done.length} sale(s) not counted: no matching buy, or a buy with no value.</div>`;
+    if (!flips.length) h += '<div class="tfp-msg">No flips yet. They appear once you sell items you bought.</div>';
+    else h += `<div class="tfp-gap"></div><div class="tfp-sub">${link('items', 'Item detail')} &nbsp; ${link('breakdown', 'Breakdown')}</div>`;
+    if (ui.breakdown && done.length) h += breakdownHtml(done);
+    flips.forEach(f => {
+      const tx = f.tx;
+      let flag = '';
+      if (f.unmatched) flag += ` <span class="tfp-warn">⚠️ ${f.unmatched} unit(s) had no matching buy</span>`;
+      if (f.costUnknown) flag += ' <span class="tfp-warn">⚠️ a matching buy has no value</span>';
+      h += `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)} ${badge(tx)}</span>
+        <b class="${pnlCls(f.profit)}">${fmt(f.profit)}</b></div>
+        <div class="tfp-sub">${itemSummary(tx)} · sold for ${fmt(tx.amount)}${tx.channel === 'market' && tx.src === 'log' && flipOpts().marketFee ? ' (' + fmt(tx.amount * (1 - flipOpts().marketFee)) + ' after fee)' : ''} <a href="#" data-act="edit" data-id="${esc(tx.id)}">✎</a>${flag}</div>`;
+      if (ui.editing === tx.id) h += editBox(tx);
+      if (ui.items) f.lines.forEach(l => {
+        h += `<div class="tfp-line"><span>${l.qty}× ${esc(l.name || nameOf(l.itemId))}</span><span class="${pnlCls(l.profit)}">${fmt(l.profit)}</span></div>`;
+      });
+      h += '</div>';
+    });
     return h;
   }
   function stockHtml() {
@@ -594,32 +617,6 @@
     let h = `<div class="tfp-h"><div><b>Unsold stock</b> <b>${fmt(total)}</b><div class="tfp-sub">at cost · FIFO · ${rows.length} item type(s)${unknown ? ' · some cost unknown' : ''}</div></div></div>`;
     if (!rows.length) return h + '<div class="tfp-msg">Nothing in stock. Items you buy show up here until they are sold.</div>';
     return h + rows.map(r => `<div class="tfp-row"><div class="tfp-top"><span>${r.qty}× ${esc(nameOf(r.id))}</span><b class="${r.unk ? 'tfp-warn' : ''}">${fmt(r.c)}</b></div><div class="tfp-sub">${r.unk ? 'cost unknown · ' : fmt(r.c / r.qty) + ' each · '}oldest ${fdate(r.oldest)}</div></div>`).join('');
-  }
-  function flipsHtml() {
-    const cutoff = ui.range ? Date.now() / 1000 - ui.range * 86400 : 0;
-    const res = computeFlips(state.txs, flipOpts());
-    const flips = res.flips.filter(f => f.tx.ts >= cutoff).sort((a, b) => b.tx.ts - a.tx.ts);
-    const total = flips.reduce((s, f) => s + (f.profit || 0), 0);
-    let h = `<div class="tfp-h"><div><b>Profit</b> <span class="${total >= 0 ? 'tfp-pos' : 'tfp-neg'}" style="font-size:16px"><b>${fmt(total)}</b></span><div class="tfp-sub">${flips.length} flips · FIFO</div></div>
-      ${rangeButtons()}</div>
-      <label><input type="checkbox" data-act="items" ${ui.items ? 'checked' : ''}> Per-item breakdown</label>`;
-    if (res.pending.length) h += `<div class="tfp-msg tfp-warn">⚠️ ${res.pending.length} trade(s) need a value — see the "Needs value" tab.</div>`;
-    if (!flips.length) h += '<div class="tfp-msg">No flips yet. Sync your log in Settings.</div>';
-    flips.forEach(f => {
-      const tx = f.tx;
-      let flag = '';
-      if (f.unmatched) flag += ` <span class="tfp-warn">⚠️ ${f.unmatched} unit(s) had no matching buy</span>`;
-      if (f.costUnknown) flag += ' <span class="tfp-warn">⚠️ a matching buy has no value</span>';
-      h += `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)} ${badge(tx)}</span>
-        <b class="${f.profit == null ? 'tfp-warn' : f.profit >= 0 ? 'tfp-pos' : 'tfp-neg'}">${fmt(f.profit)}</b></div>
-        <div class="tfp-sub">${itemSummary(tx)} · sold for ${fmt(tx.amount)}${tx.channel === 'market' && tx.src === 'log' && flipOpts().marketFee ? ' (' + fmt(tx.amount * (1 - flipOpts().marketFee)) + ' after fee)' : ''} <a href="#" data-act="edit" data-id="${esc(tx.id)}">✎</a>${flag}</div>`;
-      if (ui.editing === tx.id) h += editBox(tx);
-      if (ui.items) f.lines.forEach(l => {
-        h += `<div class="tfp-line"><span>${l.qty}× ${esc(l.name || nameOf(l.itemId))}</span><span class="${l.profit == null ? 'tfp-warn' : l.profit >= 0 ? 'tfp-pos' : 'tfp-neg'}">${fmt(l.profit)}</span></div>`;
-      });
-      h += '</div>';
-    });
-    return h;
   }
   function editBox(tx) {
     const label = tx.dir === 'buy' ? 'Amount paid ($)' : 'Amount received ($)';
@@ -667,25 +664,28 @@
       <tr><td>Key access level</td><td>Limited Access (needed for the log).</td></tr></table>
       <div class="tfp-sub">Tip: make a separate key just for this script. Deleting it in Torn settings revokes access at once.</div>`;
     return `${keyBox}<div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
-      <input class="tfp-in" id="tfp-days" inputmode="numeric" value="${esc(sget('startDays', 30))}"><div class="tfp-gap"></div><div class="tfp-sub">Item market fee % (market sales only)</div>
-      <input class="tfp-in" id="tfp-fee" inputmode="decimal" value="${esc(sget('marketFee', 5))}"><div class="tfp-gap"></div>
-      <button class="tfp-b" data-act="sync">${ui.busy ? 'Syncing…' : 'Sync log now'}</button> <button class="tfp-b" data-act="resync">Re-sync from start</button>
-      <div class="tfp-sub">Last sync: ${state.lastSync ? fdate(state.lastSync) : 'never'} · ${Object.keys(state.txs).length} records</div>
-      <div class="tfp-row"><b>Backup</b><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-bk" placeholder="Export fills this box. Paste a backup here to import."></textarea><div class="tfp-gap"></div>
+      <input class="tfp-in" id="tfp-days" data-act="setting" inputmode="numeric" value="${esc(sget('startDays', 30))}"><div class="tfp-gap"></div><div class="tfp-sub">Item market fee % (market sales only)</div>
+      <input class="tfp-in" id="tfp-fee" data-act="setting" inputmode="decimal" value="${esc(sget('marketFee', 5))}"><div class="tfp-gap"></div>
+      <button class="tfp-b" data-act="sync">${ui.busy ? 'Syncing…' : 'Sync now'}</button>
+      <div class="tfp-sub">Syncs automatically when you open this panel. Last sync: ${state.syncedAt || state.lastSync ? fdate(state.syncedAt || state.lastSync) : 'never'} · ${Object.keys(state.txs).length} records</div>
+      <div class="tfp-gap"></div><div class="tfp-sub">${link('more', 'Backup &amp; troubleshooting')}</div>
+      ${ui.more ? settingsMore() : ''}`;
+  }
+  function settingsMore() {
+    return `<div class="tfp-row"><b>Backup</b><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-bk" placeholder="Export fills this box. Paste a backup here to import."></textarea><div class="tfp-gap"></div>
       <button class="tfp-b" data-act="export">Export</button> <button class="tfp-b" data-act="import">Import</button></div>
-      <div class="tfp-row"><b>Troubleshooting</b><div class="tfp-gap"></div><button class="tfp-b" data-act="debug">Copy debug sample</button></div>`;
+      <div class="tfp-row"><b>Troubleshooting</b><div class="tfp-gap"></div><button class="tfp-b" data-act="debug">Copy debug sample</button> <button class="tfp-b" data-act="resync">Re-sync from start</button></div>`;
   }
 
   function render() {
     const card = document.getElementById('tfp-card');
     if (!card) return;
     const needs = computeFlips(state.txs, flipOpts()).pending.length;
-    if (ui.tab === 'pending' && !needs) ui.tab = 'flips';
-    const tabs = [['flips', 'Flips'], ['pnl', 'P&L'], ['stock', 'Stock']].concat(needs ? [['pending', 'Needs value (' + needs + ')']] : []).concat([['receipts', 'Receipts'], ['settings', 'Settings']]);
+    const tabs = [['profit', 'Profit' + (needs ? ' ⚠️' : '')], ['stock', 'Stock'], ['receipts', 'Receipts'], ['settings', 'Settings']];
     card.innerHTML = `<div class="tfp-h"><b>💰 Arbitrage</b><button class="tfp-b" data-act="close">✕</button></div>
       <div class="tfp-tabs">${tabs.map(t => `<button class="tfp-tab ${ui.tab === t[0] ? 'on' : ''}" data-act="tab" data-v="${t[0]}">${t[1]}</button>`).join('')}</div>
       ${ui.msg ? `<div class="tfp-msg">${esc(ui.msg)}</div>` : ''}
-      ${ui.tab === 'flips' ? flipsHtml() : ui.tab === 'pnl' ? pnlHtml() : ui.tab === 'stock' ? stockHtml() : ui.tab === 'pending' ? pendingHtml() : ui.tab === 'receipts' ? receiptsHtml() : settingsHtml()}`;
+      ${ui.tab === 'profit' ? profitHtml() : ui.tab === 'stock' ? stockHtml() : ui.tab === 'receipts' ? receiptsHtml() : settingsHtml()}`;
   }
   function toast(msg) {
     let t = document.getElementById('tfp-toast');
@@ -699,13 +699,14 @@
     const el = e.target.closest('[data-act]');
     if (!el) return;
     const act = el.dataset.act, id = el.dataset.id, v = el.dataset.v;
-    if (act === 'edit') e.preventDefault();
+    if (act === 'edit' || act === 'toggle') e.preventDefault();
     ui.msg = '';
     try {
       if (act === 'close') ui.open = false, document.getElementById('tfp-wrap').classList.remove('open');
       else if (act === 'tab') { ui.tab = v; ui.editing = null; }
-      else if (act === 'range') ui.range = Number(v);
-      else if (act === 'items') ui.items = el.checked;
+      else if (act === 'range') ui.range = Number(el.value);
+      else if (act === 'toggle') ui[v] = !ui[v];
+      else if (act === 'setting') { sset('startDays', Number(val('tfp-days')) || 30); const f = parseFloat(val('tfp-fee')); sset('marketFee', isNaN(f) ? 5 : f); }
       else if (act === 'edit') ui.editing = ui.editing === id ? null : id;
       else if (act === 'dir') state.txs[id].dir = v, save();
       else if (act === 'saveval') {
@@ -765,7 +766,14 @@
     render();
   }
 
-  function openPanel() { ui.open = true; document.getElementById('tfp-wrap').classList.add('open'); render(); }
+  async function autoSync() {
+    if (ui.busy || !getKey() || Math.floor(Date.now() / 1000) - (state.syncedAt || 0) < 300) return;
+    ui.busy = true; ui.msg = 'Syncing…'; render();
+    try { const n = await syncLog(); ui.msg = n ? 'Synced: ' + n + ' new record(s).' : ''; }
+    catch (err) { ui.msg = String(err.message || err); }
+    finally { ui.busy = false; render(); }
+  }
+  function openPanel() { ui.open = true; document.getElementById('tfp-wrap').classList.add('open'); render(); autoSync(); }
   function placeBtn(b, pos) {
     const de = document.documentElement;
     const left = Math.min(Math.max(0, pos.left), Math.max(0, de.scrollWidth - 40));
@@ -803,6 +811,7 @@
     if (!document.getElementById('tfp-wrap')) {
       const w = document.createElement('div'); w.id = 'tfp-wrap'; if (IS_PDA_ENV) w.classList.add('pda'); w.innerHTML = '<div id="tfp-card"></div>';
       w.addEventListener('click', ev => { if (ev.target === w) { w.classList.remove('open'); ui.open = false; } else onAction(ev); });
+      w.addEventListener('change', ev => { if (ev.target.matches('select[data-act], input[data-act]')) onAction(ev); });
       document.body.appendChild(w);
     }
     if (!document.getElementById('tfp-btn')) {
