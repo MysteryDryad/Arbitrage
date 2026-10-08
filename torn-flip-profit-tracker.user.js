@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.24-beta
+// @version      0.1.25-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -38,18 +38,19 @@
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
+  // Values are written to both script storage (GM) and the page's localStorage, and read from either,
+  // so an update or reinstall that resets one of them does not lose your data.
   function sget(k, d) {
-    try {
-      const raw = hasGM ? GM_getValue(NS + k) : localStorage.getItem(NS + k);
-      if (raw == null || raw === '') return d;
-      return typeof raw === 'string' ? JSON.parse(raw) : raw;
-    } catch (e) { return d; }
+    const readRaw = fn => { try { const r = fn(); return (r == null || r === '') ? null : r; } catch (e) { return null; } };
+    let raw = hasGM ? readRaw(() => GM_getValue(NS + k)) : null;
+    if (raw == null) raw = readRaw(() => localStorage.getItem(NS + k));
+    if (raw == null) return d;
+    try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { return d; }
   }
   function sset(k, v) {
-    try {
-      const raw = JSON.stringify(v);
-      if (hasGM) GM_setValue(NS + k, raw); else localStorage.setItem(NS + k, raw);
-    } catch (e) { console.warn('[TFP] storage failed', e); }
+    const raw = JSON.stringify(v);
+    if (hasGM) { try { GM_setValue(NS + k, raw); } catch (e) { console.warn('[TFP] GM storage failed', e); } }
+    try { localStorage.setItem(NS + k, raw); } catch (e) { if (!hasGM) console.warn('[TFP] storage failed', e); }
   }
 
   function http(url) {
