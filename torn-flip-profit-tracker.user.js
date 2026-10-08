@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.17-beta
+// @version      0.1.18-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -246,7 +246,7 @@
       flips.push({ tx, lines, profit, costUnknown, unmatched });
     }
     const total = flips.reduce((s, f) => s + (f.profit || 0), 0);
-    return { flips, pending, total };
+    return { flips, pending, total, open: lots };
   }
 
   /* ===================== receipt <-> trade matching (pure) ===================== */
@@ -550,13 +550,58 @@
   const itemSummary = tx => tx.items.map(i => i.qty + '× ' + esc(i.name || nameOf(i.id))).join(', ');
   const chanLabel = c => ({ market: 'Market', bazaar: 'Bazaar', trade: 'Trade', send: 'Send', recv: 'Received' }[c] || c);
 
+  const rangeButtons = () => `<div><button class="tfp-b" data-act="range" data-v="1">24h</button> <button class="tfp-b" data-act="range" data-v="7">7d</button> <button class="tfp-b" data-act="range" data-v="30">30d</button> <button class="tfp-b" data-act="range" data-v="0">All</button></div>`;
+  const pnlCls = n => n == null ? 'tfp-warn' : n >= 0 ? 'tfp-pos' : 'tfp-neg';
+  function pnlHtml() {
+    const cutoff = ui.range ? Date.now() / 1000 - ui.range * 86400 : 0;
+    const fl = computeFlips(state.txs, flipOpts()).flips.filter(f => f.tx.ts >= cutoff);
+    const done = fl.filter(f => f.profit != null);
+    const sum = (arr, fn) => arr.reduce((a, x) => a + fn(x), 0);
+    const lines = done.reduce((a, f) => a.concat(f.lines.filter(l => l.matched > 0).map(l => Object.assign({ chan: f.tx.channel }, l))), []);
+    const revenue = sum(lines, l => l.proceeds), cost = sum(lines, l => l.cost || 0), profit = sum(done, f => f.profit);
+    const wins = done.filter(f => f.profit > 0).length;
+    const group = (keyFn, labelFn) => {
+      const m = {};
+      lines.forEach(l => { const k = keyFn(l); const g = m[k] = m[k] || { label: labelFn(l), qty: 0, revenue: 0, cost: 0, profit: 0 }; g.qty += l.matched; g.revenue += l.proceeds; g.cost += l.cost || 0; g.profit += l.profit || 0; });
+      return Object.values(m).sort((a, b) => b.profit - a.profit);
+    };
+    const row = g => `<div class="tfp-line"><span>${esc(g.label)} · ${g.qty} units</span><span class="${pnlCls(g.profit)}">${fmt(g.profit)}</span></div>`;
+    let h = `<div class="tfp-h"><div><b>Profit &amp; loss</b></div>${rangeButtons()}</div>
+      <div class="tfp-row"><div class="tfp-top"><span>Net profit</span><b class="${pnlCls(profit)}" style="font-size:16px">${fmt(profit)}</b></div>
+      <div class="tfp-top tfp-sub"><span>Revenue</span><span>${fmt(revenue)}</span></div>
+      <div class="tfp-top tfp-sub"><span>Cost of goods sold</span><span>${fmt(cost)}</span></div>
+      <div class="tfp-top tfp-sub"><span>Return on cost</span><span>${cost > 0 ? (profit / cost * 100).toFixed(1) + '%' : '-'}</span></div>
+      <div class="tfp-top tfp-sub"><span>Flips</span><span>${done.length} (${wins} profitable, ${done.length - wins} not)</span></div></div>`;
+    if (fl.length > done.length) h += `<div class="tfp-msg tfp-warn">⚠️ ${fl.length - done.length} sale(s) left out because they have no matching buy or a buy with no value.</div>`;
+    if (!done.length) return h + '<div class="tfp-msg">No completed flips in this range yet.</div>';
+    h += '<div class="tfp-row"><b>By channel</b>' + group(l => l.chan, l => chanLabel(l.chan)).map(row).join('') + '</div>';
+    const items = group(l => l.itemId, l => l.name || nameOf(l.itemId));
+    h += '<div class="tfp-row"><b>By item</b>' + items.slice(0, 15).map(row).join('') + (items.length > 15 ? `<div class="tfp-sub">+ ${items.length - 15} more</div>` : '') + '</div>';
+    return h;
+  }
+  function stockHtml() {
+    const open = computeFlips(state.txs, flipOpts()).open;
+    const rows = []; let total = 0, unknown = false;
+    Object.entries(open).forEach(([id, q]) => {
+      const left = q.filter(l => l.qty > 0); if (!left.length) return;
+      const qty = left.reduce((a, l) => a + l.qty, 0);
+      const unk = left.some(l => l.unit == null);
+      const c = unk ? null : left.reduce((a, l) => a + l.qty * l.unit, 0);
+      if (unk) unknown = true; else total += c;
+      rows.push({ id, qty, c, unk, oldest: Math.min.apply(null, left.map(l => l.ts)) });
+    });
+    rows.sort((a, b) => (b.c || 0) - (a.c || 0));
+    let h = `<div class="tfp-h"><div><b>Unsold stock</b> <b>${fmt(total)}</b><div class="tfp-sub">at cost · FIFO · ${rows.length} item type(s)${unknown ? ' · some cost unknown' : ''}</div></div></div>`;
+    if (!rows.length) return h + '<div class="tfp-msg">Nothing in stock. Items you buy show up here until they are sold.</div>';
+    return h + rows.map(r => `<div class="tfp-row"><div class="tfp-top"><span>${r.qty}× ${esc(nameOf(r.id))}</span><b class="${r.unk ? 'tfp-warn' : ''}">${fmt(r.c)}</b></div><div class="tfp-sub">${r.unk ? 'cost unknown · ' : fmt(r.c / r.qty) + ' each · '}oldest ${fdate(r.oldest)}</div></div>`).join('');
+  }
   function flipsHtml() {
     const cutoff = ui.range ? Date.now() / 1000 - ui.range * 86400 : 0;
     const res = computeFlips(state.txs, flipOpts());
     const flips = res.flips.filter(f => f.tx.ts >= cutoff).sort((a, b) => b.tx.ts - a.tx.ts);
     const total = flips.reduce((s, f) => s + (f.profit || 0), 0);
     let h = `<div class="tfp-h"><div><b>Profit</b> <span class="${total >= 0 ? 'tfp-pos' : 'tfp-neg'}" style="font-size:16px"><b>${fmt(total)}</b></span><div class="tfp-sub">${flips.length} flips · FIFO</div></div>
-      <div><button class="tfp-b" data-act="range" data-v="7">7d</button> <button class="tfp-b" data-act="range" data-v="30">30d</button> <button class="tfp-b" data-act="range" data-v="0">All</button></div></div>
+      ${rangeButtons()}</div>
       <label><input type="checkbox" data-act="items" ${ui.items ? 'checked' : ''}> Per-item breakdown</label>`;
     if (res.pending.length) h += `<div class="tfp-msg tfp-warn">⚠️ ${res.pending.length} trade(s) need a value — see the "Needs value" tab.</div>`;
     if (!flips.length) h += '<div class="tfp-msg">No flips yet. Sync your log in Settings.</div>';
@@ -635,11 +680,12 @@
     const card = document.getElementById('tfp-card');
     if (!card) return;
     const needs = computeFlips(state.txs, flipOpts()).pending.length;
-    const tabs = [['flips', 'Flips'], ['pending', 'Needs value' + (needs ? ' (' + needs + ')' : '')], ['receipts', 'Receipts'], ['settings', 'Settings']];
+    if (ui.tab === 'pending' && !needs) ui.tab = 'flips';
+    const tabs = [['flips', 'Flips'], ['pnl', 'P&L'], ['stock', 'Stock']].concat(needs ? [['pending', 'Needs value (' + needs + ')']] : []).concat([['receipts', 'Receipts'], ['settings', 'Settings']]);
     card.innerHTML = `<div class="tfp-h"><b>💰 Arbitrage</b><button class="tfp-b" data-act="close">✕</button></div>
       <div class="tfp-tabs">${tabs.map(t => `<button class="tfp-tab ${ui.tab === t[0] ? 'on' : ''}" data-act="tab" data-v="${t[0]}">${t[1]}</button>`).join('')}</div>
       ${ui.msg ? `<div class="tfp-msg">${esc(ui.msg)}</div>` : ''}
-      ${ui.tab === 'flips' ? flipsHtml() : ui.tab === 'pending' ? pendingHtml() : ui.tab === 'receipts' ? receiptsHtml() : settingsHtml()}`;
+      ${ui.tab === 'flips' ? flipsHtml() : ui.tab === 'pnl' ? pnlHtml() : ui.tab === 'stock' ? stockHtml() : ui.tab === 'pending' ? pendingHtml() : ui.tab === 'receipts' ? receiptsHtml() : settingsHtml()}`;
   }
   function toast(msg) {
     let t = document.getElementById('tfp-toast');
