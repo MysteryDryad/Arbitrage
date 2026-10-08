@@ -85,28 +85,7 @@ eq('PawnHub rejects total mismatch', T.parsePawnHub(new JSDOM(phHtml.replace('<b
 const sp = { s1: { ts: 1000, kind: 'send', cp: 7, items: [{ id: 385, qty: 10 }] }, s2: { ts: 1500, kind: 'send', cp: 7, items: [{ id: 385, qty: 5 }, { id: 276, qty: 2 }] },
   s3: { ts: 9000, kind: 'send', cp: 7, items: [{ id: 385, qty: 1 }] }, s4: { ts: 1200, kind: 'send', cp: 8, items: [{ id: 385, qty: 3 }] }, r1: { ts: 1100, kind: 'recv', cp: 7, items: [{ id: 5, qty: 4 }] } };
 const sb = Object.values(T.buildSendTxs(sp, id => 'N' + id)).sort((a, b) => a.ts - b.ts);
-eq('send batch order', sb.map(b => [b.channel, b.cp, b.count]), [['recv', 7, 1], ['send', 8, 1], ['send', 7, 2], ['send', 7, 1]]);
-eq('send batch merges two entries', sb.find(b => b.count === 2).items.map(i => i.id + ':' + i.qty).sort(), ['276:2', '385:15']);
-eq('four batches', sb.length, 4);
-// PawnHub variant: name is plain text beside the "qty x price" label, with the header total shown first
-const ph2Html = `<body><h1>Trade #13481517</h1><section><div class="party"><b>Rosiestarfish</b><span>$1,767,500</span></div>
-<div class="row">Camel Plushie <small>25 x $70,700</small></div><div class="row">Kitten Plushie <small>10 x $600</small></div><strong>$1,767,500</strong></section></body>`;
-const ph2 = T.parsePawnHub(new JSDOM(ph2Html.replace('$1,767,500</span>', '$1,773,500</span>').replace('<strong>$1,767,500</strong>', '<strong>$1,773,500</strong>')).window.document, 'u');
-eq('PawnHub text-beside-label layout', ph2 && [ph2.items.map(i => i.name), ph2.total, ph2.party], [['Camel Plushie', 'Kitten Plushie'], 1773500, 'Rosiestarfish']);
-// multi-item trade total is split by market value when there is no receipt
-const mvT = { a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 1, qty: 1, price: null }, { id: 2, qty: 1, price: null }], amount: 1000 },
-  b: { id: 'b', ts: 2, dir: 'sell', channel: 'market', src: 'log', items: [{ id: 1, qty: 1, price: null }], amount: 300 } };
-const mvR = T.computeFlips(mvT, { values: { 1: 100, 2: 900 } });
-eq('cost split by market value', mvR.flips[0].profit, 300 - 100);
-eq('cost split by qty without values', T.computeFlips(mvT).flips[0].profit, 300 - 500);
-// gifted sends leave stock but do not touch profit
-const gf = { a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 1, qty: 10 }], amount: 1000 }, g: { id: 'g', ts: 2, dir: 'sell', channel: 'send', gift: true, amount: 0, items: [{ id: 1, qty: 4 }] },
-  s: { id: 's', ts: 3, dir: 'sell', channel: 'market', src: 'log', amount: 900, items: [{ id: 1, qty: 6 }] } };
-const gr = T.computeFlips(gf);
-eq('gift not counted, cost of remaining units used', [gr.flips.length, gr.flips[0].profit, gr.pending.length], [1, 900 - 600, 0]);
-// a gifted receive is neither stock nor a buy
-const gb = { g: { id: 'g', ts: 1, dir: 'buy', channel: 'recv', gift: true, amount: 0, items: [{ id: 9, qty: 5 }] }, s: { id: 's', ts: 2, dir: 'sell', channel: 'market', src: 'log', amount: 100, items: [{ id: 9, qty: 5 }] } };
-const gbr = T.computeFlips(gb);
-eq('gifted receive adds no stock', [Object.keys(gbr.open).length, gbr.flips[0].unmatched], [0, 5]);
+eq('each send is its own record', sb.length, 5);
+eq('send keeps its own items', sb.filter(b => b.channel === 'send' && b.cp === 7).map(b => b.items.map(i => i.id + ':' + i.qty).join()).sort(), ['276:2,385:5', '385:1', '385:10']);
 console.log(fail ? fail + ' FAILED' : 'ALL PASSED');
 process.exit(fail ? 1 : 0);

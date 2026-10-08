@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.47-beta
+// @version      0.1.48-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -444,15 +444,16 @@
 
 
   /* ===================== direct item sends/receives: batch them per player ===================== */
-  // parts: { entryId: { ts, kind: 'send'|'recv', cp, items:[{id,qty}], msg } }. Entries to the same player within
-  // 30 minutes become one record, so a burst of sends is one value to enter instead of dozens.
+  // parts: { entryId: { ts, kind: 'send'|'recv', cp, items:[{id,qty}], msg } }. Set SEND_GROUP_SECONDS above 0 to merge
+  // entries to the same player within that many seconds into one record.
+  const SEND_GROUP_SECONDS = -1; // -1: every send/receive is its own record, so each can be matched to what that person paid
   function buildSendTxs(parts, nameOf) {
     const list = Object.entries(parts || {}).map(([id, p]) => Object.assign({ id }, p))
       .sort((a, b) => (a.kind + a.cp).localeCompare(b.kind + b.cp) || a.ts - b.ts);
     const groups = [];
     list.forEach(p => {
       const g = groups[groups.length - 1];
-      if (g && g.kind === p.kind && String(g.cp) === String(p.cp) && p.ts - g.last <= 1800) { g.entries.push(p); g.last = p.ts; }
+      if (g && g.kind === p.kind && String(g.cp) === String(p.cp) && p.ts - g.last <= SEND_GROUP_SECONDS) { g.entries.push(p); g.last = p.ts; }
       else groups.push({ kind: p.kind, cp: p.cp, entries: [p], last: p.ts });
     });
     const out = {};
@@ -628,7 +629,7 @@
     Object.entries(sends).forEach(([id, tx]) => {
       const old = state.txs[id];
       if (!old) added++;
-      state.txs[id] = old && old.locked ? Object.assign({}, tx, { amount: old.amount, src: old.src, gift: old.gift, locked: true }) : tx;
+      state.txs[id] = old && old.locked && !(old.count > 1) ? Object.assign({}, tx, { amount: old.amount, src: old.src, gift: old.gift, locked: true }) : tx; // a value entered for an old merged batch no longer fits one entry: dropped
     });
     // The log arrives newest-first, so if we stopped at the page cap, older entries were not read: keep the old cursor.
     if (!capped) { state.lastSync = newest; state.syncedAt = Math.floor(Date.now() / 1000); state.resume = null; }
