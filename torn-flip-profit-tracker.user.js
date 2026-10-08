@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.61-beta
+// @version      0.1.62-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -601,7 +601,13 @@
     }
     return pages;
   }
+  let invRunning = false;
   async function checkInventory() {
+    if (invRunning) throw new Error('An inventory check is already running.');
+    invRunning = true;
+    try { return await checkInventoryNow(); } finally { invRunning = false; }
+  }
+  async function checkInventoryNow() {
     await ensureItems(!Object.keys(itemCat).length);
     const cats = Array.from(new Set(Object.values(itemCat)));
     if (!cats.length) throw new Error('Could not load the item list from Torn.');
@@ -634,7 +640,7 @@
       if (itemCat[id] && ok.has(String(itemCat[id]).toLowerCase())) rows.push({ id, tracked, have, excess: tracked - have });
       else unverified.push(id);
     });
-    ui.inv = { at: Math.floor(Date.now() / 1000), rows, unverified: unverified.length };
+    state.inv = { at: Math.floor(Date.now() / 1000), rows, unverified: unverified.length }; state.invErr = null; save();
     return rows.length;
   }
   // Rebuild the per-entry send/receive records from the stored log entries (no network needed).
@@ -651,6 +657,18 @@
       state.txs[id] = old && old.locked && !(old.count > 1) ? Object.assign({}, tx, { amount: old.amount, src: old.src, gift: old.gift, locked: true }) : tx; // a value entered for an old merged batch no longer fits one entry: dropped
     });
     return added;
+  }
+  // Runs on its own at the interval chosen in Settings (default hourly); read-only, and it only reports: removing stock still needs your tap.
+  async function autoCheckInventory() {
+    const every = Number(sget('invEvery', 60));
+    if (!every || invRunning || ui.busy || !getKey()) return;
+    const now = Math.floor(Date.now() / 1000);
+    if (now - (state.invTry || 0) < every * 60) return;
+    if (!Object.values(computeFlips(state.txs, flipOpts()).open).some(q => q.some(l => l.qty > 0))) return;
+    state.invTry = now;
+    try { await checkInventory(); }
+    catch (e) { state.invErr = String(e.message || e).slice(0, 200); save(); }
+    if (ui.open) render();
   }
   async function syncLog() {
     await ensureMe(); await ensureItems();
@@ -946,12 +964,12 @@
     });
     rows.sort((a, b) => (b.c || 0) - (a.c || 0));
     let h = `<div class="tfp-h"><div><b>Unsold stock</b> <b>${fmt(total)}</b><div class="tfp-sub">at cost · FIFO · ${rows.length} item type(s)${unknown ? ' · some cost unknown' : ''}</div></div></div>`;
-    h += `<div class="tfp-sub"><a href="#" data-act="checkinv">${ui.busy ? 'Checking…' : 'Check against my inventory'}</a></div>`;
-    if (ui.inv) {
-      if (!ui.inv.rows.length) h += `<div class="tfp-msg">Matches your inventory, bazaar and market listings (checked ${fdate(ui.inv.at)}).</div>`;
-      else h += `<div class="tfp-row"><div class="tfp-top"><b>Not in your inventory (${ui.inv.rows.length})</b></div>` + ui.inv.rows.map(r => `<div class="tfp-sub">${r.excess}× ${esc(nameOf(r.id))} (tracked ${r.tracked}, you hold ${r.have})</div>`).join('') + `<div class="tfp-sub"><a href="#" data-act="removeexcess">${ui.armExcess ? 'tap again: remove these from stock' : 'remove these from stock'}</a></div></div>`;
+    h += `<div class="tfp-sub"><a href="#" data-act="checkinv">${ui.busy ? 'Checking…' : 'Check against my inventory'}</a>${Number(sget('invEvery', 60)) ? ' · also checks automatically' : ''}${state.invErr ? ' · last automatic check failed: ' + esc(state.invErr) : ''}</div>`;
+    if (state.inv) {
+      if (!state.inv.rows.length) h += `<div class="tfp-msg">Matches your inventory, bazaar and market listings (checked ${fdate(state.inv.at)}).</div>`;
+      else h += `<div class="tfp-row"><div class="tfp-top"><b>Not in your inventory (${state.inv.rows.length})</b></div>` + state.inv.rows.map(r => `<div class="tfp-sub">${r.excess}× ${esc(nameOf(r.id))} (tracked ${r.tracked}, you hold ${r.have})</div>`).join('') + `<div class="tfp-sub"><a href="#" data-act="removeexcess">${ui.armExcess ? 'tap again: remove these from stock' : 'remove these from stock'}</a></div></div>`;
     }
-    if (ui.inv && ui.inv.unverified) h += `<div class="tfp-sub">${ui.inv.unverified} item type(s) could not be checked (Torn did not accept their category).</div>`;
+    if (state.inv && state.inv.unverified) h += `<div class="tfp-sub">${state.inv.unverified} item type(s) could not be checked (Torn did not accept their category).</div>`;
     if (!rows.length) h += '<div class="tfp-msg">Nothing in stock. Items you buy show up here until they are sold.</div>';
     h += rows.map(r => `<div class="tfp-row"><div class="tfp-top"><span>${r.qty}× ${esc(nameOf(r.id))}</span><b class="${r.unk ? 'tfp-warn' : ''}">${fmt(r.c)}</b></div><div class="tfp-sub">${r.unk ? 'cost unknown · ' : fmt(r.c / r.qty) + ' each · '}oldest ${fdate(r.oldest)} · <a href="#" data-act="removestock" data-id="${esc(r.id)}">${ui.armRemove === r.id ? 'tap again: remove from stock' : 'remove'}</a></div></div>`).join('');
     const removed = Object.values(state.txs).filter(t => t.channel === 'writeoff' || (t.dir === 'buy' && isGift(t))).sort((a, b) => b.ts - a.ts);
@@ -1013,6 +1031,8 @@
     return `${keyBox}<div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
       <input class="tfp-in" id="tfp-days" data-act="setting" inputmode="numeric" value="${esc(sget('startDays', 30))}">
       <div class="tfp-sub">Sync from the Profit tab. Last sync: ${state.syncedAt || state.lastSync ? fdate(state.syncedAt || state.lastSync) : 'never'} · ${Object.keys(state.txs).length} records</div>
+      <div class="tfp-gap"></div><div class="tfp-sub">Check my inventory automatically (reads inventory, bazaar and market listings; only reports, never changes stock by itself)</div>
+      <select class="tfp-in tfp-sel" data-act="invevery">${[[0, 'Off'], [30, 'Every 30 minutes'], [60, 'Every hour'], [180, 'Every 3 hours'], [360, 'Every 6 hours']].map(r => `<option value="${r[0]}"${Number(sget('invEvery', 60)) === r[0] ? ' selected' : ''}>${r[1]}</option>`).join('')}</select>
       <div class="tfp-gap"></div><div class="tfp-sub">${link('more', 'Backup &amp; troubleshooting')}</div>
       ${ui.more ? settingsMore() : ''}`;
   }
@@ -1026,7 +1046,7 @@
     const card = document.getElementById('tfp-card');
     if (!card) return;
     const needs = computeFlips(state.txs, flipOpts()).pending.length;
-    const tabs = [['profit', 'Profit' + (needs ? ' ⚠️' : '')], ['stock', 'Stock'], ['receipts', 'Receipts'], ['settings', 'Settings']];
+    const tabs = [['profit', 'Profit' + (needs ? ' ⚠️' : '')], ['stock', 'Stock' + (state.inv && state.inv.rows.length ? ' ⚠️' : '')], ['receipts', 'Receipts'], ['settings', 'Settings']];
     card.innerHTML = `<div class="tfp-h"><b>💰 Arbitrage</b><button class="tfp-b" data-act="close">✕</button></div>
       <div class="tfp-tabs">${tabs.map(t => `<button class="tfp-tab ${ui.tab === t[0] ? 'on' : ''}" data-act="tab" data-v="${t[0]}">${t[1]}</button>`).join('')}</div>
       ${lastSaveOk ? '' : '<div class="tfp-msg tfp-warn">⚠️ Could not save your data on this device (storage may be full). Export a backup in Settings.</div>'}
@@ -1073,8 +1093,9 @@
         if (!ui.armExcess) { ui.armExcess = true; render(); return; }
         ui.armExcess = false;
         const ts = Math.floor(Date.now() / 1000);
-        (ui.inv ? ui.inv.rows : []).forEach(r => { const wid = 'wo:' + r.id + ':' + ts; state.txs[wid] = { id: wid, ts, dir: 'sell', channel: 'writeoff', gift: true, amount: 0, src: 'manual', locked: true, items: [{ id: Number(r.id), qty: r.excess, name: nameOf(r.id), price: null }] }; });
-        ui.msg = 'Removed ' + (ui.inv ? ui.inv.rows.length : 0) + ' item type(s) from stock.'; ui.inv = null; save();
+        const openNow = computeFlips(state.txs, flipOpts()).open;
+        (state.inv ? state.inv.rows : []).forEach(r => { const tracked = (openNow[r.id] || []).reduce((a, l) => a + l.qty, 0), qty = Math.min(r.excess, tracked); if (qty <= 0) return; const wid = 'wo:' + r.id + ':' + ts; state.txs[wid] = { id: wid, ts, dir: 'sell', channel: 'writeoff', gift: true, amount: 0, src: 'manual', locked: true, items: [{ id: Number(r.id), qty, name: nameOf(r.id), price: null }] }; });
+        ui.msg = 'Removed ' + (state.inv ? state.inv.rows.length : 0) + ' item type(s) from stock.'; state.inv = null; save();
       }
       else if (act === 'clearval') { const tx = state.txs[id]; tx.amount = null; tx.gift = false; tx.src = null; tx.locked = false; ui.editing = null; save(); }
       else if (act === 'restorestock') {
@@ -1083,6 +1104,7 @@
         else if (t) { t.gift = false; t.amount = null; t.src = null; t.locked = false; } // goes back to "needs a value"
         save();
       }
+      else if (act === 'invevery') { sset('invEvery', Number(el.value)); state.invTry = 0; save(); }
       else if (act === 'setting') { const d = document.getElementById('tfp-days'); if (d) sset('startDays', Number(d.value) || 30); }
       else if (act === 'edit') ui.editing = ui.editing === id ? null : id;
       else if (act === 'dir') state.txs[id].dir = v, save();
@@ -1242,6 +1264,8 @@
     } else {
       mountTornUI();
       setInterval(mountTornUI, 2500);
+      bootP.then(() => setTimeout(autoCheckInventory, 20000));
+      setInterval(autoCheckInventory, 5 * 60 * 1000);
     }
   }
 
