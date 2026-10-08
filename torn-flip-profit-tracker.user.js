@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.73-beta
+// @version      0.1.74-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -1073,7 +1073,7 @@
     h += `<div class="tfp-sub"><a href="#" data-act="checkinv">${ui.busy ? 'Checking…' : 'Check against my inventory'}</a>${Number(sget('invEvery', 60)) ? ' · also checks automatically' : ''}${state.invErr ? ' · last automatic check failed: ' + esc(state.invErr) : ''}</div>`;
     if (state.inv) {
       if (!state.inv.rows.length) h += `<div class="tfp-msg">Matches your inventory, bazaar and market listings (checked ${fdate(state.inv.at)}).</div>`;
-      else h += `<div class="tfp-row"><div class="tfp-top"><b>Not in your inventory (${state.inv.rows.length})</b></div>` + state.inv.rows.map(r => `<div class="tfp-sub">${r.excess}× ${esc(nameOf(r.id))} (tracked ${r.tracked}, you hold ${r.have})</div>`).join('') + `<div class="tfp-sub"><a href="#" data-act="removeexcess">${ui.armExcess ? 'tap again: remove these from stock' : 'remove these from stock'}</a></div></div>`;
+      else h += `<div class="tfp-row"><div class="tfp-top"><b>Not in your inventory (${state.inv.rows.length})</b></div>` + state.inv.rows.map(r => `<div class="tfp-sub">${esc(nameOf(r.id))}: tracked ${r.tracked}, you hold ${r.have} → remove ${r.excess}${r.have ? ', keep ' + r.have : ''}</div>`).join('') + `<div class="tfp-sub"><a href="#" data-act="removeexcess">${ui.armExcess ? 'tap again to remove only the extra amounts' : 'remove only the extra amounts'}</a></div></div>`;
     }
     if (state.inv && state.inv.unverified) h += `<div class="tfp-sub">${state.inv.unverified} item type(s) could not be checked (Torn did not accept their category).</div>`;
     if (!rows.length) h += '<div class="tfp-msg">Nothing in stock. Items you buy show up here until they are sold.</div>';
