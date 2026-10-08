@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.27-beta
+// @version      0.1.28-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -38,19 +38,30 @@
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
-  // Values are written to both script storage (GM) and the page's localStorage, and read from either,
-  // so an update or reinstall that resets one of them does not lose your data.
+  // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
+  // to localStorage when GM has nothing usable (PDA may return odd placeholders after an update).
+  let lastSaveOk = true;
+  const bootInfo = {};
+  function readStore(k, which) {
+    try {
+      const r = which === 'gm' ? GM_getValue(NS + k) : localStorage.getItem(NS + k);
+      if (r == null || r === '' || r === 'undefined' || r === 'null') return undefined;
+      return typeof r === 'string' ? JSON.parse(r) : r;
+    } catch (e) { return undefined; }
+  }
   function sget(k, d) {
-    const readRaw = fn => { try { const r = fn(); return (r == null || r === '') ? null : r; } catch (e) { return null; } };
-    let raw = hasGM ? readRaw(() => GM_getValue(NS + k)) : null;
-    if (raw == null) raw = readRaw(() => localStorage.getItem(NS + k));
-    if (raw == null) return d;
-    try { return typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { return d; }
+    let v = hasGM ? readStore(k, 'gm') : undefined;
+    if (k === 'state') bootInfo.fromGM = v !== undefined;
+    if (v === undefined) v = readStore(k, 'ls');
+    if (k === 'state') bootInfo.fromLS = !bootInfo.fromGM && v !== undefined;
+    return v === undefined ? d : v;
   }
   function sset(k, v) {
     const raw = JSON.stringify(v);
-    if (hasGM) { try { GM_setValue(NS + k, raw); } catch (e) { console.warn('[TFP] GM storage failed', e); } }
-    try { localStorage.setItem(NS + k, raw); } catch (e) { if (!hasGM) console.warn('[TFP] storage failed', e); }
+    let ok = false;
+    if (hasGM) { try { GM_setValue(NS + k, raw); ok = true; } catch (e) { console.warn('[TFP] GM storage failed', e); } }
+    try { localStorage.setItem(NS + k, raw); ok = true; } catch (e) { console.warn('[TFP] localStorage failed', e); }
+    if (k === 'state') lastSaveOk = ok;
   }
 
   function http(url) {
@@ -516,6 +527,7 @@
     const capped = pages > 100;
     const built = buildTradeTxs(state.tradeParts, nameOf);
     Object.entries(built).forEach(([id, tx]) => {
+      delete state.tradeParts[String(tx.tradeId)]; // parts are only needed until the trade is built
       const old = state.txs[id];
       if (old && old.locked) return;
       if (!old) added++;
@@ -737,6 +749,7 @@
     const tabs = [['profit', 'Profit' + (needs ? ' ⚠️' : '')], ['stock', 'Stock'], ['receipts', 'Receipts'], ['settings', 'Settings']];
     card.innerHTML = `<div class="tfp-h"><b>💰 Arbitrage</b><button class="tfp-b" data-act="close">✕</button></div>
       <div class="tfp-tabs">${tabs.map(t => `<button class="tfp-tab ${ui.tab === t[0] ? 'on' : ''}" data-act="tab" data-v="${t[0]}">${t[1]}</button>`).join('')}</div>
+      ${lastSaveOk ? '' : '<div class="tfp-msg tfp-warn">⚠️ Could not save your data on this device (storage may be full). Export a backup in Settings.</div>'}
       ${ui.msg ? `<div class="tfp-msg">${esc(ui.msg)}</div>` : ''}
       ${ui.tab === 'profit' ? profitHtml() : ui.tab === 'stock' ? stockHtml() : ui.tab === 'receipts' ? receiptsHtml() : settingsHtml()}`;
   }
@@ -812,7 +825,7 @@
         const tb = document.querySelector('#topHeaderBanner .toolbar, .header-buttons-wrapper');
         const hdr = tb ? tb.outerHTML.replace(/<svg[\s\S]*?<\/svg>/g, '<svg/>').replace(/<form[\s\S]*?<\/form>/g, '<form/>') : null;
         let cats = null; try { cats = await api('torn/logcategories'); } catch (e) { cats = String(e.message || e); }
-        const sample = { syncInfo: lastSyncInfo, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), header: hdr ? hdr.slice(0, 6000) : null, headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
+        const sample = { storage: { hasGM, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), header: hdr ? hdr.slice(0, 6000) : null, headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
         const ok = await copyText(JSON.stringify(sample, null, 1));
         ui.msg = ok ? 'Debug sample copied. Paste it to Claude.' : 'Could not copy. Sync first, then try again.';
       }
