@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.59-beta
+// @version      0.1.60-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -238,7 +238,14 @@
       events.push({ ts: Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) / 1000, item: cells[ti + 1], role: cells[ti + 2], qty, unit, total });
     });
     if (!events.length) return null;
-    return { source: 'pawnhub-balance', url, events, total: events.reduce((a, e) => a + e.total, 0) };
+    // Some layouts keep a hidden second copy of the table in the page, so every row is read twice: if every row occurs an even number of times, count each half once.
+    const key = e => [e.ts, e.item, e.role, e.qty, e.unit, e.total].join('|'), counts = {};
+    events.forEach(e => { counts[key(e)] = (counts[key(e)] || 0) + 1; });
+    let rows = events, halved = false;
+    if (Object.values(counts).every(n => n % 2 === 0)) {
+      const seen = {}; rows = events.filter(e => { const k = key(e); seen[k] = (seen[k] || 0) + 1; return seen[k] <= counts[k] / 2; }); halved = true;
+    }
+    return { source: 'pawnhub-balance', url, events: rows, halved, total: rows.reduce((a, e) => a + e.total, 0) };
   }
   // Pair each credited item event with the send of the same item and quantity closest in time (event times have minute precision).
   function matchPawnHubEvents(events, txsObj, byName) {
@@ -792,6 +799,7 @@
     const roles = {}; itemEv.forEach(e => { roles[e.role] = (roles[e.role] || 0) + 1; });
     const dupEx = itemEv.filter(e => !matched.has(e) && done(e)).slice(0, 2).map(e => e.qty + '× ' + e.item + ' ' + fmt(e.total) + ' ' + e.role + ' at ' + fdate(e.ts) + ' = send at ' + fdate(near(e).ts));
     if (already) why += ' Roles on the page: ' + Object.entries(roles).map(([r, n]) => r + ' ' + n).join(', ') + '. Already-applied examples: ' + dupEx.join('; ') + '.';
+    if (rc.halved) why += ' (The page listed every row twice, so each was counted once.)';
     return 'PawnHub balance: valued ' + hits.length + ' of ' + itemEvents + ' item events' + (already ? ', ' + already + ' more were already applied (imported before, or listed twice on the page)' : '') + (rest.length ? ', ' + rest.length + ' have no send with the same item, quantity and time (or the send is not in your log yet)' : '') + '. The Balance page starts ' + (earliest ? fdate(earliest) : '?') + (olderCount ? ', so ' + olderCount + ' older send(s) have no PawnHub entry (see Profit, needs a value).' : '.') + why;
   }
   async function handleReceipt(rc) {

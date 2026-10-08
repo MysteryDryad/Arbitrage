@@ -94,6 +94,9 @@ const balHtml = `<body><table><tr><th>TIME</th><th>ITEM</th><th>ROLE</th><th>QTY
 <tr><td>2026-10-08 06:53 UTC</td><td>Trader payout credit #1702</td><td>Trader_payout_credit</td><td>1</td><td>$112,000,000</td><td>$112,000,000</td></tr></table></body>`;
 const bal = T.parsePawnHubBalance(new JSDOM(balHtml).window.document, 'u');
 eq('PawnHub balance parse', [bal.events.length, bal.events[0].ts, bal.events[0].qty, bal.events[0].total], [3, Date.UTC(2026, 9, 8, 6, 21) / 1000, 224, 13540800]);
+const dbl = T.parsePawnHubBalance(new JSDOM(balHtml.replace('</table>', '</table>') + balHtml).window.document, 'u');
+eq('doubled balance page is counted once', [dbl.events.length, dbl.halved], [3, true]);
+eq('single balance page is not halved', !!bal.halved, false);
 const balTxs = { s1: { id: 's1', channel: 'send', dir: 'sell', ts: Date.UTC(2026, 9, 8, 6, 20, 49) / 1000, items: [{ id: 385, qty: 224 }] },
   s2: { id: 's2', channel: 'send', dir: 'sell', ts: Date.UTC(2026, 9, 8, 6, 16, 5) / 1000, items: [{ id: 215, qty: 1678 }] },
   s3: { id: 's3', channel: 'send', dir: 'sell', ts: Date.UTC(2026, 9, 7, 6, 16, 5) / 1000, items: [{ id: 215, qty: 1678 }] } };
