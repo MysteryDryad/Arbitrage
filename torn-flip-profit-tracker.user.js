@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.21-beta
+// @version      0.1.22-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -173,7 +173,7 @@
 
 
   // PawnHub receipts show one party card: name, total, then "Item  qty x $price" rows. No item IDs, no buyer/seller labels:
-  // ids are resolved from item names and the role from the matching log trade when the receipt is added in Torn.
+  // ids are resolved from item names when the receipt is added in Torn. The party shown is always the seller.
   function parsePawnHub(doc, url) {
     const leaves = leafTexts(doc);
     const tid = leaves.join(' ').match(/Trade\s*#(\d+)/i);
@@ -532,9 +532,10 @@
     rc.items.forEach(i => { if (!i.id) i.id = byName[String(i.name).toLowerCase()] || null; });
     const bad = rc.items.filter(i => !i.id).map(i => i.name);
     if (bad.length) throw new Error("Couldn't match item name(s) to Torn items: " + bad.join(', '));
-    const tx = state.txs['trade:' + rc.tradeId];
-    if (!tx || !tx.dir) throw new Error('Trade #' + rc.tradeId + ' is not in your log yet (or has items going both ways). Sync, then add the receipt again.');
-    rc.role = tx.dir;
+    // The name shown on a PawnHub receipt is always the seller.
+    if (!rc.party) throw new Error("Couldn't find the seller name on this PawnHub receipt.");
+    rc.seller = rc.party;
+    rc.role = rc.party.toLowerCase() === String((state.me && state.me.name) || '').toLowerCase() ? 'sell' : 'buy';
   }
   async function handleReceipt(rc) {
     await ensureMe();
