@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.75-beta
+// @version      0.1.76-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -36,7 +36,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.75-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.76-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -80,7 +80,7 @@
   function http(url, headers) {
     return new Promise((resolve, reject) => {
       if (typeof PDA_httpGet === 'function') {
-        PDA_httpGet(url, headers || {}).then(r => resolve({ status: r.status || r.statusCode, text: r.responseText })).catch(reject);
+        PDA_httpGet(url, headers || {}).then(r => { if (!r) { const er = new Error('No reply from the network (Torn PDA returned nothing)'); er.noReply = true; reject(er); return; } resolve({ status: r.status || r.statusCode, text: r.responseText }); }).catch(reject);
         return;
       }
       if (typeof GM_xmlhttpRequest === 'function') {
@@ -95,6 +95,13 @@
     });
   }
 
+  // A request that got no reply (Torn PDA sometimes returns nothing under load) is tried again a few times before giving up.
+  async function httpRetry(url, headers) {
+    for (let t = 0; ; t++) {
+      try { const r = await http(url, headers); if (r) return r; throw Object.assign(new Error('No reply from the network'), { noReply: true }); }
+      catch (e) { if (t < 3 && (e.noReply || /undefined is not an object|network|failed to fetch/i.test(String(e && e.message)))) { await new Promise(res => setTimeout(res, 3000 * (t + 1))); continue; } throw e; }
+    }
+  }
   function copyText(text) {
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -571,8 +578,8 @@
     const key = getKey();
     if (!key) throw new Error('No API key set (Settings tab).');
     const u = url + (url.includes('?') ? '&' : '?') + (/[?&]key=/.test(url) ? '' : 'key=' + encodeURIComponent(key));
-    const r = await http(u);
-    let j; try { j = JSON.parse(r.text); } catch (e) { throw new Error('Bad API response (HTTP ' + r.status + ')'); }
+    const r = await httpRetry(u);
+    let j; try { j = JSON.parse(r.text); } catch (e) { throw new Error('Bad API response (HTTP ' + (r && r.status) + ')'); }
     if (j && j.error && j.error.code === 16) throw new Error('Your API key does not have enough access. The log needs a Limited Access key or higher (Torn > Settings > API Key). Add your own key in Settings.');
     if (j && j.error && j.error.code === 2) throw new Error('Torn rejected the API key as incorrect. Check it in Settings.');
     if (j && j.error && j.error.code === 5) { const er = new Error('Torn is limiting requests (too many in one minute). Progress is saved and will continue on the next sync.'); er.rate = true; throw er; }
@@ -884,7 +891,7 @@
     await ensureMe();
     const base = 'https://weav3r.dev/api/trades/' + state.me.id;
     const call = async url => {
-      const r = await http(url, { 'X-API-Key': key, Accept: 'application/json' });
+      const r = await httpRetry(url, { 'X-API-Key': key, Accept: 'application/json' });
       if (r && r.status === 401) throw new Error('TornW3B did not accept your key (HTTP 401). Check it in Settings.');
       if (r && r.status === 429) throw new Error('TornW3B is limiting requests. Wait a minute and tap again.');
       if (!r || r.status >= 400) throw new Error('TornW3B answered HTTP ' + (r && r.status) + (r && r.status === 403 ? ' (access denied: the trades endpoint may need Premium)' : ''));
@@ -1311,7 +1318,7 @@
         const tb = document.querySelector('#topHeaderBanner .toolbar, .header-buttons-wrapper');
         const hdr = tb ? tb.outerHTML.replace(/<svg[\s\S]*?<\/svg>/g, '<svg/>').replace(/<form[\s\S]*?<\/form>/g, '<form/>') : null;
         let cats = null; try { cats = await api('torn/logcategories'); } catch (e) { cats = String(e.message || e); }
-        const sample = { itemSample: state.itemSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, invInfo, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), header: hdr ? hdr.slice(0, 6000) : null, headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
+        const sample = { version: VERSION, itemSample: state.itemSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, invInfo, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), header: hdr ? hdr.slice(0, 6000) : null, headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
         const ok = await copyText(JSON.stringify(sample, null, 1));
         ui.msg = ok ? 'Debug sample copied. Paste it to Claude.' : 'Could not copy. Sync first, then try again.';
       }
