@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flip Profit Tracker
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.6-beta
+// @version      0.1.7-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -182,7 +182,10 @@
   }
 
   /* ===================== ledger engine (pure) ===================== */
-  function computeFlips(txsObj) {
+  function computeFlips(txsObj, opts) {
+    const fee = (opts && opts.marketFee) || 0;
+    // Fee applies only to item-market sales whose amount came from the log (receipt/manual values are used as entered).
+    const net = tx => (tx.channel === 'market' && tx.dir === 'sell' && tx.src === 'log') ? tx.amount * (1 - fee) : tx.amount;
     const txs = Object.values(txsObj).sort((a, b) => (a.ts - b.ts) || String(a.id).localeCompare(String(b.id)));
     const lots = {};
     const flips = [], pending = [];
@@ -224,7 +227,7 @@
       const wsum = weights.reduce((s, w) => s + w, 0) || 1;
 
       const lines = consumed.map((c, idx) => {
-        const share = tx.amount * weights[idx] / wsum;
+        const share = net(tx) * weights[idx] / wsum;
         const matchedFrac = c.it.qty ? c.matched / c.it.qty : 0;
         const proceeds = share * matchedFrac;
         return {
@@ -332,6 +335,7 @@
   let lastSyncInfo = null;
   const ui = { open: false, tab: 'flips', items: false, range: 30, editing: null, msg: '', pendingReceipt: null, candidates: [], busy: false };
   const save = () => sset('state', state);
+  const flipOpts = () => ({ marketFee: Math.min(100, Math.max(0, Number(sget('marketFee', 5)) || 0)) / 100 });
   const nameOf = id => itemNames[id] || ('Item ' + id);
 
   /* ===================== Torn API ===================== */
@@ -468,7 +472,7 @@
 
   function flipsHtml() {
     const cutoff = ui.range ? Date.now() / 1000 - ui.range * 86400 : 0;
-    const res = computeFlips(state.txs);
+    const res = computeFlips(state.txs, flipOpts());
     const flips = res.flips.filter(f => f.tx.ts >= cutoff).sort((a, b) => b.tx.ts - a.tx.ts);
     const total = flips.reduce((s, f) => s + (f.profit || 0), 0);
     let h = `<div class="tfp-h"><div><b>Profit</b> <span class="${total >= 0 ? 'tfp-pos' : 'tfp-neg'}" style="font-size:16px"><b>${fmt(total)}</b></span><div class="tfp-sub">${flips.length} flips · FIFO</div></div>
@@ -483,7 +487,7 @@
       if (f.costUnknown) flag += ' <span class="tfp-warn">⚠️ a matching buy has no value</span>';
       h += `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)} ${badge(tx)}</span>
         <b class="${f.profit == null ? 'tfp-warn' : f.profit >= 0 ? 'tfp-pos' : 'tfp-neg'}">${fmt(f.profit)}</b></div>
-        <div class="tfp-sub">${itemSummary(tx)} · sold for ${fmt(tx.amount)} <a href="#" data-act="edit" data-id="${esc(tx.id)}">✎</a>${flag}</div>`;
+        <div class="tfp-sub">${itemSummary(tx)} · sold for ${fmt(tx.amount)}${tx.channel === 'market' && tx.src === 'log' && flipOpts().marketFee ? ' (' + fmt(tx.amount * (1 - flipOpts().marketFee)) + ' after fee)' : ''} <a href="#" data-act="edit" data-id="${esc(tx.id)}">✎</a>${flag}</div>`;
       if (ui.editing === tx.id) h += editBox(tx);
       if (ui.items) f.lines.forEach(l => {
         h += `<div class="tfp-line"><span>${l.qty}× ${esc(l.name || nameOf(l.itemId))}</span><span class="${l.profit == null ? 'tfp-warn' : l.profit >= 0 ? 'tfp-pos' : 'tfp-neg'}">${fmt(l.profit)}</span></div>`;
@@ -499,7 +503,7 @@
       <div class="tfp-gap"></div><button class="tfp-b" data-act="saveval" data-id="${esc(tx.id)}">Save &amp; lock</button>`;
   }
   function pendingHtml() {
-    const res = computeFlips(state.txs);
+    const res = computeFlips(state.txs, flipOpts());
     if (!res.pending.length) return '<div class="tfp-msg">Nothing needs a value. 🎉</div>';
     return res.pending.sort((a, b) => b.ts - a.ts).map(tx => {
       let h = `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}</span><span>⚠️</span></div><div class="tfp-sub">${itemSummary(tx)}${tx.cp ? ' · ' + esc(tx.cp) : ''}</div>`;
@@ -524,7 +528,8 @@
     const keyBox = IN_PDA ? '<div class="tfp-sub">Using your Torn PDA API key automatically.</div>'
       : `<div class="tfp-sub">Torn API key (needs log access)</div><input class="tfp-in" id="tfp-key" type="password" value="${esc(sget('apikey', ''))}"><div class="tfp-gap"></div><button class="tfp-b" data-act="savekey">Save key</button>`;
     return `${keyBox}<div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
-      <input class="tfp-in" id="tfp-days" inputmode="numeric" value="${esc(sget('startDays', 30))}"><div class="tfp-gap"></div>
+      <input class="tfp-in" id="tfp-days" inputmode="numeric" value="${esc(sget('startDays', 30))}"><div class="tfp-gap"></div><div class="tfp-sub">Item market fee % (market sales only)</div>
+      <input class="tfp-in" id="tfp-fee" inputmode="decimal" value="${esc(sget('marketFee', 5))}"><div class="tfp-gap"></div>
       <button class="tfp-b" data-act="sync">${ui.busy ? 'Syncing…' : 'Sync log now'}</button>
       <div class="tfp-sub">Last sync: ${state.lastSync ? fdate(state.lastSync) : 'never'} · ${Object.keys(state.txs).length} records</div>
       <div class="tfp-row"><b>Backup</b><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-bk" placeholder="Export fills this box. Paste a backup here to import."></textarea><div class="tfp-gap"></div>
@@ -535,7 +540,7 @@
   function render() {
     const card = document.getElementById('tfp-card');
     if (!card) return;
-    const needs = computeFlips(state.txs).pending.length;
+    const needs = computeFlips(state.txs, flipOpts()).pending.length;
     const tabs = [['flips', 'Flips'], ['pending', 'Needs value' + (needs ? ' (' + needs + ')' : '')], ['receipts', 'Receipts'], ['settings', 'Settings']];
     card.innerHTML = `<div class="tfp-h"><b>💰 Flip Profit Tracker</b><button class="tfp-b" data-act="close">✕</button></div>
       <div class="tfp-tabs">${tabs.map(t => `<button class="tfp-tab ${ui.tab === t[0] ? 'on' : ''}" data-act="tab" data-v="${t[0]}">${t[1]}</button>`).join('')}</div>
@@ -571,6 +576,7 @@
       else if (act === 'savekey') { sset('apikey', val('tfp-key').trim()); state.me = null; save(); ui.msg = 'Key saved.'; }
       else if (act === 'sync') {
         sset('startDays', Number(val('tfp-days')) || 30);
+        { const f = parseFloat(val('tfp-fee')); sset('marketFee', isNaN(f) ? 5 : f); }
         ui.busy = true; render();
         try { const n = await syncLog(); ui.msg = 'Sync done: ' + n + ' new record(s).'; }
         finally { ui.busy = false; }

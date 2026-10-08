@@ -54,5 +54,13 @@ eq('match by trade id scores high', cand[0].score >= 10, true);
 // log parser smoke test
 const le = T.parseLogEntry({ id: 'L1', timestamp: 100, details: { title: 'Item market buy' }, data: { items: [{ id: 267, qty: 5 }], total_cost: 160000 } }, { channel: 'market', dir: 'buy' }, id => 'Heather');
 eq('log entry parse', [le.amount, le.items[0].name, le.src], [160000, 'Heather', 'log']);
+// market fee: only log-sourced item-market sales are reduced
+const fx = { a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 1, qty: 1 }], amount: 900 },
+  b: { id: 'b', ts: 2, dir: 'sell', channel: 'market', src: 'log', items: [{ id: 1, qty: 1 }], amount: 1000 },
+  c: { id: 'c', ts: 3, dir: 'buy', items: [{ id: 2, qty: 1 }], amount: 900 },
+  d: { id: 'd', ts: 4, dir: 'sell', channel: 'bazaar', src: 'log', items: [{ id: 2, qty: 1 }], amount: 1000 } };
+const fr = T.computeFlips(fx, { marketFee: 0.05 });
+eq('market fee applied', fr.flips.find(f => f.tx.id === 'b').profit, 50);
+eq('bazaar no fee', fr.flips.find(f => f.tx.id === 'd').profit, 100);
 console.log(fail ? fail + ' FAILED' : 'ALL PASSED');
 process.exit(fail ? 1 : 0);
