@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Torn Flip Profit Tracker
+// @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.11-beta
+// @version      0.1.12-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -558,7 +558,7 @@
     if (!card) return;
     const needs = computeFlips(state.txs, flipOpts()).pending.length;
     const tabs = [['flips', 'Flips'], ['pending', 'Needs value' + (needs ? ' (' + needs + ')' : '')], ['receipts', 'Receipts'], ['settings', 'Settings']];
-    card.innerHTML = `<div class="tfp-h"><b>💰 Flip Profit Tracker</b><button class="tfp-b" data-act="close">✕</button></div>
+    card.innerHTML = `<div class="tfp-h"><b>💰 Arbitrage</b><button class="tfp-b" data-act="close">✕</button></div>
       <div class="tfp-tabs">${tabs.map(t => `<button class="tfp-tab ${ui.tab === t[0] ? 'on' : ''}" data-act="tab" data-v="${t[0]}">${t[1]}</button>`).join('')}</div>
       ${ui.msg ? `<div class="tfp-msg">${esc(ui.msg)}</div>` : ''}
       ${ui.tab === 'flips' ? flipsHtml() : ui.tab === 'pending' ? pendingHtml() : ui.tab === 'receipts' ? receiptsHtml() : settingsHtml()}`;
@@ -677,7 +677,7 @@
       document.body.appendChild(w);
     }
     if (!document.getElementById('tfp-btn')) {
-      const b = document.createElement('button'); b.id = 'tfp-btn'; b.textContent = '💰'; b.title = 'Flip Profit Tracker';
+      const b = document.createElement('button'); b.id = 'tfp-btn'; b.textContent = '💰'; b.title = 'Arbitrage';
       const pos = sget('btnpos2', null) || (window.innerWidth < 700 ? { left: 124, top: 4 } : { left: Math.max(8, window.innerWidth - 110), top: 8 });
       placeBtn(b, pos);
       attachDrag(b);
