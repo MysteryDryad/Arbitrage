@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.49-beta
+// @version      0.1.50-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -776,7 +776,8 @@
   #tfp-toast{position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:2147483647;background:#222;color:#fff;border:1px solid #555;border-radius:8px;padding:8px 12px;font:13px Arial}
   `;
   const badge = tx => tx.src === 'receipt' ? '🧾' : tx.src === 'log' ? '📒' : tx.src === 'manual' ? '✍️' : '⚠️';
-  const fdate = ts => { const d = new Date(ts * 1000); return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }); };
+  // All times are shown in Torn City Time (TCT, the same as UTC) so they match the game logs and PawnHub.
+  const fdate = ts => { const d = new Date(ts * 1000); return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }) + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' }) + ' TCT'; };
   const itemSummary = tx => tx.items.slice(0, 5).map(i => i.qty + '× ' + esc(i.name || nameOf(i.id))).join(', ') + (tx.items.length > 5 ? ' + ' + (tx.items.length - 5) + ' more' : '') + (tx.count > 1 ? ' · ' + tx.count + ' sends' : '');
   const chanLabel = c => ({ market: 'Market', bazaar: 'Bazaar', trade: 'Trade', send: 'Send', recv: 'Received' }[c] || c);
 
