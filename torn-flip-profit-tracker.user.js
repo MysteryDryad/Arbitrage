@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.38-beta
+// @version      0.1.39-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -240,6 +240,8 @@
   }
 
   /* ===================== ledger engine (pure) ===================== */
+  // A send valued at $0 by hand is a gift too (covers gifts saved before the gift flag existed).
+  const isGift = tx => tx.dir === 'sell' && (tx.gift || (tx.channel === 'send' && tx.src === 'manual' && tx.amount === 0));
   function computeFlips(txsObj, opts) {
     const fee = (opts && opts.marketFee) || 0;
     const vals = (opts && opts.values) || {};
@@ -281,6 +283,7 @@
       if (tx.dir !== 'sell') { pending.push(tx); continue; }
 
       const consumed = tx.items.map(it => Object.assign({ it }, consume(it.id, it.qty)));
+      if (isGift(tx)) continue; // given away: leaves stock, not counted in profit
       if (tx.amount == null) { pending.push(tx); continue; }
 
       const allPriced = tx.items.every(i => i.price != null);
@@ -621,7 +624,7 @@
     Object.entries(sends).forEach(([id, tx]) => {
       const old = state.txs[id];
       if (!old) added++;
-      state.txs[id] = old && old.locked ? Object.assign({}, tx, { amount: old.amount, src: old.src, locked: true }) : tx;
+      state.txs[id] = old && old.locked ? Object.assign({}, tx, { amount: old.amount, src: old.src, gift: old.gift, locked: true }) : tx;
     });
     // The log arrives newest-first, so if we stopped at the page cap, older entries were not read: keep the old cursor.
     if (!capped) { state.lastSync = newest; state.syncedAt = Math.floor(Date.now() / 1000); state.resume = null; }
@@ -752,10 +755,12 @@
     CATS.forEach(([ch, label]) => {
       const fs = flips.filter(f => f.tx.channel === ch);
       const pend = res.pending.filter(tx => tx.channel === ch && tx.dir === 'sell' && tx.ts >= cutoff).sort((a, b) => b.ts - a.ts);
-      if (!fs.length && !pend.length) return;
+      const gifts = Object.values(state.txs).filter(t => t.channel === ch && isGift(t) && t.ts >= cutoff).sort((a, b) => b.ts - a.ts);
+      if (!fs.length && !pend.length && !gifts.length) return;
       const cp = fs.reduce((a, f) => a + (f.profit || 0), 0), key = 'cat_' + ch;
-      h += `<div class="tfp-row"><div class="tfp-top"><a href="#" data-act="toggle" data-v="${key}">${ui[key] ? '▾' : '▸'} ${label} · ${fs.length + pend.length} sale${fs.length + pend.length === 1 ? '' : 's'}${pend.length ? ' · <span class="tfp-warn">' + pend.length + ' need a value</span>' : ''}</a><b class="${pnlCls(cp)}">${fmt(cp)}</b></div>`;
+      h += `<div class="tfp-row"><div class="tfp-top"><a href="#" data-act="toggle" data-v="${key}">${ui[key] ? '▾' : '▸'} ${label} · ${fs.length + pend.length} sale${fs.length + pend.length === 1 ? '' : 's'}${pend.length ? ' · <span class="tfp-warn">' + pend.length + ' need a value</span>' : ''}${gifts.length ? ' · ' + gifts.length + ' gifted' : ''}</a><b class="${pnlCls(cp)}">${fmt(cp)}</b></div>`;
       if (ui[key]) pend.forEach(tx => { h += `<div class="tfp-gap"></div><div class="tfp-top"><span>${fdate(tx.ts)} ⚠️</span><span class="tfp-warn">needs value</span></div><div class="tfp-sub">${itemSummary(tx)}${tx.cp ? ' · player ' + esc(tx.cp) : ''}${tx.title ? ' · ' + esc(tx.title) : ''}</div>` + editBox(tx); });
+      if (ui[key]) gifts.forEach(tx => { h += `<div class="tfp-gap"></div><div class="tfp-top"><span>${fdate(tx.ts)} 🎁</span><span class="tfp-sub">gift · not counted</span></div><div class="tfp-sub">${itemSummary(tx)}${tx.cp ? ' · player ' + esc(tx.cp) : ''} <a href="#" data-act="edit" data-id="${esc(tx.id)}">✎</a></div>` + (ui.editing === tx.id ? editBox(tx) : ''); });
       if (ui[key]) fs.forEach(f => {
         const tx = f.tx;
         let flag = '';
@@ -882,19 +887,19 @@
       else if (act === 'saveval') {
         const n = firstNumber(val('tfp-val-' + id));
         if (n == null) throw new Error('Enter a number.');
-        const tx = state.txs[id]; tx.amount = n; tx.src = 'manual'; tx.locked = true; ui.editing = null; save();
+        const tx = state.txs[id]; tx.amount = n; tx.gift = false; tx.src = 'manual'; tx.locked = true; ui.editing = null; save();
       }
       else if (act === 'giftall') {
         if (!ui.armGift) { ui.armGift = true; render(); return; }
         ui.armGift = false;
-        computeFlips(state.txs, flipOpts()).pending.filter(t => t.channel === 'send' || t.channel === 'recv').forEach(t => { const x = state.txs[t.id]; x.amount = 0; x.src = 'manual'; x.locked = true; });
+        computeFlips(state.txs, flipOpts()).pending.filter(t => t.channel === 'send' || t.channel === 'recv').forEach(t => { const x = state.txs[t.id]; x.amount = 0; x.gift = true; x.src = 'manual'; x.locked = true; });
         save();
       }
-      else if (act === 'gift') { const tx = state.txs[id]; tx.amount = 0; tx.src = 'manual'; tx.locked = true; save(); }
+      else if (act === 'gift') { const tx = state.txs[id]; tx.amount = 0; tx.gift = true; tx.src = 'manual'; tx.locked = true; save(); }
       else if (act === 'usemoney') {
         const m = state.moneyEvents[v], tx = state.txs[id];
         if (!m || !tx) throw new Error('That payment is no longer available.');
-        tx.amount = m.amount; tx.src = 'manual'; tx.locked = true; save();
+        tx.amount = m.amount; tx.gift = false; tx.src = 'manual'; tx.locked = true; save();
       }
       else if (act === 'savekey') {
         const k = val('tfp-key').trim();

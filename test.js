@@ -99,5 +99,10 @@ const mvT = { a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 1, qty: 1, price: n
 const mvR = T.computeFlips(mvT, { values: { 1: 100, 2: 900 } });
 eq('cost split by market value', mvR.flips[0].profit, 300 - 100);
 eq('cost split by qty without values', T.computeFlips(mvT).flips[0].profit, 300 - 500);
+// gifted sends leave stock but do not touch profit
+const gf = { a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 1, qty: 10 }], amount: 1000 }, g: { id: 'g', ts: 2, dir: 'sell', channel: 'send', gift: true, amount: 0, items: [{ id: 1, qty: 4 }] },
+  s: { id: 's', ts: 3, dir: 'sell', channel: 'market', src: 'log', amount: 900, items: [{ id: 1, qty: 6 }] } };
+const gr = T.computeFlips(gf);
+eq('gift not counted, cost of remaining units used', [gr.flips.length, gr.flips[0].profit, gr.pending.length], [1, 900 - 600, 0]);
 console.log(fail ? fail + ' FAILED' : 'ALL PASSED');
 process.exit(fail ? 1 : 0);
