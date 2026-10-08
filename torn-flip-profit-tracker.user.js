@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.78-beta
+// @version      0.1.79-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -36,7 +36,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.78-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.79-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -980,8 +980,9 @@
   #tfp-card{background:#1e1e1e;color:#ddd;width:100%;max-width:560px;max-height:92vh;overflow:auto;border-radius:14px 14px 0 0;padding:12px;font:13px/1.4 Arial,sans-serif;box-sizing:border-box}
   #tfp-card *{box-sizing:border-box}
   .tfp-h{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-  .tfp-tabs{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap}
-  .tfp-tab,.tfp-b{background:#333;color:#eee;border:1px solid #555;border-radius:8px;padding:6px 10px;cursor:pointer;font-size:13px}
+  .tfp-tabs{display:flex;gap:6px;margin-bottom:10px;overflow-x:auto}
+  .tfp-tabs .tfp-tab{flex:1;white-space:nowrap;padding:8px 6px;text-align:center}
+  .tfp-tab,.tfp-b{background:#2d2d2d;color:#eee;border:1px solid #444;border-radius:10px;padding:8px 12px;cursor:pointer;font-size:13px}
   .tfp-tab.on{background:#3b6fd1;border-color:#3b6fd1}
   .tfp-row{border-top:1px solid #333;padding:8px 0}
   .tfp-top{display:flex;justify-content:space-between;gap:8px}
@@ -992,6 +993,23 @@
   .tfp-ta{min-height:70px}
   .tfp-msg{background:#2a2a2a;border-radius:8px;padding:8px;margin:6px 0}
   .tfp-gap{height:6px}
+  .tfp-big{font-size:28px;font-weight:700;line-height:1.1}
+  .tfp-stats{display:flex;gap:8px;margin:8px 0}
+  .tfp-stat{flex:1;background:#262626;border-radius:10px;padding:8px 10px}
+  .tfp-stat b{display:block;font-size:14px;color:#eee}
+  .tfp-stat span{font-size:11px;color:#999}
+  .tfp-chips{display:flex;gap:8px;margin:8px 0}
+  .tfp-chip{flex:1;background:#33290f;border:1px solid #6b5420;border-radius:10px;padding:8px 10px;color:#e8b64a;text-decoration:none}
+  .tfp-chip b{display:block;font-size:16px}
+  .tfp-chip span{font-size:11px}
+  #tfp-card a.tfp-chip{color:#e8b64a}
+  .tfp-cat{background:#262626;border-radius:10px;margin:8px 0;padding:10px 12px}
+  .tfp-cat .tfp-top{align-items:center}
+  .tfp-cat-h{display:block;color:#eee!important;text-decoration:none}
+  .tfp-cat-h b{font-size:15px}
+  .tfp-chev{display:inline-block;width:14px;color:#888}
+  .tfp-cat .tfp-sub{padding-left:14px}
+  .tfp-foot{color:#777;font-size:11px;margin-top:10px}
   .tfp-sel{width:auto;padding:4px}
   .tfp-ctl{display:flex;gap:6px;align-items:center}
   #tfp-card a{color:#7fb0ff}
@@ -1015,7 +1033,7 @@
     const ts = Object.values(state.txs).map(t => t.ts).filter(Number);
     if (!ts.length) return '';
     const first = Math.min.apply(null, ts), days = (Date.now() / 1000 - first) / 86400;
-    return 'Your imported history starts ' + fdate(first) + ' (' + (days < 1 ? 'under a day' : days.toFixed(1) + ' days') + ' ago)' + (ui.range && days < ui.range ? ': ranges longer than that show the same numbers.' : '.') + (state.oldestLog ? ' Oldest Torn log entry read: ' + fdate(state.oldestLog) + '.' : '');
+    return 'History from ' + fdate(first) + ' (' + (days < 1 ? 'under a day' : Math.round(days) + ' days') + ')' + (ui.range && days < ui.range ? ' · longer ranges show the same numbers' : '');
   }
   function profitHtml() {
     const cutoff = ui.range ? Date.now() / 1000 - ui.range * 86400 : 0;
@@ -1025,23 +1043,21 @@
     const lines = done.reduce((a, f) => a.concat(f.lines.filter(l => l.matched > 0)), []);
     const revenue = lines.reduce((a, l) => a + l.proceeds, 0), cost = lines.reduce((a, l) => a + (l.cost || 0), 0);
     const profit = done.reduce((a, f) => a + f.profit, 0);
-    let h = `<div class="tfp-h"><div><span class="${pnlCls(profit)}" style="font-size:20px"><b>${fmt(profit)}</b></span>
-      <div class="tfp-sub">${done.length} flip${done.length === 1 ? '' : 's'}${cost > 0 ? ' · ' + (profit / cost * 100).toFixed(1) + '% return' : ''}</div></div><div class="tfp-ctl">${rangeSelect()}<button class="tfp-b" data-act="sync">${ui.busy ? 'Syncing…' : state.resume ? 'Continue sync' : 'Sync'}</button></div></div>
-      <div class="tfp-sub">Sold for ${fmt(revenue)} · cost ${fmt(cost)}</div>
-      <div class="tfp-sub">${historyNote()}</div>`;
-    if (res.pending.length) {
-      h += `<div class="tfp-msg tfp-warn"><a href="#" data-act="toggle" data-v="showPending">⚠️ ${res.pending.length} need${res.pending.length === 1 ? 's' : ''} a value ${ui.showPending ? '▾' : '▸'}</a></div>`;
-      if (ui.showPending) h += pendingHtml();
-    }
+    let h = `<div class="tfp-h"><div><div class="tfp-sub" style="margin:0">Profit</div><div class="tfp-big ${pnlCls(profit)}">${fmt(profit)}</div></div><div class="tfp-ctl">${rangeSelect()}<button class="tfp-b" data-act="sync">${ui.busy ? 'Syncing…' : state.resume ? 'Continue' : 'Sync'}</button></div></div>
+      <div class="tfp-stats"><div class="tfp-stat"><span>Sold for</span><b>${fmt(revenue)}</b></div><div class="tfp-stat"><span>Cost</span><b>${fmt(cost)}</b></div><div class="tfp-stat"><span>${done.length} flip${done.length === 1 ? '' : 's'}</span><b>${cost > 0 ? (profit / cost * 100).toFixed(1) + '% return' : '–'}</b></div></div>`;
     const skipped = flips.filter(f => f.profit == null);
-    if (skipped.length) {
-      h += `<div class="tfp-sub tfp-warn"><a href="#" data-act="toggle" data-v="showSkipped">${ui.showSkipped ? '▾' : '▸'} ${skipped.length} sale${skipped.length === 1 ? '' : 's'} not counted</a> (no cost to subtract)</div>`;
-      if (ui.showSkipped) skipped.forEach(f => {
-        const tx = f.tx;
-        const why = f.unmatched ? f.unmatched + ' unit(s) have no matching buy: bought before the sync window, or got another way. A longer look-back (Settings, then Re-sync from start) may find the buy.' : 'The items came from a buy or receive with no value. Find it in Stock or the sends and set a value.';
-        h += `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}${tradeTag(tx)}</span><span class="tfp-warn">not counted</span></div><div class="tfp-sub">${itemSummary(tx)} · ${gotWord(tx)} ${fmt(netAmt(tx))}</div><div class="tfp-sub tfp-warn">${why}</div>${f.lines.filter(l => l.unmatched > 0).map(l => `<div class="tfp-sub"><a href="#" data-act="itemlog" data-id="${esc(l.itemId)}">${esc(nameOf(l.itemId))} history</a></div>`).join('')}</div>`;
-      });
+    if (res.pending.length || skipped.length) {
+      h += '<div class="tfp-chips">';
+      if (res.pending.length) h += `<a href="#" class="tfp-chip" data-act="toggle" data-v="showPending"><b>⚠️ ${res.pending.length} ${ui.showPending ? '▾' : '▸'}</b><span>need a value</span></a>`;
+      if (skipped.length) h += `<a href="#" class="tfp-chip" data-act="toggle" data-v="showSkipped"><b>⚠️ ${skipped.length} ${ui.showSkipped ? '▾' : '▸'}</b><span>sales not counted (no cost)</span></a>`;
+      h += '</div>';
+      if (res.pending.length && ui.showPending) h += pendingHtml();
     }
+    if (skipped.length && ui.showSkipped) skipped.forEach(f => {
+      const tx = f.tx;
+      const why = f.unmatched ? f.unmatched + ' unit(s) have no matching buy: bought before the sync window, or got another way. A longer look-back (Settings, then Re-sync from start) may find the buy.' : 'The items came from a buy or receive with no value. Find it in Stock or the sends and set a value.';
+      h += `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}${tradeTag(tx)}</span><span class="tfp-warn">not counted</span></div><div class="tfp-sub">${itemSummary(tx)} · ${gotWord(tx)} ${fmt(netAmt(tx))}</div><div class="tfp-sub tfp-warn">${why}</div>${f.lines.filter(l => l.unmatched > 0).map(l => `<div class="tfp-sub"><a href="#" data-act="itemlog" data-id="${esc(l.itemId)}">${esc(nameOf(l.itemId))} history</a></div>`).join('')}</div>`;
+    });
     if (!Object.keys(state.txs).length) return h + '<div class="tfp-msg">Nothing imported yet. Tap Sync to read your Torn log.</div>';
     if (!flips.length) return h + '<div class="tfp-msg">No flips in this time range. Flips appear once you sell items you bought.</div>';
     // One closed row per category; opening it lists that category's sales.
@@ -1052,7 +1068,7 @@
       const gifts = Object.values(state.txs).filter(t => t.channel === ch && isGift(t) && t.ts >= cutoff).sort((a, b) => b.ts - a.ts);
       if (!fs.length && !pend.length && !gifts.length) return;
       const cp = fs.reduce((a, f) => a + (f.profit || 0), 0), key = 'cat_' + ch;
-      h += `<div class="tfp-row"><div class="tfp-top"><a href="#" data-act="toggle" data-v="${key}">${ui[key] ? '▾' : '▸'} ${label} · ${fs.length + pend.length} sale${fs.length + pend.length === 1 ? '' : 's'}${pend.length ? ' · <span class="tfp-warn">' + pend.length + ' need a value</span>' : ''}${gifts.length ? ' · ' + gifts.length + ' gifted' : ''}</a><b class="${pnlCls(cp)}">${fmt(cp)}</b></div>`;
+      h += `<div class="tfp-cat"><div class="tfp-top"><a href="#" class="tfp-cat-h" data-act="toggle" data-v="${key}"><span class="tfp-chev">${ui[key] ? '▾' : '▸'}</span><b>${label}</b><div class="tfp-sub">${fs.length + pend.length} sale${fs.length + pend.length === 1 ? '' : 's'}${pend.length ? ' · <span class="tfp-warn">' + pend.length + ' need a value</span>' : ''}${gifts.length ? ' · ' + gifts.length + ' gifted' : ''}</div></a><b class="${pnlCls(cp)}" style="font-size:15px">${fmt(cp)}</b></div>`;
       if (ui[key]) pend.forEach(tx => { h += `<div class="tfp-gap"></div><div class="tfp-top"><span>${fdate(tx.ts)} ⚠️</span><span class="tfp-warn">needs value</span></div><div class="tfp-sub">${itemSummary(tx)}${tx.cp ? ' · player ' + esc(tx.cp) : ''}${tx.title ? ' · ' + esc(tx.title) : ''}</div>` + editBox(tx); });
       if (ui[key]) gifts.forEach(tx => { h += `<div class="tfp-gap"></div><div class="tfp-top"><span>${fdate(tx.ts)} 🎁</span><span class="tfp-sub">gift · not counted</span></div><div class="tfp-sub">${itemSummary(tx)}${tx.cp ? ' · player ' + esc(tx.cp) : ''} <a href="#" data-act="edit" data-id="${esc(tx.id)}">✎</a></div>` + (ui.editing === tx.id ? editBox(tx) : ''); });
       if (ui[key]) fs.forEach(f => {
@@ -1066,7 +1082,7 @@
       });
       h += '</div>';
     });
-    return h;
+    return h + '<div class="tfp-foot">' + historyNote() + (state.oldestLog ? ' · oldest log entry read ' + fdate(state.oldestLog) : '') + ' · times in TCT</div>';
   }
   // Every buy, sale, send and removal of one item in time order with the running amount in stock, so a shortage can be traced.
   function ledgerHtml() {
