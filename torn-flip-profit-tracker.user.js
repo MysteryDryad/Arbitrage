@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.67-beta
+// @version      0.1.68-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -865,6 +865,7 @@
     w.at = w.at || {};
     const now = Math.floor(Date.now() / 1000);
     let budget = 40, attached = 0, missing = 0, left = 0, pages = 0, to = null;
+    const lost = [];
     const seen = new Set();
     try {
       // The list holds 100 receipts, newest first; step back through older pages using the oldest receipt's time.
@@ -880,7 +881,7 @@
           if (r && r.created_at) w.at[t.id] = r.created_at;
           const rc = rcFromWeaverApi(r);
           const tx = rc && Object.values(state.txs).find(x => x.tradeId && String(x.tradeId) === String(rc.tradeId));
-          if (tx) { attachReceipt(rc, tx); w.done[t.id] = 1; attached++; } else { w.miss[t.id] = now; missing++; }
+          if (tx) { attachReceipt(rc, tx); w.done[t.id] = 1; attached++; } else { w.miss[t.id] = now; missing++; if (lost.length < 3) lost.push(rc ? 'trade ' + rc.tradeId + ' with ' + rc.buyer + ', ' + fmt(rc.total) + (rc.ts ? ' at ' + fdate(rc.ts) : '') : 'receipt ' + t.id + ' (unreadable)'); }
         }
         if (list.length < 100) break;
         const last = list[list.length - 1];
@@ -890,7 +891,7 @@
         await sleep(900);
       }
     } finally { save(); }
-    return 'Weaver: ' + attached + ' receipt(s) attached' + (missing ? ', ' + missing + ' not found in your log (older than your history, or not synced yet)' : '') + (left ? ', ' + left + ' more waiting: tap again' : '') + (!attached && !missing && !left ? ' (nothing new)' : '') + '.';
+    return 'Weaver: ' + attached + ' receipt(s) attached' + (missing ? ', ' + missing + ' not found in your log (' + lost.join('; ') + ')' : '') + (left ? ', ' + left + ' more waiting: tap again' : '') + (!attached && !missing && !left ? ' (nothing new)' : '') + '.';
   }
   async function handleReceipt(rc) {
     if (rc.source === 'pawnhub-balance') return applyPawnHubBalance(rc);
