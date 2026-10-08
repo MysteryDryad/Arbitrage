@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flip Profit Tracker
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.9-beta
+// @version      0.1.10-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -544,7 +544,7 @@
     return `${keyBox}<div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
       <input class="tfp-in" id="tfp-days" inputmode="numeric" value="${esc(sget('startDays', 30))}"><div class="tfp-gap"></div><div class="tfp-sub">Item market fee % (market sales only)</div>
       <input class="tfp-in" id="tfp-fee" inputmode="decimal" value="${esc(sget('marketFee', 5))}"><div class="tfp-gap"></div>
-      <button class="tfp-b" data-act="sync">${ui.busy ? 'Syncing…' : 'Sync log now'}</button>
+      <button class="tfp-b" data-act="sync">${ui.busy ? 'Syncing…' : 'Sync log now'}</button> <button class="tfp-b" data-act="resync">Re-sync from start</button>
       <div class="tfp-sub">Last sync: ${state.lastSync ? fdate(state.lastSync) : 'never'} · ${Object.keys(state.txs).length} records</div>
       <div class="tfp-row"><b>Backup</b><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-bk" placeholder="Export fills this box. Paste a backup here to import."></textarea><div class="tfp-gap"></div>
       <button class="tfp-b" data-act="export">Export</button> <button class="tfp-b" data-act="import">Import</button></div>
@@ -599,7 +599,8 @@
         } catch (e) { sset('apikey', old); throw e; }
       }
       else if (act === 'clearkey') { sset('apikey', ''); state.me = null; save(); ui.msg = 'Key removed from this device.'; }
-      else if (act === 'sync') {
+      else if (act === 'sync' || act === 'resync') {
+        if (act === 'resync') { state.lastSync = 0; state.seenTitles = {}; save(); }
         sset('startDays', Number(val('tfp-days')) || 30);
         { const f = parseFloat(val('tfp-fee')); sset('marketFee', isNaN(f) ? 5 : f); }
         ui.busy = true; render();
