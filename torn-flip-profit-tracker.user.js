@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.26-beta
+// @version      0.1.27-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -618,18 +618,6 @@
   const rangeSelect = () => `<select class="tfp-in tfp-sel" data-act="range">${[[1, 'Last 24h'], [7, 'Last 7 days'], [30, 'Last 30 days'], [0, 'All time']].map(r => `<option value="${r[0]}"${ui.range === r[0] ? ' selected' : ''}>${r[1]}</option>`).join('')}</select>`;
   const pnlCls = n => n == null ? 'tfp-warn' : n >= 0 ? 'tfp-pos' : 'tfp-neg';
   const link = (key, label) => `<a href="#" data-act="toggle" data-v="${key}">${ui[key] ? '▾' : '▸'} ${label}</a>`;
-  function breakdownHtml(done) {
-    const lines = done.reduce((a, f) => a.concat(f.lines.filter(l => l.matched > 0).map(l => Object.assign({ chan: f.tx.channel }, l))), []);
-    const group = (keyFn, labelFn) => {
-      const m = {};
-      lines.forEach(l => { const k = keyFn(l); const g = m[k] = m[k] || { label: labelFn(l), qty: 0, profit: 0 }; g.qty += l.matched; g.profit += l.profit || 0; });
-      return Object.values(m).sort((a, b) => b.profit - a.profit);
-    };
-    const row = g => `<div class="tfp-line"><span>${esc(g.label)} · ${g.qty} units</span><span class="${pnlCls(g.profit)}">${fmt(g.profit)}</span></div>`;
-    const items = group(l => l.itemId, l => l.name || nameOf(l.itemId));
-    return '<div class="tfp-row"><b>By channel</b>' + group(l => l.chan, l => chanLabel(l.chan)).map(row).join('') + '</div>'
-      + '<div class="tfp-row"><b>By item</b>' + items.slice(0, 15).map(row).join('') + (items.length > 15 ? `<div class="tfp-sub">+ ${items.length - 15} more</div>` : '') + '</div>';
-  }
   function profitHtml() {
     const cutoff = ui.range ? Date.now() / 1000 - ui.range * 86400 : 0;
     const res = computeFlips(state.txs, flipOpts());
@@ -646,20 +634,22 @@
       if (ui.showPending) h += pendingHtml();
     }
     if (flips.length > done.length) h += `<div class="tfp-sub tfp-warn">${flips.length - done.length} sale(s) not counted: no matching buy, or a buy with no value.</div>`;
-    if (!flips.length) h += '<div class="tfp-msg">No flips yet. They appear once you sell items you bought.</div>';
-    else h += `<div class="tfp-gap"></div><div class="tfp-sub">${link('items', 'Item detail')} &nbsp; ${link('breakdown', 'Breakdown')}</div>`;
-    if (ui.breakdown && done.length) h += breakdownHtml(done);
-    flips.forEach(f => {
-      const tx = f.tx;
-      let flag = '';
-      if (f.unmatched) flag += ` <span class="tfp-warn">⚠️ ${f.unmatched} unit(s) had no matching buy</span>`;
-      if (f.costUnknown) flag += ' <span class="tfp-warn">⚠️ a matching buy has no value</span>';
-      h += `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)} ${badge(tx)}</span>
-        <b class="${pnlCls(f.profit)}">${fmt(f.profit)}</b></div>
-        <div class="tfp-sub">${itemSummary(tx)} · sold for ${fmt(netAmt(tx))} <a href="#" data-act="edit" data-id="${esc(tx.id)}">✎</a>${flag}</div>`;
-      if (ui.editing === tx.id) h += editBox(tx);
-      if (ui.items) f.lines.forEach(l => {
-        h += `<div class="tfp-line"><span>${l.qty}× ${esc(l.name || nameOf(l.itemId))}</span><span class="${pnlCls(l.profit)}">${fmt(l.profit)}</span></div>`;
+    if (!flips.length) return h + '<div class="tfp-msg">No flips yet. They appear once you sell items you bought.</div>';
+    // One closed row per category; opening it lists that category's sales.
+    const CATS = [['trade', 'Trade'], ['market', 'Market'], ['bazaar', 'Bazaar'], ['send', 'Sent']];
+    CATS.forEach(([ch, label]) => {
+      const fs = flips.filter(f => f.tx.channel === ch);
+      if (!fs.length) return;
+      const cp = fs.reduce((a, f) => a + (f.profit || 0), 0), key = 'cat_' + ch;
+      h += `<div class="tfp-row"><div class="tfp-top"><a href="#" data-act="toggle" data-v="${key}">${ui[key] ? '▾' : '▸'} ${label} · ${fs.length} sale${fs.length === 1 ? '' : 's'}</a><b class="${pnlCls(cp)}">${fmt(cp)}</b></div>`;
+      if (ui[key]) fs.forEach(f => {
+        const tx = f.tx;
+        let flag = '';
+        if (f.unmatched) flag += ` <span class="tfp-warn">⚠️ ${f.unmatched} unit(s) had no matching buy</span>`;
+        if (f.costUnknown) flag += ' <span class="tfp-warn">⚠️ a matching buy has no value</span>';
+        h += `<div class="tfp-gap"></div><div class="tfp-top"><span>${fdate(tx.ts)}${tx.src === 'receipt' ? ' 🧾' : tx.src === 'manual' ? ' ✍️' : ''}</span><b class="${pnlCls(f.profit)}">${fmt(f.profit)}</b></div>
+          <div class="tfp-sub">${itemSummary(tx)} · sold for ${fmt(netAmt(tx))} <a href="#" data-act="edit" data-id="${esc(tx.id)}">✎</a>${flag}</div>`;
+        if (ui.editing === tx.id) h += editBox(tx);
       });
       h += '</div>';
     });
