@@ -75,5 +75,11 @@ eq('trade built only when completed', Object.keys(bt), ['trade:13481192']);
 eq('trade buy parsed', [bt['trade:13481192'].dir, bt['trade:13481192'].amount, bt['trade:13481192'].items[0].qty, bt['trade:13481192'].items[0].name], ['buy', 5000000, 1000, 'N269']);
 eq('trade id from link', T.tradeIdOf({ data: { trade_id: '[<a href = "/trade.php#step=view&ID=13481952">view</a>]' } }), '13481952');
 eq('open lots exposed', T.computeFlips({ a: tx.a, b: tx.b, c: tx.c }).open[267].map(l => l.qty), [3]);
+// PawnHub (layout inferred from a screenshot)
+const phHtml = `<body><div>PAWNHUB RECEIPT</div><h1>Trade #13481517</h1><div>Saved 2026-10-08 05:04:31 UTC for trade #13481517.</div>
+<div class="card"><h2>Summary</h2><div><div><span>Rosiestarfish</span><span>$1,767,500</span></div><div><span>Camel Plushie</span><small>25 x $70,700</small></div><b>$1,767,500</b></div></div></body>`;
+const ph = T.parsePawnHub(new JSDOM(phHtml).window.document, 'https://z0cl.eu/PawnHub/trade_receipt.php?r=x');
+eq('PawnHub parse', [ph.tradeId, ph.total, ph.items, ph.party], [13481517, 1767500, [{ id: null, name: 'Camel Plushie', qty: 25, price: 70700 }], 'Rosiestarfish']);
+eq('PawnHub rejects total mismatch', T.parsePawnHub(new JSDOM(phHtml.replace('<b>$1,767,500</b>', '').replace('<span>$1,767,500</span>', '<span>$1</span>')).window.document, 'u'), null);
 console.log(fail ? fail + ' FAILED' : 'ALL PASSED');
 process.exit(fail ? 1 : 0);

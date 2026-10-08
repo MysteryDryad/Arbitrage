@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.20-beta
+// @version      0.1.21-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -171,10 +171,34 @@
     };
   }
 
+
+  // PawnHub receipts show one party card: name, total, then "Item  qty x $price" rows. No item IDs, no buyer/seller labels:
+  // ids are resolved from item names and the role from the matching log trade when the receipt is added in Torn.
+  function parsePawnHub(doc, url) {
+    const leaves = leafTexts(doc);
+    const tid = leaves.join(' ').match(/Trade\s*#(\d+)/i);
+    const items = [];
+    leaves.forEach((t, i) => {
+      let m = t.match(/^(\d[\d,]*)\s*[x×]\s*\$?\s*([\d,]+)$/i), name = null;
+      if (m) name = leaves[i - 1];
+      else if ((m = t.match(/^(.+?)\s+(\d[\d,]*)\s*[x×]\s*\$?\s*([\d,]+)$/i))) { name = m[1]; m = [null, m[2], m[3]]; }
+      if (!m || !name) return;
+      items.push({ id: null, name: name.trim(), qty: Number(m[1].replace(/,/g, '')), price: Number(m[2].replace(/,/g, '')) });
+    });
+    if (!tid || !items.length) return null;
+    const total = items.reduce((a, i) => a + i.qty * i.price, 0);
+    // Safety check: the page must show a total equal to what we computed, otherwise we may have misread it.
+    const idx = leaves.findIndex(t => /^\$[\d,]+$/.test(t) && firstNumber(t) === total);
+    const inline = leaves.some(t => /^.+\s\$[\d,]+$/.test(t) && firstNumber(t.replace(/^.*\s(\$[\d,]+)$/, '$1')) === total);
+    if (idx < 0 && !inline) return null;
+    return { source: 'pawnhub', url, tradeId: Number(tid[1]), buyer: null, seller: null, buyerId: null, sellerId: null, party: idx > 0 ? leaves[idx - 1] : null, items, total, timeText: null, ts: null };
+  }
+
   function parseReceiptDoc(doc, url) {
     const host = (() => { try { return new URL(url).hostname; } catch (e) { return ''; } })();
     if (/tornexchange/i.test(host)) return parseTornExchange(doc, url);
     if (/weav3r/i.test(host)) return parseWeaver(doc, url);
+    if (/z0cl/i.test(host)) return parsePawnHub(doc, url);
     return null;
   }
 
@@ -251,6 +275,7 @@
 
   /* ===================== receipt <-> trade matching (pure) ===================== */
   function roleFor(rc, me) {
+    if (rc.role) return rc.role;
     if (!me) return null;
     const n = (me.name || '').toLowerCase();
     if (rc.seller && rc.seller.toLowerCase() === n) return 'sell';
@@ -501,8 +526,19 @@
     const tx = { id: 'rc:' + (rc.tradeId || rc.url), ts: rc.ts || Math.floor(Date.now() / 1000), dir: role, channel: 'trade', items: [], amount: null, locked: true, tradeId: rc.tradeId };
     state.txs[tx.id] = tx; attachReceipt(rc, tx); return tx;
   }
+  async function resolvePawnHub(rc) {
+    await ensureItems();
+    const byName = {}; Object.entries(itemNames).forEach(([id, n]) => { byName[String(n).toLowerCase()] = Number(id); });
+    rc.items.forEach(i => { if (!i.id) i.id = byName[String(i.name).toLowerCase()] || null; });
+    const bad = rc.items.filter(i => !i.id).map(i => i.name);
+    if (bad.length) throw new Error("Couldn't match item name(s) to Torn items: " + bad.join(', '));
+    const tx = state.txs['trade:' + rc.tradeId];
+    if (!tx || !tx.dir) throw new Error('Trade #' + rc.tradeId + ' is not in your log yet (or has items going both ways). Sync, then add the receipt again.');
+    rc.role = tx.dir;
+  }
   async function handleReceipt(rc) {
     await ensureMe();
+    if (rc.source === 'pawnhub') await resolvePawnHub(rc);
     if (!roleFor(rc, state.me)) throw new Error("Your name (" + state.me.name + ") isn't the buyer or seller on this receipt.");
     const cands = rankCandidates(rc, state.txs);
     const best = cands[0], second = cands[1];
@@ -648,12 +684,12 @@
     }).join('');
   }
   function receiptsHtml() {
-    let h = '<div class="tfp-sub">Paste a Weaver or TornExchange receipt link (or data copied with the "Add to profit tracker" button on the receipt page).</div><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-rc" placeholder="https://tornexchange.com/receipt/..."></textarea><div class="tfp-gap"></div><button class="tfp-b" data-act="addrc">Add receipt</button>';
+    let h = '<div class="tfp-sub">Paste a Weaver, TornExchange or PawnHub receipt link (or data copied with the "Add to profit tracker" button on the receipt page).</div><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-rc" placeholder="https://tornexchange.com/receipt/..."></textarea><div class="tfp-gap"></div><button class="tfp-b" data-act="addrc">Add receipt</button>';
     const inbox = hasGM ? sget('inbox', []) : [];
     if (inbox.length) h += ` <button class="tfp-b" data-act="inbox">Process ${inbox.length} saved receipt(s)</button>`;
     if (ui.pendingReceipt) {
       const rc = ui.pendingReceipt;
-      h += `<div class="tfp-msg"><b>${rc.source === 'weaver' ? 'Weaver' : 'TornExchange'} receipt</b> · ${fmt(rc.total)}<br>${rc.items.map(i => i.qty + '× ' + esc(i.name)).join(', ')}</div>`;
+      h += `<div class="tfp-msg"><b>${rc.source === 'weaver' ? 'Weaver' : rc.source === 'pawnhub' ? 'PawnHub' : 'TornExchange'} receipt</b> · ${fmt(rc.total)}<br>${rc.items.map(i => i.qty + '× ' + esc(i.name)).join(', ')}</div>`;
       ui.candidates.forEach(c => { h += `<div class="tfp-row"><div class="tfp-top"><span>${fdate(c.tx.ts)} · ${chanLabel(c.tx.channel)}</span><button class="tfp-b" data-act="attach" data-id="${esc(c.tx.id)}">Attach</button></div><div class="tfp-sub">${itemSummary(c.tx)}</div></div>`; });
       h += '<div class="tfp-gap"></div><button class="tfp-b" data-act="newtrade">Add as a new trade instead</button>';
     }
@@ -866,7 +902,7 @@
   }
 
   if (typeof module !== 'undefined') {
-    module.exports = { buildTradeTxs, tradeIdOf, computeFlips, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
+    module.exports = { parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
   }
   if (typeof document !== 'undefined' && !globalThis.__TFP_TEST) init();
 })();
