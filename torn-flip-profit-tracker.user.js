@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.50-beta
+// @version      0.1.51-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -881,10 +881,8 @@
       if (!tx.dir) h += `<div class="tfp-gap"></div><button class="tfp-b" data-act="dir" data-id="${esc(tx.id)}" data-v="sell">I sold these</button> <button class="tfp-b" data-act="dir" data-id="${esc(tx.id)}" data-v="buy">I bought these</button>`;
       else {
         h += editBox(tx);
-        const want = tx.dir === 'sell' ? 'in' : 'out';
-        const sug = Object.entries(state.moneyEvents || {}).filter(([, m]) => m.dir === want && Math.abs(m.ts - tx.ts) < 24 * 3600 && tx.cp != null && m.cp != null && String(m.cp) === String(tx.cp)).slice(0, 3);
         if (tx.channel === 'send' || tx.channel === 'recv') h += `<div class="tfp-gap"></div><button class="tfp-b" data-act="gift" data-id="${esc(tx.id)}">Gift / no payment ($0)</button>`;
-        if (tx.channel === 'send' || tx.channel === 'recv') sug.forEach(([mid, m]) => { h += `<div class="tfp-gap"></div><button class="tfp-b" data-act="usemoney" data-id="${esc(tx.id)}" data-v="${esc(mid)}">Use ${fmt(m.amount)} ${want === 'in' ? 'received' : 'sent'} ${fdate(m.ts)}</button>`; });
+        // No "money received" suggestions: a payment settles a balance and does not belong to one send. Values come from receipts or the PawnHub Balance page.
       }
       return h + '</div>';
     }).join('');
