@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.12-beta
+// @version      0.1.13-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -283,7 +283,6 @@
     { re: /bazaar.*(sell|sold|sale)/i, channel: 'bazaar', dir: 'sell' },
     { re: /item ?market.*(buy|bought|purchase)/i, channel: 'market', dir: 'buy' },
     { re: /item ?market.*(sell|sold|sale)/i, channel: 'market', dir: 'sell' },
-    { re: /trade.*(complete|finish|accept)/i, channel: 'trade', dir: null },
     { re: /(item|items).*(send|sent)|send.*item/i, channel: 'send', dir: 'sell', noMoney: true },
     { re: /(item|items).*(receive|received)|receive.*item/i, channel: 'recv', dir: 'buy', noMoney: true }
   ];
@@ -330,8 +329,51 @@
     return Object.entries(log).map(([id, e]) => Object.assign({ id }, e));
   }
 
+
+  /* ===================== trades: several log entries share parsed_trade_id ===================== */
+  function tradeIdOf(e) {
+    const d = e.data || {};
+    if (d.parsed_trade_id != null) return String(d.parsed_trade_id);
+    const m = String(d.trade_id || '').match(/ID=(\d+)/);
+    return m ? m[1] : null;
+  }
+  function tradeMoney(d) {
+    for (const k of ['money', 'amount', 'money_gained', 'money_spent', 'cost', 'value', 'total']) {
+      if (typeof d[k] === 'number') return d[k];
+    }
+    for (const k of Object.keys(d)) {
+      if (['user', 'trade_id', 'parsed_trade_id', 'uid'].includes(k)) continue;
+      if (typeof d[k] === 'number') return d[k];
+    }
+    return null;
+  }
+  // parts: { entryId: { title, ts, data } } per trade. Returns tx objects for completed trades.
+  function buildTradeTxs(tradeParts, nameOf) {
+    const out = {};
+    Object.entries(tradeParts || {}).forEach(([tid, tp]) => {
+      const parts = Object.values(tp.parts || {});
+      const done = parts.find(p => /^Trade completed/i.test(p.title));
+      if (!done) return;
+      const of = re => parts.filter(p => re.test(p.title));
+      const itemsOf = re => of(re).reduce((a, p) => a.concat(pickItems(p.data || {})), []);
+      const moneyOf = re => { let found = false, sum = 0; of(re).forEach(p => { const m = tradeMoney(p.data || {}); if (m != null) { found = true; sum += m; } }); return found ? sum : null; };
+      const inItems = itemsOf(/^Trade items incoming/i), outItems = itemsOf(/^Trade items outgoing/i);
+      let dir = null, items = inItems.concat(outItems), amount = null;
+      if (inItems.length && !outItems.length) { dir = 'buy'; items = inItems; amount = moneyOf(/^Trade money outgoing/i); }
+      else if (outItems.length && !inItems.length) { dir = 'sell'; items = outItems; amount = moneyOf(/^Trade money incoming/i); }
+      if (!items.length) return;
+      items.forEach(i => { i.name = i.name || nameOf(i.id); });
+      out['trade:' + tid] = {
+        id: 'trade:' + tid, ts: done.ts, dir, channel: 'trade', cp: (done.data || {}).user != null ? (done.data || {}).user : null,
+        tradeId: Number(tid), items, amount, src: amount != null ? 'log' : null, locked: false,
+        title: 'Trade completed'
+      };
+    });
+    return out;
+  }
+
   /* ===================== state ===================== */
-  let state = sget('state', null) || { v: 1, me: null, lastSync: 0, txs: {}, receipts: {}, seenTitles: {} };
+  let state = sget('state', null) || { v: 1, me: null, lastSync: 0, txs: {}, receipts: {}, seenTitles: {}, seenExamples: {}, tradeParts: {} };
   let itemNames = sget('items', null) || {};
   let lastRaw = [];
   let lastSyncInfo = null;
@@ -382,7 +424,7 @@
     let pages = 0, added = 0, newest = state.lastSync || 0;
     lastRaw = [];
     lastSyncInfo = { from, topKeys: Object.keys(j || {}), logType: Array.isArray(j && j.log) ? 'array' : typeof (j && j.log), entries: 0, pages: 0, firstRaw: [] };
-    while (j && pages++ < 30) {
+    while (j && pages++ < 100) {
       const arr = normalizeLog(j.log);
       lastSyncInfo.pages = pages; lastSyncInfo.entries += arr.length;
       arr.slice(0, 8 - lastSyncInfo.firstRaw.length).forEach(e => lastSyncInfo.firstRaw.push(e));
@@ -390,6 +432,17 @@
         const title = (e.details && e.details.title) || e.title || '';
         if (title) state.seenTitles[title] = (state.seenTitles[title] || 0) + 1;
         if (e.timestamp > newest) newest = e.timestamp;
+        state.seenExamples = state.seenExamples || {};
+        if (title && !state.seenExamples[title] && Object.keys(state.seenExamples).length < 80 && !/^(Crime|Forums|Message|Faction newsletter)/i.test(title)) state.seenExamples[title] = e;
+        if (/^Trade /i.test(title)) {
+          const tid = tradeIdOf(e);
+          if (tid) {
+            state.tradeParts = state.tradeParts || {};
+            const tp = state.tradeParts[tid] = state.tradeParts[tid] || { parts: {} };
+            tp.parts[e.id] = { title, ts: e.timestamp, data: e.data || {} };
+          }
+          return;
+        }
         const rule = LOG_RULES.find(r => r.re.test(title));
         if (!rule) return;
         if (lastRaw.length < 6) lastRaw.push(e);
@@ -401,7 +454,18 @@
       if (!next || !arr.length) break;
       j = await apiUrl(next);
     }
-    state.lastSync = newest; save();
+    const capped = pages > 100;
+    const built = buildTradeTxs(state.tradeParts, nameOf);
+    Object.entries(built).forEach(([id, tx]) => {
+      const old = state.txs[id];
+      if (old && old.locked) return;
+      if (!old) added++;
+      state.txs[id] = tx;
+    });
+    // The log arrives newest-first, so if we stopped at the page cap, older entries were not read: keep the old cursor.
+    if (!capped) state.lastSync = newest;
+    save();
+    if (capped) throw new Error('Stopped after 100 pages. ' + added + ' record(s) saved so far. Lower the look-back days and use Re-sync from start.');
     return added;
   }
 
@@ -602,7 +666,7 @@
       }
       else if (act === 'clearkey') { sset('apikey', ''); state.me = null; save(); ui.msg = 'Key removed from this device.'; }
       else if (act === 'sync' || act === 'resync') {
-        if (act === 'resync') { state.lastSync = 0; state.seenTitles = {}; save(); }
+        if (act === 'resync') { state.lastSync = 0; state.seenTitles = {}; state.seenExamples = {}; state.tradeParts = {}; save(); }
         sset('startDays', Number(val('tfp-days')) || 30);
         { const f = parseFloat(val('tfp-fee')); sset('marketFee', isNaN(f) ? 5 : f); }
         ui.busy = true; render();
@@ -628,7 +692,7 @@
       else if (act === 'debug') {
         const tb = document.querySelector('#topHeaderBanner .toolbar, .header-buttons-wrapper');
         const hdr = tb ? tb.outerHTML.replace(/<svg[\s\S]*?<\/svg>/g, '<svg/>').replace(/<form[\s\S]*?<\/form>/g, '<form/>') : null;
-        const sample = { syncInfo: lastSyncInfo, rawEntries: lastRaw, seenTitles: state.seenTitles, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), header: hdr ? hdr.slice(0, 6000) : null, headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
+        const sample = { syncInfo: lastSyncInfo, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), header: hdr ? hdr.slice(0, 6000) : null, headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
         const ok = await copyText(JSON.stringify(sample, null, 1));
         ui.msg = ok ? 'Debug sample copied. Paste it to Claude.' : 'Could not copy. Sync first, then try again.';
       }
@@ -720,7 +784,7 @@
   }
 
   if (typeof module !== 'undefined') {
-    module.exports = { computeFlips, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
+    module.exports = { buildTradeTxs, tradeIdOf, computeFlips, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
   }
   if (typeof document !== 'undefined' && !globalThis.__TFP_TEST) init();
 })();

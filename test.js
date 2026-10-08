@@ -62,5 +62,17 @@ const fx = { a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 1, qty: 1 }], amount
 const fr = T.computeFlips(fx, { marketFee: 0.05 });
 eq('market fee applied', fr.flips.find(f => f.tx.id === 'b').profit, 50);
 eq('bazaar no fee', fr.flips.find(f => f.tx.id === 'd').profit, 100);
+// trades from real log shapes (money/items-outgoing field names are assumed until seen live)
+const mk = (id, title, data) => [id, { title, ts: 100, data }];
+const tp = { '13481192': { parts: Object.fromEntries([
+  mk('a', 'Trade accepted', { user: 1, parsed_trade_id: 13481192 }),
+  mk('b', 'Trade items incoming', { user: 1, parsed_trade_id: 13481192, items: [{ id: 269, uid: null, qty: 1000 }] }),
+  mk('c', 'Trade money outgoing', { user: 1, parsed_trade_id: 13481192, money: 5000000 }),
+  mk('d', 'Trade completed', { user: 1, parsed_trade_id: 13481192 })]) },
+  '2': { parts: Object.fromEntries([mk('e', 'Trade items incoming', { items: [{ id: 5, qty: 1 }] })]) } };
+const bt = T.buildTradeTxs(tp, id => 'N' + id);
+eq('trade built only when completed', Object.keys(bt), ['trade:13481192']);
+eq('trade buy parsed', [bt['trade:13481192'].dir, bt['trade:13481192'].amount, bt['trade:13481192'].items[0].qty, bt['trade:13481192'].items[0].name], ['buy', 5000000, 1000, 'N269']);
+eq('trade id from link', T.tradeIdOf({ data: { trade_id: '[<a href = "/trade.php#step=view&ID=13481952">view</a>]' } }), '13481952');
 console.log(fail ? fail + ' FAILED' : 'ALL PASSED');
 process.exit(fail ? 1 : 0);
