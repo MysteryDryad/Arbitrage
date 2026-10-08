@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.40-beta
+// @version      0.1.41-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -748,7 +748,15 @@
       h += `<div class="tfp-msg tfp-warn"><a href="#" data-act="toggle" data-v="showPending">⚠️ ${res.pending.length} need${res.pending.length === 1 ? 's' : ''} a value ${ui.showPending ? '▾' : '▸'}</a></div>`;
       if (ui.showPending) h += pendingHtml();
     }
-    if (flips.length > done.length) h += `<div class="tfp-sub tfp-warn">${flips.length - done.length} sale(s) not counted: no matching buy, or a buy with no value.</div>`;
+    const skipped = flips.filter(f => f.profit == null);
+    if (skipped.length) {
+      h += `<div class="tfp-sub tfp-warn"><a href="#" data-act="toggle" data-v="showSkipped">${ui.showSkipped ? '▾' : '▸'} ${skipped.length} sale${skipped.length === 1 ? '' : 's'} not counted</a> (no cost to subtract)</div>`;
+      if (ui.showSkipped) skipped.forEach(f => {
+        const tx = f.tx;
+        const why = f.unmatched ? f.unmatched + ' unit(s) have no matching buy: bought before the sync window, or got another way. A longer look-back (Settings, then Re-sync from start) may find the buy.' : 'The items came from a buy or receive with no value. Find it in Stock or the sends and set a value.';
+        h += `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}</span><span class="tfp-warn">not counted</span></div><div class="tfp-sub">${itemSummary(tx)} · sold for ${fmt(netAmt(tx))}</div><div class="tfp-sub tfp-warn">${why}</div></div>`;
+      });
+    }
     if (!Object.keys(state.txs).length) return h + '<div class="tfp-msg">Nothing imported yet. Tap Sync to read your Torn log.</div>';
     if (!flips.length) return h + '<div class="tfp-msg">No flips in this time range. Flips appear once you sell items you bought.</div>';
     // One closed row per category; opening it lists that category's sales.
