@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.29-beta
+// @version      0.1.30-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -655,7 +655,7 @@
       if (!fs.length && !pend.length) return;
       const cp = fs.reduce((a, f) => a + (f.profit || 0), 0), key = 'cat_' + ch;
       h += `<div class="tfp-row"><div class="tfp-top"><a href="#" data-act="toggle" data-v="${key}">${ui[key] ? '▾' : '▸'} ${label} · ${fs.length + pend.length} sale${fs.length + pend.length === 1 ? '' : 's'}${pend.length ? ' · <span class="tfp-warn">' + pend.length + ' need a value</span>' : ''}</a><b class="${pnlCls(cp)}">${fmt(cp)}</b></div>`;
-      if (ui[key]) pend.forEach(tx => { h += `<div class="tfp-gap"></div><div class="tfp-top"><span>${fdate(tx.ts)} ⚠️</span><span class="tfp-warn">needs value</span></div><div class="tfp-sub">${itemSummary(tx)}${tx.cp ? ' · ' + esc(tx.cp) : ''}</div>` + editBox(tx); });
+      if (ui[key]) pend.forEach(tx => { h += `<div class="tfp-gap"></div><div class="tfp-top"><span>${fdate(tx.ts)} ⚠️</span><span class="tfp-warn">needs value</span></div><div class="tfp-sub">${itemSummary(tx)}${tx.cp ? ' · player ' + esc(tx.cp) : ''}${tx.title ? ' · ' + esc(tx.title) : ''}</div>` + editBox(tx); });
       if (ui[key]) fs.forEach(f => {
         const tx = f.tx;
         let flag = '';
@@ -695,12 +695,12 @@
     const res = computeFlips(state.txs, flipOpts());
     if (!res.pending.length) return '<div class="tfp-msg">Nothing needs a value. 🎉</div>';
     return res.pending.sort((a, b) => b.ts - a.ts).map(tx => {
-      let h = `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}</span><span>⚠️</span></div><div class="tfp-sub">${itemSummary(tx)}${tx.cp ? ' · ' + esc(tx.cp) : ''}</div>`;
+      let h = `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}</span><span>⚠️</span></div><div class="tfp-sub">${itemSummary(tx)}${tx.cp ? ' · player ' + esc(tx.cp) : ''}${tx.title ? ' · ' + esc(tx.title) : ''}</div>`;
       if (!tx.dir) h += `<div class="tfp-gap"></div><button class="tfp-b" data-act="dir" data-id="${esc(tx.id)}" data-v="sell">I sold these</button> <button class="tfp-b" data-act="dir" data-id="${esc(tx.id)}" data-v="buy">I bought these</button>`;
       else {
         h += editBox(tx);
         const want = tx.dir === 'sell' ? 'in' : 'out';
-        const sug = Object.entries(state.moneyEvents || {}).filter(([, m]) => m.dir === want && Math.abs(m.ts - tx.ts) < 86400 && (tx.cp == null || m.cp == null || String(m.cp) === String(tx.cp))).slice(0, 3);
+        const sug = Object.entries(state.moneyEvents || {}).filter(([, m]) => m.dir === want && Math.abs(m.ts - tx.ts) < 6 * 3600 && tx.cp != null && m.cp != null && String(m.cp) === String(tx.cp)).slice(0, 3);
         if (tx.channel === 'send' || tx.channel === 'recv') sug.forEach(([mid, m]) => { h += `<div class="tfp-gap"></div><button class="tfp-b" data-act="usemoney" data-id="${esc(tx.id)}" data-v="${esc(mid)}">Use ${fmt(m.amount)} ${want === 'in' ? 'received' : 'sent'} ${fdate(m.ts)}</button>`; });
       }
       return h + '</div>';
