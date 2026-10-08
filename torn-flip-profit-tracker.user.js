@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.64-beta
+// @version      0.1.65-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -862,13 +862,14 @@
     const links = text.split(/\s+/).filter(t => /^https?:\/\//i.test(t));
     if (!links.length) throw new Error('Paste a receipt link or copied receipt data.');
     let attached = 0, review = 0, failed = [], notes = [];
+    ui.failedLinks = [];
     for (const url of links) {
       try {
         const rc = await fetchReceipt(url);
         const msg = await handleReceipt(rc);
         if (rc.source === 'pawnhub-balance') { notes.push(msg); continue; }
         if (/attached/i.test(msg)) attached++; else review++;
-      } catch (e) { failed.push(url + ' (' + (e.message || e) + ')'); }
+      } catch (e) { failed.push(url + ' (' + (e.message || e) + ')'); ui.failedLinks.push(url); }
     }
     if (notes.length && !failed.length && !attached && !review) return notes.join(' ');
     if (links.length === 1 && !failed.length) return review ? 'Pick which trade this receipt belongs to.' : 'Receipt attached to a matching trade.';
@@ -1029,6 +1030,7 @@
   }
   function receiptsHtml() {
     let h = '<div class="tfp-sub">Easiest: open a receipt (Weaver, TornExchange or PawnHub), tap "Add to profit tracker" on that page, and repeat for each receipt. Then tap "Process saved receipts" here. On PawnHub\'s Balance page, tap the button once and then Process: it values all your matching sends at once. Pasting links only works for sites that don\'t build the page after it loads.</div><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-rc" placeholder="https://tornexchange.com/receipt/..."></textarea><div class="tfp-gap"></div><button class="tfp-b" data-act="addrc">Add receipt</button>';
+    if (ui.failedLinks && ui.failedLinks.length) h += '<div class="tfp-msg">Could not read automatically. Open, and it adds itself (then come back here): ' + ui.failedLinks.map((u, i) => '<a href="' + esc(u.split('#')[0]) + '#tfp-add" target="_blank" rel="noopener">receipt ' + (i + 1) + '</a>').join(' · ') + '</div>';
     const inbox = hasGM ? sget('inbox', []) : [];
     if (inbox.length) h += ` <button class="tfp-b" data-act="inbox">Process ${inbox.length} saved receipt(s)</button>`;
     if (ui.pendingReceipt) {
@@ -1084,6 +1086,27 @@
   }
   const val = id => { const el = document.getElementById(id); return el ? el.value : ''; };
 
+  let inboxBusy = false;
+  async function processInbox() {
+    if (inboxBusy) return '';
+    inboxBusy = true;
+    try {
+      const inbox = sget('inbox', []), keep = [];
+      let last = '';
+      for (const rc of inbox) {
+        try { last = await handleReceipt(rc); }
+        catch (e) { last = String(e.message || e); if (!/match item name/i.test(last)) keep.push(rc); } // unreadable names are a stale parse: drop it and re-add from the page
+      }
+      sset('inbox', keep);
+      return last || 'Inbox empty.';
+    } finally { inboxBusy = false; }
+  }
+  // Receipts saved from a receipt page are picked up when you come back to Torn.
+  async function autoInbox() {
+    if (!hasGM || inboxBusy || !sget('inbox', []).length) return;
+    try { ui.msg = await processInbox(); } catch (e) { ui.msg = String(e.message || e); }
+    if (ui.msg) { toast(ui.msg.slice(0, 160)); if (ui.open) render(); }
+  }
   async function onAction(e) {
     const el = e.target.closest('[data-act]');
     if (!el) return;
@@ -1177,16 +1200,7 @@
       else if (act === 'addrc') { ui.msg = await addReceiptInput(val('tfp-rc')); }
       else if (act === 'attach') { attachReceipt(ui.pendingReceipt, state.txs[id]); ui.pendingReceipt = null; ui.candidates = []; ui.msg = 'Receipt attached.'; }
       else if (act === 'newtrade') { createFromReceipt(ui.pendingReceipt); ui.pendingReceipt = null; ui.candidates = []; ui.msg = 'Added as a new trade.'; }
-      else if (act === 'inbox') {
-        const inbox = sget('inbox', []), keep = [];
-        let last = '';
-        for (const rc of inbox) {
-          try { last = await handleReceipt(rc); }
-          catch (e) { last = String(e.message || e); if (!/match item name/i.test(last)) keep.push(rc); } // unreadable names are a stale parse: drop it and re-add from the page
-        }
-        sset('inbox', keep);
-        ui.msg = last || 'Inbox empty.';
-      }
+      else if (act === 'inbox') ui.msg = await processInbox();
       else if (act === 'export') { const t = document.getElementById('tfp-bk'); t.value = JSON.stringify(state); await copyText(t.value); ui.msg = 'Exported (also copied).'; render(); document.getElementById('tfp-bk').value = JSON.stringify(state); return; }
       else if (act === 'import') {
         const incoming = JSON.parse(val('tfp-bk'));
@@ -1292,10 +1306,24 @@
       }
       mountReceiptButton();
       setInterval(mountReceiptButton, 3000);
+      if (/tfp-add/.test(location.hash)) { // opened from the tracker: add this receipt by itself once it has loaded
+        let tries = 0; const t = setInterval(() => {
+          const rc = parseReceiptDoc(document, location.href.split('#')[0]);
+          if (rc && hasGM) {
+            clearInterval(t);
+            const inbox = sget('inbox', []).filter(x => x.url !== rc.url); inbox.push(rc); sset('inbox', inbox);
+            const b = document.createElement('div');
+            b.textContent = '✅ Added to Arbitrage. Go back to Torn and it will be picked up.';
+            b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#1b5e20;color:#fff;font:14px Arial,sans-serif;padding:10px;text-align:center';
+            document.body.appendChild(b);
+          } else if (++tries > 30) { clearInterval(t); toast("Couldn't read this receipt. Let the page finish loading, then tap the 💰 button."); }
+        }, 1000);
+      }
     } else {
       mountTornUI();
       setInterval(mountTornUI, 2500);
-      bootP.then(() => setTimeout(autoCheckInventory, 20000));
+      bootP.then(() => { setTimeout(autoInbox, 2500); setTimeout(autoCheckInventory, 20000); });
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) bootP.then(autoInbox); });
       setInterval(autoCheckInventory, 5 * 60 * 1000);
     }
   }
