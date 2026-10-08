@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.23-beta
+// @version      0.1.24-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -510,7 +510,7 @@
       await sleep(650);
       j = await fetchPage(to);
     }
-    } catch (e) { state.resume = { from, to: curTo, newest }; save(); throw e; }
+    } catch (e) { state.resume = { from, to: curTo, newest }; state.lastError = { at: Math.floor(Date.now() / 1000), msg: String(e.message || e), page: pages }; save(); throw e; }
     const capped = pages > 100;
     const built = buildTradeTxs(state.tradeParts, nameOf);
     Object.entries(built).forEach(([id, tx]) => {
@@ -793,7 +793,7 @@
       }
       else if (act === 'clearkey') { sset('apikey', ''); state.me = null; save(); ui.msg = 'Key removed from this device.'; }
       else if (act === 'sync' || act === 'resync') {
-        if (act === 'resync') { state.lastSync = 0; state.seenTitles = {}; state.seenExamples = {}; state.tradeParts = {}; state.moneyEvents = {}; state.resume = null; save(); }
+        if (act === 'resync') { state.lastSync = 0; state.seenTitles = {}; state.tradeParts = {}; state.moneyEvents = {}; state.resume = null; save(); }
         sset('startDays', Number(val('tfp-days')) || 30);
         { const f = parseFloat(val('tfp-fee')); sset('marketFee', isNaN(f) ? 5 : f); }
         ui.busy = true; render();
@@ -819,7 +819,8 @@
       else if (act === 'debug') {
         const tb = document.querySelector('#topHeaderBanner .toolbar, .header-buttons-wrapper');
         const hdr = tb ? tb.outerHTML.replace(/<svg[\s\S]*?<\/svg>/g, '<svg/>').replace(/<form[\s\S]*?<\/form>/g, '<form/>') : null;
-        const sample = { syncInfo: lastSyncInfo, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), header: hdr ? hdr.slice(0, 6000) : null, headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
+        let cats = null; try { cats = await api('torn/logcategories'); } catch (e) { cats = String(e.message || e); }
+        const sample = { syncInfo: lastSyncInfo, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), header: hdr ? hdr.slice(0, 6000) : null, headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
         const ok = await copyText(JSON.stringify(sample, null, 1));
         ui.msg = ok ? 'Debug sample copied. Paste it to Claude.' : 'Could not copy. Sync first, then try again.';
       }
