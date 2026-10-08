@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.37-beta
+// @version      0.1.38-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -794,7 +794,9 @@
   function pendingHtml() {
     const res = computeFlips(state.txs, flipOpts());
     if (!res.pending.length) return '<div class="tfp-msg">Nothing needs a value. 🎉</div>';
-    return res.pending.sort((a, b) => b.ts - a.ts).map(tx => {
+    const giftable = res.pending.filter(t => t.channel === 'send' || t.channel === 'recv');
+    const bulk = giftable.length > 3 ? `<button class="tfp-b" data-act="giftall">${ui.armGift ? 'Tap again to confirm: ' + giftable.length + ' set to $0' : 'Mark all ' + giftable.length + ' sends/receives as gifts ($0)'}</button>` : '';
+    return bulk + res.pending.sort((a, b) => b.ts - a.ts).map(tx => {
       let h = `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}</span><span>⚠️</span></div><div class="tfp-sub">${itemSummary(tx)}${tx.cp ? ' · player ' + esc(tx.cp) : ''}${tx.title ? ' · ' + esc(tx.title) : ''}</div>`;
       if (!tx.dir) h += `<div class="tfp-gap"></div><button class="tfp-b" data-act="dir" data-id="${esc(tx.id)}" data-v="sell">I sold these</button> <button class="tfp-b" data-act="dir" data-id="${esc(tx.id)}" data-v="buy">I bought these</button>`;
       else {
@@ -868,6 +870,7 @@
     const act = el.dataset.act, id = el.dataset.id, v = el.dataset.v;
     if (act === 'edit' || act === 'toggle') e.preventDefault();
     ui.msg = '';
+    if (act !== 'giftall') ui.armGift = false;
     try {
       if (act === 'close') ui.open = false, document.getElementById('tfp-wrap').classList.remove('open');
       else if (act === 'tab') { ui.tab = v; ui.editing = null; }
@@ -880,6 +883,12 @@
         const n = firstNumber(val('tfp-val-' + id));
         if (n == null) throw new Error('Enter a number.');
         const tx = state.txs[id]; tx.amount = n; tx.src = 'manual'; tx.locked = true; ui.editing = null; save();
+      }
+      else if (act === 'giftall') {
+        if (!ui.armGift) { ui.armGift = true; render(); return; }
+        ui.armGift = false;
+        computeFlips(state.txs, flipOpts()).pending.filter(t => t.channel === 'send' || t.channel === 'recv').forEach(t => { const x = state.txs[t.id]; x.amount = 0; x.src = 'manual'; x.locked = true; });
+        save();
       }
       else if (act === 'gift') { const tx = state.txs[id]; tx.amount = 0; tx.src = 'manual'; tx.locked = true; save(); }
       else if (act === 'usemoney') {
