@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.66-beta
+// @version      0.1.67-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -861,21 +861,36 @@
       if (!r || r.status >= 400) throw new Error('TornW3B answered HTTP ' + (r && r.status) + (r && r.status === 403 ? ' (access denied: the trades endpoint may need Premium)' : ''));
       try { return JSON.parse(r.text); } catch (e) { throw new Error('TornW3B sent something I could not read.'); }
     };
-    const list = (await call(base)).trades || [];
-    const w = state.w3b = state.w3b || { done: {}, miss: {} };
+    const w = state.w3b = state.w3b || { done: {}, miss: {}, at: {} };
+    w.at = w.at || {};
     const now = Math.floor(Date.now() / 1000);
-    const todo = list.filter(t => t && t.id && !w.done[t.id] && !(w.miss[t.id] > now - 6 * 3600));
-    let attached = 0, missing = 0;
+    let budget = 40, attached = 0, missing = 0, left = 0, pages = 0, to = null;
+    const seen = new Set();
     try {
-      for (const t of todo.slice(0, 40)) {
+      // The list holds 100 receipts, newest first; step back through older pages using the oldest receipt's time.
+      while (pages++ < 30) {
+        const list = ((await call(base + (to ? '?to=' + to : ''))).trades || []).filter(t => t && t.id && !seen.has(t.id));
+        if (!list.length) break;
+        list.forEach(t => seen.add(t.id));
+        for (const t of list) {
+          if (w.done[t.id] || w.miss[t.id] > now - 6 * 3600) continue;
+          if (budget <= 0) { left++; continue; }
+          budget--; await sleep(900);
+          const r = await call(base + '/' + encodeURIComponent(t.id));
+          if (r && r.created_at) w.at[t.id] = r.created_at;
+          const rc = rcFromWeaverApi(r);
+          const tx = rc && Object.values(state.txs).find(x => x.tradeId && String(x.tradeId) === String(rc.tradeId));
+          if (tx) { attachReceipt(rc, tx); w.done[t.id] = 1; attached++; } else { w.miss[t.id] = now; missing++; }
+        }
+        if (list.length < 100) break;
+        const last = list[list.length - 1];
+        if (!w.at[last.id]) { await sleep(900); const r = await call(base + '/' + encodeURIComponent(last.id)); if (r && r.created_at) w.at[last.id] = r.created_at; }
+        if (!w.at[last.id] || w.at[last.id] === to) break;
+        to = w.at[last.id];
         await sleep(900);
-        const rc = rcFromWeaverApi(await call(base + '/' + encodeURIComponent(t.id)));
-        const tx = rc && Object.values(state.txs).find(x => x.tradeId && String(x.tradeId) === String(rc.tradeId));
-        if (tx) { attachReceipt(rc, tx); w.done[t.id] = 1; attached++; } else { w.miss[t.id] = now; missing++; }
       }
     } finally { save(); }
-    const left = Math.max(0, todo.length - 40);
-    return 'Weaver: ' + attached + ' receipt(s) attached' + (missing ? ', ' + missing + ' not found in your log (older than your history, or not synced yet)' : '') + (left ? ', ' + left + ' more waiting: tap again' : '') + (!todo.length ? ' (nothing new)' : '') + '.';
+    return 'Weaver: ' + attached + ' receipt(s) attached' + (missing ? ', ' + missing + ' not found in your log (older than your history, or not synced yet)' : '') + (left ? ', ' + left + ' more waiting: tap again' : '') + (!attached && !missing && !left ? ' (nothing new)' : '') + '.';
   }
   async function handleReceipt(rc) {
     if (rc.source === 'pawnhub-balance') return applyPawnHubBalance(rc);
