@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.52-beta
+// @version      0.1.53-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -574,6 +574,21 @@
   }
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  // Rebuild the per-entry send/receive records from the stored log entries (no network needed).
+  function rebuildSendTxs() {
+    let added = 0;
+    const sends = buildSendTxs(state.sendParts, nameOf);
+    Object.keys(state.txs).forEach(id => { // drop earlier per-entry send/receive records and stale batches; keep ones you valued
+      const t = state.txs[id];
+      if ((t.channel === 'send' || t.channel === 'recv') && !t.locked && (id.indexOf('log:') === 0 || (id.indexOf('send:') === 0 && !sends[id]))) delete state.txs[id];
+    });
+    Object.entries(sends).forEach(([id, tx]) => {
+      const old = state.txs[id];
+      if (!old) added++;
+      state.txs[id] = old && old.locked && !(old.count > 1) ? Object.assign({}, tx, { amount: old.amount, src: old.src, gift: old.gift, locked: true }) : tx; // a value entered for an old merged batch no longer fits one entry: dropped
+    });
+    return added;
+  }
   async function syncLog() {
     await ensureMe(); await ensureItems();
     const startDays = Number(sget('startDays', 30)) || 30;
@@ -655,16 +670,7 @@
       if (!old) added++;
       state.txs[id] = tx;
     });
-    const sends = buildSendTxs(state.sendParts, nameOf);
-    Object.keys(state.txs).forEach(id => { // drop earlier per-entry send/receive records and stale batches; keep ones you valued
-      const t = state.txs[id];
-      if ((t.channel === 'send' || t.channel === 'recv') && !t.locked && (id.indexOf('log:') === 0 || (id.indexOf('send:') === 0 && !sends[id]))) delete state.txs[id];
-    });
-    Object.entries(sends).forEach(([id, tx]) => {
-      const old = state.txs[id];
-      if (!old) added++;
-      state.txs[id] = old && old.locked && !(old.count > 1) ? Object.assign({}, tx, { amount: old.amount, src: old.src, gift: old.gift, locked: true }) : tx; // a value entered for an old merged batch no longer fits one entry: dropped
-    });
+    added += rebuildSendTxs();
     // The log arrives newest-first, so if we stopped at the page cap, older entries were not read: keep the old cursor.
     if (!capped) { state.lastSync = newest; state.syncedAt = Math.floor(Date.now() / 1000); state.resume = null; }
     else state.resume = { from, to: curTo, newest };
@@ -701,6 +707,7 @@
   }
   async function applyPawnHubBalance(rc) {
     await ensureItems();
+    rebuildSendTxs();
     const byName = {}; Object.entries(itemNames).forEach(([id, n]) => { byName[String(n).toLowerCase()] = Number(id); });
     const hits = matchPawnHubEvents(rc.events, state.txs, byName);
     hits.forEach(({ txId, event }) => {
@@ -713,7 +720,18 @@
     save();
     const olderCount = earliest ? Object.values(state.txs).filter(t => t.channel === 'send' && t.dir === 'sell' && t.amount == null && t.ts < earliest - 600).length : 0;
     const itemEvents = itemEv.length;
-    return 'PawnHub balance: matched ' + hits.length + ' of ' + itemEvents + ' item events to your sends' + (itemEvents > hits.length ? ' (the rest have no send with the same item, quantity and time, or the send is not in your log yet)' : '') + '. The Balance page starts ' + (earliest ? fdate(earliest) : '?') + (olderCount ? ', so ' + olderCount + ' older send(s) have no PawnHub entry (see Profit, needs a value).' : '.');
+    let why = '';
+    if (hits.length < itemEvents) {
+      const matched = new Set(hits.map(h => h.event));
+      const sends1 = Object.values(state.txs).filter(t => t.channel === 'send' && t.dir === 'sell' && t.items && t.items.length === 1);
+      const miss = itemEv.filter(e => !matched.has(e)).slice(0, 3).map(e => {
+        const id = byName[String(e.item).toLowerCase()];
+        const same = sends1.filter(t => t.items[0].id === id && t.items[0].qty === e.qty).sort((a, b) => Math.abs(a.ts - e.ts) - Math.abs(b.ts - e.ts))[0];
+        return e.qty + '× ' + e.item + ' at ' + fdate(e.ts) + (same ? ' (nearest send with that item and quantity: ' + fdate(same.ts) + (same.src === 'receipt' ? ', already valued' : '') + ')' : ' (no send with that item and quantity)');
+      });
+      why = ' You have ' + sends1.length + ' single-item sends. Unmatched examples: ' + miss.join('; ') + '.';
+    }
+    return 'PawnHub balance: matched ' + hits.length + ' of ' + itemEvents + ' item events to your sends' + (itemEvents > hits.length ? ' (the rest have no send with the same item, quantity and time, or the send is not in your log yet)' : '') + '. The Balance page starts ' + (earliest ? fdate(earliest) : '?') + (olderCount ? ', so ' + olderCount + ' older send(s) have no PawnHub entry (see Profit, needs a value).' : '.') + why;
   }
   async function handleReceipt(rc) {
     if (rc.source === 'pawnhub-balance') return applyPawnHubBalance(rc);
