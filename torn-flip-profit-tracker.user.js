@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.51-beta
+// @version      0.1.52-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -707,9 +707,13 @@
       const t = state.txs[txId];
       t.items[0].price = event.unit; t.amount = event.total; t.gift = false; t.src = 'receipt'; t.locked = true; t.receiptUrl = rc.url;
     });
+    const itemEv = rc.events.filter(e => byName[String(e.item).toLowerCase()]);
+    const earliest = itemEv.length ? Math.min.apply(null, itemEv.map(e => e.ts)) : null;
+    if (earliest && (!state.pawnhubSince || earliest < state.pawnhubSince)) state.pawnhubSince = earliest;
     save();
-    const itemEvents = rc.events.filter(e => byName[String(e.item).toLowerCase()]).length;
-    return 'PawnHub balance: matched ' + hits.length + ' of ' + itemEvents + ' item events to your sends' + (itemEvents > hits.length ? ' (the rest have no send with the same item, quantity and time, or the send is not in your log yet)' : '') + '.';
+    const olderCount = earliest ? Object.values(state.txs).filter(t => t.channel === 'send' && t.dir === 'sell' && t.amount == null && t.ts < earliest - 600).length : 0;
+    const itemEvents = itemEv.length;
+    return 'PawnHub balance: matched ' + hits.length + ' of ' + itemEvents + ' item events to your sends' + (itemEvents > hits.length ? ' (the rest have no send with the same item, quantity and time, or the send is not in your log yet)' : '') + '. The Balance page starts ' + (earliest ? fdate(earliest) : '?') + (olderCount ? ', so ' + olderCount + ' older send(s) have no PawnHub entry (see Profit, needs a value).' : '.');
   }
   async function handleReceipt(rc) {
     if (rc.source === 'pawnhub-balance') return applyPawnHubBalance(rc);
@@ -876,7 +880,9 @@
     if (!res.pending.length) return '<div class="tfp-msg">Nothing needs a value. 🎉</div>';
     const giftable = res.pending.filter(t => t.channel === 'send' || t.channel === 'recv');
     const bulk = giftable.length > 3 ? `<button class="tfp-b" data-act="giftall">${ui.armGift ? 'Tap again to confirm: ' + giftable.length + ' set to $0' : 'Mark all ' + giftable.length + ' sends/receives as gifts ($0)'}</button>` : '';
-    return bulk + res.pending.sort((a, b) => b.ts - a.ts).map(tx => {
+    const older = state.pawnhubSince ? res.pending.filter(t => t.channel === 'send' && t.dir === 'sell' && t.ts < state.pawnhubSince - 600) : [];
+    const olderBtn = older.length ? `<button class="tfp-b" data-act="giftolder">${ui.armOlder ? 'Tap again to confirm: ' + older.length + ' not counted' : older.length + ' sends from before PawnHub Balance starts: leave out of profit'}</button> ` : '';
+    return olderBtn + bulk + res.pending.sort((a, b) => b.ts - a.ts).map(tx => {
       let h = `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}</span><span>⚠️</span></div><div class="tfp-sub">${itemSummary(tx)}${tx.cp ? ' · player ' + esc(tx.cp) : ''}${tx.title ? ' · ' + esc(tx.title) : ''}</div>`;
       if (!tx.dir) h += `<div class="tfp-gap"></div><button class="tfp-b" data-act="dir" data-id="${esc(tx.id)}" data-v="sell">I sold these</button> <button class="tfp-b" data-act="dir" data-id="${esc(tx.id)}" data-v="buy">I bought these</button>`;
       else {
@@ -949,6 +955,7 @@
     if (act === 'edit' || act === 'toggle' || act === 'removestock' || act === 'restorestock') e.preventDefault();
     ui.msg = '';
     if (act !== 'giftall') ui.armGift = false;
+    if (act !== 'giftolder') ui.armOlder = false;
     if (act !== 'removestock') ui.armRemove = null;
     try {
       if (act === 'close') ui.open = false, document.getElementById('tfp-wrap').classList.remove('open');
@@ -976,6 +983,12 @@
         const n = firstNumber(val('tfp-val-' + id));
         if (n == null) throw new Error('Enter a number.');
         const tx = state.txs[id]; tx.amount = n; tx.gift = false; tx.src = 'manual'; tx.locked = true; ui.editing = null; save();
+      }
+      else if (act === 'giftolder') {
+        if (!ui.armOlder) { ui.armOlder = true; render(); return; }
+        ui.armOlder = false;
+        computeFlips(state.txs, flipOpts()).pending.filter(t => t.channel === 'send' && t.dir === 'sell' && state.pawnhubSince && t.ts < state.pawnhubSince - 600).forEach(t => { const x = state.txs[t.id]; x.amount = 0; x.gift = true; x.src = 'manual'; x.locked = true; });
+        save();
       }
       else if (act === 'giftall') {
         if (!ui.armGift) { ui.armGift = true; render(); return; }
