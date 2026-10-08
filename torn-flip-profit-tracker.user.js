@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.43-beta
+// @version      0.1.44-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -243,7 +243,7 @@
 
   /* ===================== ledger engine (pure) ===================== */
   // A send valued at $0 by hand is a gift too (covers gifts saved before the gift flag existed).
-  const isGift = tx => tx.dir === 'sell' && (tx.gift || (tx.channel === 'send' && tx.src === 'manual' && tx.amount === 0));
+  const isGift = tx => (tx.dir === 'sell' && (tx.gift || (tx.channel === 'send' && tx.src === 'manual' && tx.amount === 0))) || (tx.dir === 'buy' && (tx.gift || (tx.channel === 'recv' && tx.src === 'manual' && tx.amount === 0)));
   function computeFlips(txsObj, opts) {
     const fee = (opts && opts.marketFee) || 0;
     const vals = (opts && opts.values) || {};
@@ -281,7 +281,7 @@
 
     for (const tx of txs) {
       if (!tx.items || !tx.items.length) continue;
-      if (tx.dir === 'buy') { addLots(tx); if (tx.amount == null) pending.push(tx); continue; }
+      if (tx.dir === 'buy') { if (isGift(tx)) continue; /* received as a gift: not stock, not a buy */ addLots(tx); if (tx.amount == null) pending.push(tx); continue; }
       if (tx.dir !== 'sell') { pending.push(tx); continue; }
 
       const consumed = tx.items.map(it => Object.assign({ it }, consume(it.id, it.qty)));
@@ -798,10 +798,10 @@
     let h = `<div class="tfp-h"><div><b>Unsold stock</b> <b>${fmt(total)}</b><div class="tfp-sub">at cost · FIFO · ${rows.length} item type(s)${unknown ? ' · some cost unknown' : ''}</div></div></div>`;
     if (!rows.length) h += '<div class="tfp-msg">Nothing in stock. Items you buy show up here until they are sold.</div>';
     h += rows.map(r => `<div class="tfp-row"><div class="tfp-top"><span>${r.qty}× ${esc(nameOf(r.id))}</span><b class="${r.unk ? 'tfp-warn' : ''}">${fmt(r.c)}</b></div><div class="tfp-sub">${r.unk ? 'cost unknown · ' : fmt(r.c / r.qty) + ' each · '}oldest ${fdate(r.oldest)} · <a href="#" data-act="removestock" data-id="${esc(r.id)}">${ui.armRemove === r.id ? 'tap again: remove from stock' : 'remove'}</a></div></div>`).join('');
-    const removed = Object.values(state.txs).filter(t => t.channel === 'writeoff').sort((a, b) => b.ts - a.ts);
+    const removed = Object.values(state.txs).filter(t => t.channel === 'writeoff' || (t.dir === 'buy' && isGift(t))).sort((a, b) => b.ts - a.ts);
     if (removed.length) {
-      h += `<div class="tfp-row"><div class="tfp-sub">${link('showRemoved', removed.length + ' removed (not counted in profit)')}</div>`;
-      if (ui.showRemoved) h += removed.map(t => `<div class="tfp-top"><span class="tfp-sub">${t.items[0].qty}× ${esc(nameOf(t.items[0].id))} · ${fdate(t.ts)}</span><a href="#" data-act="restorestock" data-id="${esc(t.id)}">restore</a></div>`).join('');
+      h += `<div class="tfp-row"><div class="tfp-sub">${link('showRemoved', removed.length + ' removed or received as gifts (not in stock, not in profit)')}</div>`;
+      if (ui.showRemoved) h += removed.map(t => `<div class="tfp-top"><span class="tfp-sub">${t.channel === 'writeoff' ? t.items[0].qty + '× ' + esc(nameOf(t.items[0].id)) + ' removed' : itemSummary(t) + ' received as a gift'} · ${fdate(t.ts)}</span><a href="#" data-act="restorestock" data-id="${esc(t.id)}">restore</a></div>`).join('');
       h += '</div>';
     }
     return h;
@@ -905,7 +905,12 @@
         const left = ((computeFlips(state.txs, flipOpts()).open[id]) || []).reduce((a, l) => a + l.qty, 0);
         if (left > 0) { const ts = Math.floor(Date.now() / 1000), wid = 'wo:' + id + ':' + ts; state.txs[wid] = { id: wid, ts, dir: 'sell', channel: 'writeoff', gift: true, amount: 0, src: 'manual', locked: true, items: [{ id: Number(id), qty: left, name: nameOf(id), price: null }] }; save(); }
       }
-      else if (act === 'restorestock') { delete state.txs[id]; save(); }
+      else if (act === 'restorestock') {
+        const t = state.txs[id];
+        if (t && t.channel === 'writeoff') delete state.txs[id];
+        else if (t) { t.gift = false; t.amount = null; t.src = null; t.locked = false; } // goes back to "needs a value"
+        save();
+      }
       else if (act === 'setting') { const d = document.getElementById('tfp-days'); if (d) sset('startDays', Number(d.value) || 30); }
       else if (act === 'edit') ui.editing = ui.editing === id ? null : id;
       else if (act === 'dir') state.txs[id].dir = v, save();

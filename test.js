@@ -104,5 +104,9 @@ const gf = { a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 1, qty: 10 }], amoun
   s: { id: 's', ts: 3, dir: 'sell', channel: 'market', src: 'log', amount: 900, items: [{ id: 1, qty: 6 }] } };
 const gr = T.computeFlips(gf);
 eq('gift not counted, cost of remaining units used', [gr.flips.length, gr.flips[0].profit, gr.pending.length], [1, 900 - 600, 0]);
+// a gifted receive is neither stock nor a buy
+const gb = { g: { id: 'g', ts: 1, dir: 'buy', channel: 'recv', gift: true, amount: 0, items: [{ id: 9, qty: 5 }] }, s: { id: 's', ts: 2, dir: 'sell', channel: 'market', src: 'log', amount: 100, items: [{ id: 9, qty: 5 }] } };
+const gbr = T.computeFlips(gb);
+eq('gifted receive adds no stock', [Object.keys(gbr.open).length, gbr.flips[0].unmatched], [0, 5]);
 console.log(fail ? fail + ' FAILED' : 'ALL PASSED');
 process.exit(fail ? 1 : 0);
