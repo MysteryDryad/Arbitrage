@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.55-beta
+// @version      0.1.56-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -547,7 +547,7 @@
     if (j && j.error && j.error.code === 16) throw new Error('Your API key does not have enough access. The log needs a Limited Access key or higher (Torn > Settings > API Key). Add your own key in Settings.');
     if (j && j.error && j.error.code === 2) throw new Error('Torn rejected the API key as incorrect. Check it in Settings.');
     if (j && j.error && j.error.code === 5) { const er = new Error('Torn is limiting requests (too many in one minute). Progress is saved and will continue on the next sync.'); er.rate = true; throw er; }
-    if (j && j.error) throw new Error('Torn API: ' + (j.error.error || j.error.code) + ' (code ' + j.error.code + ')');
+    if (j && j.error) { const er = new Error('Torn API: ' + (j.error.error || j.error.code) + ' (code ' + j.error.code + ')'); er.code = j.error.code; throw er; }
     return j;
   }
   function api(path, params) {
@@ -561,12 +561,13 @@
     state.me = { id: p.id || p.player_id, name: p.name };
     save(); return state.me;
   }
-  async function ensureItems() {
-    if (Object.keys(itemNames).length && Object.keys(itemValues).length) return;
+  const itemCat = {}; // item id -> the category name the inventory API uses (from Torn's item list)
+  async function ensureItems(force) {
+    if (!force && Object.keys(itemNames).length && Object.keys(itemValues).length) return;
     try {
       const j = await api('torn/items');
       const list = Array.isArray(j.items) ? j.items : Object.entries(j.items || {}).map(([id, v]) => Object.assign({ id }, v));
-      list.forEach(i => { itemNames[i.id] = i.name; const v = i.value || {}; const mv = [v.market_value, v.market_price, i.market_value, i.market_price].find(x => x > 0); if (mv > 0) itemValues[i.id] = mv; });
+      list.forEach(i => { itemNames[i.id] = i.name; const c = i.type === 'Weapon' ? (i.details && i.details.category) : i.type; if (c) itemCat[i.id] = c; const v = i.value || {}; const mv = [v.market_value, v.market_price, i.market_value, i.market_price].find(x => x > 0); if (mv > 0) itemValues[i.id] = mv; });
       state.itemSample = list.filter(i => i.name).slice(0, 2); // shape check for the debug sample
       sset('items', itemNames); sset('itemvals', itemValues);
       if (hasIDB) { idb.set('items', itemNames).catch(() => {}); idb.set('itemvals', itemValues).catch(() => {}); }
@@ -594,43 +595,40 @@
     return pages;
   }
   async function checkInventory() {
-    await ensureItems();
-    const held = {}; invInfo = {};
-    for (const [name, path] of [['inventory', 'user/inventory'], ['bazaar', 'user/bazaar'], ['itemmarket', 'user/itemmarket']]) {
+    await ensureItems(!Object.keys(itemCat).length);
+    const cats = Array.from(new Set(Object.values(itemCat)));
+    if (!cats.length) throw new Error('Could not load the item list from Torn.');
+    const held = {}, ok = new Set(); invInfo = { accepted: [], rejected: [], samples: [] };
+    // The inventory is read one category at a time (Torn requires a category).
+    for (const cat of cats) {
       let pages;
-      try { pages = await fetchAllPages(path, { limit: 100 }); }
-      catch (e) {
-        if (name !== 'inventory' || e.rate) throw new Error(name + ': ' + e.message);
-        try { pages = await fetchAllPages(path, { cat: 'All', limit: 100 }); } catch (e2) { throw new Error(name + ': ' + e2.message); }
-      }
+      try { pages = await fetchAllPages('user/inventory', { cat, limit: 100 }); }
+      catch (e) { if (e.code === 21) { invInfo.rejected.push(cat); continue; } throw new Error('inventory (' + cat + '): ' + e.message); }
+      ok.add(cat.toLowerCase()); invInfo.accepted.push(cat);
       const got = {}; pages.forEach(pg => countHeld(pg, got));
       Object.entries(got).forEach(([id, q]) => { held[id] = (held[id] || 0) + q; });
-      invInfo[name] = { pages: pages.length, keys: Object.keys(pages[0] || {}), kinds: Object.keys(got).length, sample: JSON.stringify(pages[0]).slice(0, 500) };
+      if (invInfo.samples.length < 2 && Object.keys(got).length) invInfo.samples.push(JSON.stringify(pages[0]).slice(0, 400));
       await sleep(700);
     }
-    if (!Object.keys(invInfo).some(k => invInfo[k].kinds) || !(invInfo.inventory.kinds)) throw new Error('Your inventory came back empty or in a format I could not read, so nothing was changed. Use Settings > troubleshooting to copy a debug sample.');
-    const open = computeFlips(state.txs, flipOpts()).open, rows = [];
+    for (const [name, path] of [['bazaar', 'user/bazaar'], ['itemmarket', 'user/itemmarket']]) {
+      let pages;
+      try { pages = await fetchAllPages(path, { limit: 100 }); } catch (e) { throw new Error(name + ': ' + e.message); }
+      const got = {}; pages.forEach(pg => countHeld(pg, got));
+      Object.entries(got).forEach(([id, q]) => { held[id] = (held[id] || 0) + q; });
+      invInfo[name] = { keys: Object.keys(pages[0] || {}), kinds: Object.keys(got).length, sample: JSON.stringify(pages[0]).slice(0, 300) };
+      await sleep(700);
+    }
+    if (!ok.size || !Object.keys(held).length) throw new Error('Your inventory came back empty or in a format I could not read, so nothing was changed. Use Settings > troubleshooting to copy a debug sample.');
+    const open = computeFlips(state.txs, flipOpts()).open, rows = [], unverified = [];
     Object.entries(open).forEach(([id, q]) => {
       const tracked = q.reduce((a, l) => a + l.qty, 0), have = held[id] || 0;
-      if (tracked > have) rows.push({ id, tracked, have, excess: tracked - have });
+      if (tracked <= have) return;
+      // Only trust "you don't hold this" when that item's category was read.
+      if (itemCat[id] && ok.has(String(itemCat[id]).toLowerCase())) rows.push({ id, tracked, have, excess: tracked - have });
+      else unverified.push(id);
     });
-    ui.inv = { at: Math.floor(Date.now() / 1000), rows };
+    ui.inv = { at: Math.floor(Date.now() / 1000), rows, unverified: unverified.length };
     return rows.length;
-  }
-  // Rebuild the per-entry send/receive records from the stored log entries (no network needed).
-  function rebuildSendTxs() {
-    let added = 0;
-    const sends = buildSendTxs(state.sendParts, nameOf);
-    Object.keys(state.txs).forEach(id => { // drop earlier per-entry send/receive records and stale batches; keep ones you valued
-      const t = state.txs[id];
-      if ((t.channel === 'send' || t.channel === 'recv') && !t.locked && (id.indexOf('log:') === 0 || (id.indexOf('send:') === 0 && !sends[id]))) delete state.txs[id];
-    });
-    Object.entries(sends).forEach(([id, tx]) => {
-      const old = state.txs[id];
-      if (!old) added++;
-      state.txs[id] = old && old.locked && !(old.count > 1) ? Object.assign({}, tx, { amount: old.amount, src: old.src, gift: old.gift, locked: true }) : tx; // a value entered for an old merged batch no longer fits one entry: dropped
-    });
-    return added;
   }
   async function syncLog() {
     await ensureMe(); await ensureItems();
@@ -926,6 +924,7 @@
       if (!ui.inv.rows.length) h += `<div class="tfp-msg">Matches your inventory, bazaar and market listings (checked ${fdate(ui.inv.at)}).</div>`;
       else h += `<div class="tfp-row"><div class="tfp-top"><b>Not in your inventory (${ui.inv.rows.length})</b></div>` + ui.inv.rows.map(r => `<div class="tfp-sub">${r.excess}× ${esc(nameOf(r.id))} (tracked ${r.tracked}, you hold ${r.have})</div>`).join('') + `<div class="tfp-sub"><a href="#" data-act="removeexcess">${ui.armExcess ? 'tap again: remove these from stock' : 'remove these from stock'}</a></div></div>`;
     }
+    if (ui.inv && ui.inv.unverified) h += `<div class="tfp-sub">${ui.inv.unverified} item type(s) could not be checked (Torn did not accept their category).</div>`;
     if (!rows.length) h += '<div class="tfp-msg">Nothing in stock. Items you buy show up here until they are sold.</div>';
     h += rows.map(r => `<div class="tfp-row"><div class="tfp-top"><span>${r.qty}× ${esc(nameOf(r.id))}</span><b class="${r.unk ? 'tfp-warn' : ''}">${fmt(r.c)}</b></div><div class="tfp-sub">${r.unk ? 'cost unknown · ' : fmt(r.c / r.qty) + ' each · '}oldest ${fdate(r.oldest)} · <a href="#" data-act="removestock" data-id="${esc(r.id)}">${ui.armRemove === r.id ? 'tap again: remove from stock' : 'remove'}</a></div></div>`).join('');
     const removed = Object.values(state.txs).filter(t => t.channel === 'writeoff' || (t.dir === 'buy' && isGift(t))).sort((a, b) => b.ts - a.ts);
