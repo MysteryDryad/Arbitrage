@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.68-beta
+// @version      0.1.69-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -736,6 +736,8 @@
             const tp = state.tradeParts[tid] = state.tradeParts[tid] || { parts: {} };
             tp.parts[e.id] = { title, ts: e.timestamp, data: compactTradeData(e.data || {}) };
           }
+          const end = title.match(/^Trade (cancel|expire|decline)/i), eid = end && tradeIdOf(e);
+          if (eid) { state.tradeEnd = state.tradeEnd || {}; state.tradeEnd[eid] = { kind: end[1].toLowerCase() === 'cancel' ? 'cancelled' : end[1].toLowerCase() === 'expire' ? 'expired' : 'declined', ts: e.timestamp }; }
           return;
         }
         if (/^Item (send|receive)$/i.test(title) && e.data) {
@@ -864,7 +866,7 @@
     const w = state.w3b = state.w3b || { done: {}, miss: {}, at: {} };
     w.at = w.at || {};
     const now = Math.floor(Date.now() / 1000);
-    let budget = 40, attached = 0, missing = 0, left = 0, pages = 0, to = null;
+    let budget = 40, attached = 0, missing = 0, ended = 0, left = 0, pages = 0, to = null;
     const lost = [];
     const seen = new Set();
     try {
@@ -881,7 +883,7 @@
           if (r && r.created_at) w.at[t.id] = r.created_at;
           const rc = rcFromWeaverApi(r);
           const tx = rc && Object.values(state.txs).find(x => x.tradeId && String(x.tradeId) === String(rc.tradeId));
-          if (tx) { attachReceipt(rc, tx); w.done[t.id] = 1; attached++; } else { w.miss[t.id] = now; missing++; if (lost.length < 3) lost.push(rc ? 'trade ' + rc.tradeId + ' with ' + rc.buyer + ', ' + fmt(rc.total) + (rc.ts ? ' at ' + fdate(rc.ts) : '') : 'receipt ' + t.id + ' (unreadable)'); }
+          if (tx) { attachReceipt(rc, tx); w.done[t.id] = 1; attached++; } else if (rc && state.tradeEnd && state.tradeEnd[rc.tradeId]) { w.done[t.id] = 1; ended++; } else { w.miss[t.id] = now; missing++; if (lost.length < 3) lost.push(rc ? 'trade ' + rc.tradeId + ' with ' + rc.buyer + ', ' + fmt(rc.total) + (rc.ts ? ' at ' + fdate(rc.ts) : '') + (state.tradeEnd && state.tradeEnd[rc.tradeId] ? ' (' + state.tradeEnd[rc.tradeId].kind + ')' : '') : 'receipt ' + t.id + ' (unreadable)'); }
         }
         if (list.length < 100) break;
         const last = list[list.length - 1];
@@ -891,7 +893,7 @@
         await sleep(900);
       }
     } finally { save(); }
-    return 'Weaver: ' + attached + ' receipt(s) attached' + (missing ? ', ' + missing + ' not found in your log (' + lost.join('; ') + ')' : '') + (left ? ', ' + left + ' more waiting: tap again' : '') + (!attached && !missing && !left ? ' (nothing new)' : '') + '.';
+    return 'Weaver: ' + attached + ' receipt(s) attached' + (ended ? ', ' + ended + ' skipped (their trades were cancelled, expired or declined)' : '') + (missing ? ', ' + missing + ' not found in your log (' + lost.join('; ') + ')' : '') + (left ? ', ' + left + ' more waiting: tap again' : '') + (!attached && !missing && !left ? ' (nothing new)' : '') + '.';
   }
   async function handleReceipt(rc) {
     if (rc.source === 'pawnhub-balance') return applyPawnHubBalance(rc);
