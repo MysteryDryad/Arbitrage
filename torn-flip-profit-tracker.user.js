@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flip Profit Tracker
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.7-beta
+// @version      0.1.8-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -339,13 +339,15 @@
   const nameOf = id => itemNames[id] || ('Item ' + id);
 
   /* ===================== Torn API ===================== */
-  function getKey() { return IN_PDA ? PDA_KEY : (sget('apikey', '') || ''); }
+  function getKey() { return (sget('apikey', '') || '') || (IN_PDA ? PDA_KEY : ''); }
   async function apiUrl(url) {
     const key = getKey();
     if (!key) throw new Error('No API key set (Settings tab).');
     const u = url + (url.includes('?') ? '&' : '?') + (/[?&]key=/.test(url) ? '' : 'key=' + encodeURIComponent(key));
     const r = await http(u);
     let j; try { j = JSON.parse(r.text); } catch (e) { throw new Error('Bad API response (HTTP ' + r.status + ')'); }
+    if (j && j.error && j.error.code === 16) throw new Error('Your API key does not have enough access. The log needs a Limited Access key or higher (Torn > Settings > API Key). Add your own key in Settings.');
+    if (j && j.error && j.error.code === 2) throw new Error('Torn rejected the API key as incorrect. Check it in Settings.');
     if (j && j.error) throw new Error('Torn API: ' + (j.error.error || j.error.code) + ' (code ' + j.error.code + ')');
     return j;
   }
@@ -525,8 +527,11 @@
     return h;
   }
   function settingsHtml() {
-    const keyBox = IN_PDA ? '<div class="tfp-sub">Using your Torn PDA API key automatically.</div>'
-      : `<div class="tfp-sub">Torn API key (needs log access)</div><input class="tfp-in" id="tfp-key" type="password" value="${esc(sget('apikey', ''))}"><div class="tfp-gap"></div><button class="tfp-b" data-act="savekey">Save key</button>`;
+    const own = !!sget('apikey', '');
+    const keyBox = `<div class="tfp-sub">Torn API key${IN_PDA && !own ? ' (currently using the Torn PDA key; add your own if it lacks log access)' : ''}. Needs Limited Access or higher.</div>
+      <input class="tfp-in" id="tfp-key" type="password" autocomplete="off" placeholder="${own ? 'Key saved (hidden). Paste a new one to replace.' : 'Paste your key'}"><div class="tfp-gap"></div>
+      <button class="tfp-b" data-act="savekey">Save key</button> ${own ? '<button class="tfp-b" data-act="clearkey">Remove key</button>' : ''}
+      <div class="tfp-sub">Your key is stored only on this device (script storage) and is sent only to api.torn.com to read your own log and item names. It is never shared with anyone else. Remove it here at any time, or delete it in Torn settings.</div>`;
     return `${keyBox}<div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
       <input class="tfp-in" id="tfp-days" inputmode="numeric" value="${esc(sget('startDays', 30))}"><div class="tfp-gap"></div><div class="tfp-sub">Item market fee % (market sales only)</div>
       <input class="tfp-in" id="tfp-fee" inputmode="decimal" value="${esc(sget('marketFee', 5))}"><div class="tfp-gap"></div>
@@ -573,7 +578,18 @@
         if (n == null) throw new Error('Enter a number.');
         const tx = state.txs[id]; tx.amount = n; tx.src = 'manual'; tx.locked = true; ui.editing = null; save();
       }
-      else if (act === 'savekey') { sset('apikey', val('tfp-key').trim()); state.me = null; save(); ui.msg = 'Key saved.'; }
+      else if (act === 'savekey') {
+        const k = val('tfp-key').trim();
+        if (!/^[A-Za-z0-9]{16}$/.test(k)) throw new Error('A Torn API key is 16 letters and numbers.');
+        const old = sget('apikey', ''); sset('apikey', k);
+        try {
+          const j = await api('key/info');
+          const info = j.info || j, lvl = info.access && (info.access.type || info.access.level);
+          state.me = null; save();
+          ui.msg = 'Key saved' + (lvl ? ' (access: ' + lvl + ')' : '') + '.';
+        } catch (e) { sset('apikey', old); throw e; }
+      }
+      else if (act === 'clearkey') { sset('apikey', ''); state.me = null; save(); ui.msg = 'Key removed from this device.'; }
       else if (act === 'sync') {
         sset('startDays', Number(val('tfp-days')) || 30);
         { const f = parseFloat(val('tfp-fee')); sset('marketFee', isNaN(f) ? 5 : f); }
