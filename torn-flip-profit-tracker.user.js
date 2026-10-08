@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flip Profit Tracker
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.8-beta
+// @version      0.1.9-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -465,6 +465,9 @@
   .tfp-ta{min-height:70px}
   .tfp-msg{background:#2a2a2a;border-radius:8px;padding:8px;margin:6px 0}
   .tfp-gap{height:6px}
+  .tfp-disc{width:100%;border-collapse:collapse;margin-top:6px;font-size:12px}
+  .tfp-disc td{border:1px solid #444;padding:4px;vertical-align:top}
+  .tfp-disc td:first-child{color:#999;white-space:nowrap}
   #tfp-toast{position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:2147483647;background:#222;color:#fff;border:1px solid #555;border-radius:8px;padding:8px 12px;font:13px Arial}
   `;
   const badge = tx => tx.src === 'receipt' ? '🧾' : tx.src === 'log' ? '📒' : tx.src === 'manual' ? '✍️' : '⚠️';
@@ -531,7 +534,13 @@
     const keyBox = `<div class="tfp-sub">Torn API key${IN_PDA && !own ? ' (currently using the Torn PDA key; add your own if it lacks log access)' : ''}. Needs Limited Access or higher.</div>
       <input class="tfp-in" id="tfp-key" type="password" autocomplete="off" placeholder="${own ? 'Key saved (hidden). Paste a new one to replace.' : 'Paste your key'}"><div class="tfp-gap"></div>
       <button class="tfp-b" data-act="savekey">Save key</button> ${own ? '<button class="tfp-b" data-act="clearkey">Remove key</button>' : ''}
-      <div class="tfp-sub">Your key is stored only on this device (script storage) and is sent only to api.torn.com to read your own log and item names. It is never shared with anyone else. Remove it here at any time, or delete it in Torn settings.</div>`;
+      <table class="tfp-disc"><tr><td>Data storage</td><td>Your trade history and settings are kept only on this device.</td></tr>
+      <tr><td>Data sharing</td><td>Not shared with anyone.</td></tr>
+      <tr><td>Purpose of use</td><td>Read your own item log, item names and key info to calculate flip profit. Read-only; no game actions.</td></tr>
+      <tr><td>Key storage</td><td>Only in this script's local storage on this device.</td></tr>
+      <tr><td>Key sharing</td><td>Sent only to api.torn.com. Never shared with anyone else.</td></tr>
+      <tr><td>Key access level</td><td>Limited Access (needed for the log).</td></tr></table>
+      <div class="tfp-sub">Tip: make a separate key just for this script. Deleting it in Torn settings revokes access at once.</div>`;
     return `${keyBox}<div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
       <input class="tfp-in" id="tfp-days" inputmode="numeric" value="${esc(sget('startDays', 30))}"><div class="tfp-gap"></div><div class="tfp-sub">Item market fee % (market sales only)</div>
       <input class="tfp-in" id="tfp-fee" inputmode="decimal" value="${esc(sget('marketFee', 5))}"><div class="tfp-gap"></div>
