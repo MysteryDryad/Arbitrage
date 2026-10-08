@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.39-beta
+// @version      0.1.40-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -234,9 +234,11 @@
 
   async function fetchReceipt(url) {
     const r = await http(url);
-    if (!r || r.status >= 400) throw new Error('Could not load receipt (HTTP ' + (r && r.status) + ')');
+    if (!r || r.status >= 400) throw new Error('The site refused the link (HTTP ' + (r && r.status) + ')');
     const doc = new DOMParser().parseFromString(r.text, 'text/html');
-    return parseReceiptDoc(doc, url);
+    const rc = parseReceiptDoc(doc, url);
+    if (!rc) { const e = new Error('The page loaded (' + String(r.text || '').length + ' characters) but has no receipt data in it. Sites that build the receipt after the page loads can only be read with the button on the page.'); e.unreadable = true; throw e; }
+    return rc;
   }
 
   /* ===================== ledger engine (pure) ===================== */
@@ -683,13 +685,12 @@
     for (const url of links) {
       try {
         const rc = await fetchReceipt(url);
-        if (!rc) { failed.push(url); continue; }
         const msg = await handleReceipt(rc);
         if (/attached/i.test(msg)) attached++; else review++;
       } catch (e) { failed.push(url + ' (' + (e.message || e) + ')'); }
     }
     if (links.length === 1 && !failed.length) return review ? 'Pick which trade this receipt belongs to.' : 'Receipt attached to a matching trade.';
-    if (links.length === 1) throw new Error("Couldn't read that receipt from the link. Open it, tap \"Add to profit tracker\" on the page, then paste here.");
+    if (links.length === 1) throw new Error(failed[0].replace(/^\S+ \(/, '').replace(/\)$/, '') + ' Open it, tap "Add to profit tracker" on the page, then tap "Process saved receipt".');
     return attached + ' attached' + (review ? ', ' + review + ' need you to pick a trade (shown below)' : '') + (failed.length ? ', ' + failed.length + ' could not be read' : '') + '.';
   }
 
@@ -815,7 +816,7 @@
     }).join('');
   }
   function receiptsHtml() {
-    let h = '<div class="tfp-sub">Paste one or more receipt links, one per line (Weaver, TornExchange or PawnHub), or data copied with the "Add to profit tracker" button on the receipt page).</div><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-rc" placeholder="https://tornexchange.com/receipt/..."></textarea><div class="tfp-gap"></div><button class="tfp-b" data-act="addrc">Add receipt</button>';
+    let h = '<div class="tfp-sub">Easiest: open a receipt (Weaver, TornExchange or PawnHub), tap "Add to profit tracker" on that page, and repeat for each receipt. Then tap "Process saved receipts" here. Pasting links only works for sites that don\'t build the page after it loads.</div><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-rc" placeholder="https://tornexchange.com/receipt/..."></textarea><div class="tfp-gap"></div><button class="tfp-b" data-act="addrc">Add receipt</button>';
     const inbox = hasGM ? sget('inbox', []) : [];
     if (inbox.length) h += ` <button class="tfp-b" data-act="inbox">Process ${inbox.length} saved receipt(s)</button>`;
     if (ui.pendingReceipt) {
