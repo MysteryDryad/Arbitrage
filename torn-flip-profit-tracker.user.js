@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.19-beta
+// @version      0.1.20-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -422,8 +422,9 @@
     await ensureMe(); await ensureItems();
     const startDays = Number(sget('startDays', 30)) || 30;
     const from = state.lastSync ? state.lastSync + 1 : Math.floor(Date.now() / 1000) - startDays * 86400;
-    let j = await api('user/log', { from, limit: 100, sort: 'asc' });
-    let pages = 0, added = 0, newest = state.lastSync || 0;
+    let j = await api('user/log', { from, limit: 100 });
+    const seenIds = new Set();
+    let prevTo = null, pages = 0, added = 0, newest = state.lastSync || 0;
     lastRaw = [];
     lastSyncInfo = { from, topKeys: Object.keys(j || {}), logType: Array.isArray(j && j.log) ? 'array' : typeof (j && j.log), entries: 0, pages: 0, firstRaw: [], pageInfo: [] };
     while (j && pages++ < 100) {
@@ -459,9 +460,16 @@
         if (!tx.items.length || state.txs[tx.id]) return;
         state.txs[tx.id] = tx; added++;
       });
-      const next = j._metadata && j._metadata.links && j._metadata.links.next;
-      if (!next || !arr.length) break;
-      j = await apiUrl(next);
+      // Page backwards with our own "to" cursor (newest-first) instead of trusting Torn's next link.
+      const ts = arr.map(x => x.timestamp).filter(Number);
+      const fresh = arr.filter(x => !seenIds.has(x.id));
+      arr.forEach(x => seenIds.add(x.id));
+      if (!ts.length || !fresh.length) break;
+      const oldest = Math.min.apply(null, ts);
+      if (oldest <= from) break;
+      const to = oldest === prevTo ? oldest - 1 : oldest;
+      prevTo = oldest;
+      j = await api('user/log', { from, to, limit: 100 });
     }
     const capped = pages > 100;
     const built = buildTradeTxs(state.tradeParts, nameOf);
