@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.41-beta
+// @version      0.1.42-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -785,19 +785,28 @@
   }
   function stockHtml() {
     const open = computeFlips(state.txs, flipOpts()).open;
-    const rows = []; let total = 0, unknown = false;
+    const hiddenIds = state.hiddenStock || {};
+    const rows = [], hidden = []; let total = 0, unknown = false;
     Object.entries(open).forEach(([id, q]) => {
       const left = q.filter(l => l.qty > 0); if (!left.length) return;
       const qty = left.reduce((a, l) => a + l.qty, 0);
       const unk = left.some(l => l.unit == null);
       const c = unk ? null : left.reduce((a, l) => a + l.qty * l.unit, 0);
+      const row = { id, qty, c, unk, oldest: Math.min.apply(null, left.map(l => l.ts)) };
+      if (hiddenIds[id]) { hidden.push(row); return; }
       if (unk) unknown = true; else total += c;
-      rows.push({ id, qty, c, unk, oldest: Math.min.apply(null, left.map(l => l.ts)) });
+      rows.push(row);
     });
     rows.sort((a, b) => (b.c || 0) - (a.c || 0));
     let h = `<div class="tfp-h"><div><b>Unsold stock</b> <b>${fmt(total)}</b><div class="tfp-sub">at cost · FIFO · ${rows.length} item type(s)${unknown ? ' · some cost unknown' : ''}</div></div></div>`;
-    if (!rows.length) return h + '<div class="tfp-msg">Nothing in stock. Items you buy show up here until they are sold.</div>';
-    return h + rows.map(r => `<div class="tfp-row"><div class="tfp-top"><span>${r.qty}× ${esc(nameOf(r.id))}</span><b class="${r.unk ? 'tfp-warn' : ''}">${fmt(r.c)}</b></div><div class="tfp-sub">${r.unk ? 'cost unknown · ' : fmt(r.c / r.qty) + ' each · '}oldest ${fdate(r.oldest)}</div></div>`).join('');
+    if (!rows.length) h += '<div class="tfp-msg">Nothing in stock. Items you buy show up here until they are sold.</div>';
+    h += rows.map(r => `<div class="tfp-row"><div class="tfp-top"><span>${r.qty}× ${esc(nameOf(r.id))}</span><b class="${r.unk ? 'tfp-warn' : ''}">${fmt(r.c)}</b></div><div class="tfp-sub">${r.unk ? 'cost unknown · ' : fmt(r.c / r.qty) + ' each · '}oldest ${fdate(r.oldest)} · <a href="#" data-act="hide" data-id="${esc(r.id)}">hide</a></div></div>`).join('');
+    if (hidden.length) {
+      h += `<div class="tfp-row"><div class="tfp-sub">${link('showHidden', hidden.length + ' hidden')}</div>`;
+      if (ui.showHidden) h += hidden.map(r => `<div class="tfp-top"><span class="tfp-sub">${r.qty}× ${esc(nameOf(r.id))}</span><a href="#" data-act="unhide" data-id="${esc(r.id)}">show</a></div>`).join('');
+      h += '</div>';
+    }
+    return h;
   }
   function editBox(tx) {
     const label = tx.dir === 'buy' ? 'Amount paid ($)' : 'Amount received ($)';
@@ -882,7 +891,7 @@
     const el = e.target.closest('[data-act]');
     if (!el) return;
     const act = el.dataset.act, id = el.dataset.id, v = el.dataset.v;
-    if (act === 'edit' || act === 'toggle') e.preventDefault();
+    if (act === 'edit' || act === 'toggle' || act === 'hide' || act === 'unhide') e.preventDefault();
     ui.msg = '';
     if (act !== 'giftall') ui.armGift = false;
     try {
@@ -890,6 +899,8 @@
       else if (act === 'tab') { ui.tab = v; ui.editing = null; }
       else if (act === 'range') ui.range = Number(el.value);
       else if (act === 'toggle') ui[v] = !ui[v];
+      else if (act === 'hide') { state.hiddenStock = state.hiddenStock || {}; state.hiddenStock[id] = true; save(); }
+      else if (act === 'unhide') { delete (state.hiddenStock || {})[id]; save(); }
       else if (act === 'setting') { const d = document.getElementById('tfp-days'); if (d) sset('startDays', Number(d.value) || 30); }
       else if (act === 'edit') ui.editing = ui.editing === id ? null : id;
       else if (act === 'dir') state.txs[id].dir = v, save();
