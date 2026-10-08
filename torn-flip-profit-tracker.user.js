@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flip Profit Tracker
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.5-beta
+// @version      0.1.6-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -329,6 +329,7 @@
   let state = sget('state', null) || { v: 1, me: null, lastSync: 0, txs: {}, receipts: {}, seenTitles: {} };
   let itemNames = sget('items', null) || {};
   let lastRaw = [];
+  let lastSyncInfo = null;
   const ui = { open: false, tab: 'flips', items: false, range: 30, editing: null, msg: '', pendingReceipt: null, candidates: [], busy: false };
   const save = () => sset('state', state);
   const nameOf = id => itemNames[id] || ('Item ' + id);
@@ -372,8 +373,11 @@
     let j = await api('user/log', { from, limit: 100, sort: 'asc' });
     let pages = 0, added = 0, newest = state.lastSync || 0;
     lastRaw = [];
+    lastSyncInfo = { from, topKeys: Object.keys(j || {}), logType: Array.isArray(j && j.log) ? 'array' : typeof (j && j.log), entries: 0, pages: 0, firstRaw: [] };
     while (j && pages++ < 30) {
       const arr = normalizeLog(j.log);
+      lastSyncInfo.pages = pages; lastSyncInfo.entries += arr.length;
+      arr.slice(0, 8 - lastSyncInfo.firstRaw.length).forEach(e => lastSyncInfo.firstRaw.push(e));
       arr.forEach(e => {
         const title = (e.details && e.details.title) || e.title || '';
         if (title) state.seenTitles[title] = (state.seenTitles[title] || 0) + 1;
@@ -588,8 +592,9 @@
         state = incoming; save(); ui.msg = 'Backup imported.';
       }
       else if (act === 'debug') {
-        const hdr = document.querySelector('#topHeaderBanner, .header-wrapper-top, header');
-        const sample = { rawEntries: lastRaw, seenTitles: state.seenTitles, sampleTxs: Object.values(state.txs).slice(-5), header: hdr ? hdr.outerHTML.slice(0, 6000) : null };
+        const tb = document.querySelector('#topHeaderBanner .toolbar, .header-buttons-wrapper');
+        const hdr = tb ? tb.outerHTML.replace(/<svg[\s\S]*?<\/svg>/g, '<svg/>').replace(/<form[\s\S]*?<\/form>/g, '<form/>') : null;
+        const sample = { syncInfo: lastSyncInfo, rawEntries: lastRaw, seenTitles: state.seenTitles, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), header: hdr ? hdr.slice(0, 6000) : null, headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
         const ok = await copyText(JSON.stringify(sample, null, 1));
         ui.msg = ok ? 'Debug sample copied. Paste it to Claude.' : 'Could not copy. Sync first, then try again.';
       }
