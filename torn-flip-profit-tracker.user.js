@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.22-beta
+// @version      0.1.23-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -419,6 +419,7 @@
     let j; try { j = JSON.parse(r.text); } catch (e) { throw new Error('Bad API response (HTTP ' + r.status + ')'); }
     if (j && j.error && j.error.code === 16) throw new Error('Your API key does not have enough access. The log needs a Limited Access key or higher (Torn > Settings > API Key). Add your own key in Settings.');
     if (j && j.error && j.error.code === 2) throw new Error('Torn rejected the API key as incorrect. Check it in Settings.');
+    if (j && j.error && j.error.code === 5) { const er = new Error('Torn is limiting requests (too many in one minute). Progress is saved and will continue on the next sync.'); er.rate = true; throw er; }
     if (j && j.error) throw new Error('Torn API: ' + (j.error.error || j.error.code) + ' (code ' + j.error.code + ')');
     return j;
   }
@@ -443,16 +444,28 @@
     } catch (e) { console.warn('[TFP] item names failed', e); }
   }
 
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
   async function syncLog() {
     await ensureMe(); await ensureItems();
     const startDays = Number(sget('startDays', 30)) || 30;
-    const from = state.lastSync ? state.lastSync + 1 : Math.floor(Date.now() / 1000) - startDays * 86400;
-    let j = await api('user/log', { from, limit: 100 });
+    const resume = state.resume || null;
+    const from = resume ? resume.from : (state.lastSync ? state.lastSync + 1 : Math.floor(Date.now() / 1000) - startDays * 86400);
+    let curTo = resume ? resume.to : null;
+    // Torn allows about 100 requests a minute: pause between pages and wait out a rate-limit reply a few times.
+    const fetchPage = async to => {
+      for (let t = 0; ; t++) {
+        try { return await api('user/log', Object.assign({ from, limit: 100 }, to ? { to } : {})); }
+        catch (e) { if (e.rate && t < 3) { await sleep(15000); continue; } throw e; }
+      }
+    };
+    let j = await fetchPage(curTo);
     const seenIds = new Set();
-    let prevTo = null, pages = 0, added = 0, newest = state.lastSync || 0;
+    let prevTo = null, pages = 0, added = 0, newest = Math.max(state.lastSync || 0, resume ? resume.newest : 0);
     lastRaw = [];
     lastSyncInfo = { from, topKeys: Object.keys(j || {}), logType: Array.isArray(j && j.log) ? 'array' : typeof (j && j.log), entries: 0, pages: 0, firstRaw: [], pageInfo: [] };
+    try {
     while (j && pages++ < 100) {
+      if (ui.busy) { ui.msg = 'Syncing… page ' + pages; render(); }
       const arr = normalizeLog(j.log);
       lastSyncInfo.pages = pages; lastSyncInfo.entries += arr.length;
       { const ts = arr.map(x => x.timestamp).filter(Number); const md = j._metadata || {};
@@ -493,9 +506,11 @@
       const oldest = Math.min.apply(null, ts);
       if (oldest <= from) break;
       const to = oldest === prevTo ? oldest - 1 : oldest;
-      prevTo = oldest;
-      j = await api('user/log', { from, to, limit: 100 });
+      prevTo = oldest; curTo = to;
+      await sleep(650);
+      j = await fetchPage(to);
     }
+    } catch (e) { state.resume = { from, to: curTo, newest }; save(); throw e; }
     const capped = pages > 100;
     const built = buildTradeTxs(state.tradeParts, nameOf);
     Object.entries(built).forEach(([id, tx]) => {
@@ -505,9 +520,10 @@
       state.txs[id] = tx;
     });
     // The log arrives newest-first, so if we stopped at the page cap, older entries were not read: keep the old cursor.
-    if (!capped) { state.lastSync = newest; state.syncedAt = Math.floor(Date.now() / 1000); }
+    if (!capped) { state.lastSync = newest; state.syncedAt = Math.floor(Date.now() / 1000); state.resume = null; }
+    else state.resume = { from, to: curTo, newest };
     save();
-    if (capped) throw new Error('Stopped after 100 pages. ' + added + ' record(s) saved so far. Lower the look-back days and use Re-sync from start.');
+    if (capped) throw new Error('Imported part of your history (' + added + ' new). Tap Sync now again to continue.');
     return added;
   }
 
@@ -777,7 +793,7 @@
       }
       else if (act === 'clearkey') { sset('apikey', ''); state.me = null; save(); ui.msg = 'Key removed from this device.'; }
       else if (act === 'sync' || act === 'resync') {
-        if (act === 'resync') { state.lastSync = 0; state.seenTitles = {}; state.seenExamples = {}; state.tradeParts = {}; state.moneyEvents = {}; save(); }
+        if (act === 'resync') { state.lastSync = 0; state.seenTitles = {}; state.seenExamples = {}; state.tradeParts = {}; state.moneyEvents = {}; state.resume = null; save(); }
         sset('startDays', Number(val('tfp-days')) || 30);
         { const f = parseFloat(val('tfp-fee')); sset('marketFee', isNaN(f) ? 5 : f); }
         ui.busy = true; render();
