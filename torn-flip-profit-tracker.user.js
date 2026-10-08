@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.28-beta
+// @version      0.1.29-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -651,9 +651,11 @@
     const CATS = [['trade', 'Trade'], ['market', 'Market'], ['bazaar', 'Bazaar'], ['send', 'Sent']];
     CATS.forEach(([ch, label]) => {
       const fs = flips.filter(f => f.tx.channel === ch);
-      if (!fs.length) return;
+      const pend = res.pending.filter(tx => tx.channel === ch && tx.dir === 'sell' && tx.ts >= cutoff).sort((a, b) => b.ts - a.ts);
+      if (!fs.length && !pend.length) return;
       const cp = fs.reduce((a, f) => a + (f.profit || 0), 0), key = 'cat_' + ch;
-      h += `<div class="tfp-row"><div class="tfp-top"><a href="#" data-act="toggle" data-v="${key}">${ui[key] ? '▾' : '▸'} ${label} · ${fs.length} sale${fs.length === 1 ? '' : 's'}</a><b class="${pnlCls(cp)}">${fmt(cp)}</b></div>`;
+      h += `<div class="tfp-row"><div class="tfp-top"><a href="#" data-act="toggle" data-v="${key}">${ui[key] ? '▾' : '▸'} ${label} · ${fs.length + pend.length} sale${fs.length + pend.length === 1 ? '' : 's'}${pend.length ? ' · <span class="tfp-warn">' + pend.length + ' need a value</span>' : ''}</a><b class="${pnlCls(cp)}">${fmt(cp)}</b></div>`;
+      if (ui[key]) pend.forEach(tx => { h += `<div class="tfp-gap"></div><div class="tfp-top"><span>${fdate(tx.ts)} ⚠️</span><span class="tfp-warn">needs value</span></div><div class="tfp-sub">${itemSummary(tx)}${tx.cp ? ' · ' + esc(tx.cp) : ''}</div>` + editBox(tx); });
       if (ui[key]) fs.forEach(f => {
         const tx = f.tx;
         let flag = '';
