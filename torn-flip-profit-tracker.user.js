@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.57-beta
+// @version      0.1.58-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -777,18 +777,19 @@
     save();
     const olderCount = earliest ? Object.values(state.txs).filter(t => t.channel === 'send' && t.dir === 'sell' && t.amount == null && t.ts < earliest - 600).length : 0;
     const itemEvents = itemEv.length;
+    const matched = new Set(hits.map(h => h.event));
+    const sends1 = Object.values(state.txs).filter(t => t.channel === 'send' && t.dir === 'sell' && t.items && t.items.length === 1);
+    const near = e => sends1.filter(t => t.items[0].id === byName[String(e.item).toLowerCase()] && t.items[0].qty === e.qty).sort((a, b) => Math.abs(a.ts - e.ts) - Math.abs(b.ts - e.ts))[0];
+    // An event whose send already carries the same value was applied earlier (or the page lists it twice): not a failure.
+    const done = e => { const t = near(e); return !!t && t.src === 'receipt' && t.amount === e.total && Math.abs(t.ts - e.ts) <= 600; };
+    const rest = itemEv.filter(e => !matched.has(e) && !done(e));
+    const already = itemEvents - hits.length - rest.length;
     let why = '';
-    if (hits.length < itemEvents) {
-      const matched = new Set(hits.map(h => h.event));
-      const sends1 = Object.values(state.txs).filter(t => t.channel === 'send' && t.dir === 'sell' && t.items && t.items.length === 1);
-      const miss = itemEv.filter(e => !matched.has(e)).slice(0, 3).map(e => {
-        const id = byName[String(e.item).toLowerCase()];
-        const same = sends1.filter(t => t.items[0].id === id && t.items[0].qty === e.qty).sort((a, b) => Math.abs(a.ts - e.ts) - Math.abs(b.ts - e.ts))[0];
-        return e.qty + '× ' + e.item + ' at ' + fdate(e.ts) + (same ? ' (nearest send with that item and quantity: ' + fdate(same.ts) + (same.src === 'receipt' ? ', already valued' : '') + ')' : ' (no send with that item and quantity)');
-      });
+    if (rest.length) {
+      const miss = rest.slice(0, 3).map(e => { const t = near(e); return e.qty + '× ' + e.item + ' at ' + fdate(e.ts) + (t ? ' (nearest send with that item and quantity: ' + fdate(t.ts) + (t.src === 'receipt' ? ', already valued differently' : '') + ')' : ' (no send with that item and quantity)'); });
       why = ' You have ' + sends1.length + ' single-item sends. Unmatched examples: ' + miss.join('; ') + '.';
     }
-    return 'PawnHub balance: matched ' + hits.length + ' of ' + itemEvents + ' item events to your sends' + (itemEvents > hits.length ? ' (the rest have no send with the same item, quantity and time, or the send is not in your log yet)' : '') + '. The Balance page starts ' + (earliest ? fdate(earliest) : '?') + (olderCount ? ', so ' + olderCount + ' older send(s) have no PawnHub entry (see Profit, needs a value).' : '.') + why;
+    return 'PawnHub balance: valued ' + hits.length + ' of ' + itemEvents + ' item events' + (already ? ', ' + already + ' more were already applied (imported before, or listed twice on the page)' : '') + (rest.length ? ', ' + rest.length + ' have no send with the same item, quantity and time (or the send is not in your log yet)' : '') + '. The Balance page starts ' + (earliest ? fdate(earliest) : '?') + (olderCount ? ', so ' + olderCount + ' older send(s) have no PawnHub entry (see Profit, needs a value).' : '.') + why;
   }
   async function handleReceipt(rc) {
     if (rc.source === 'pawnhub-balance') return applyPawnHubBalance(rc);
