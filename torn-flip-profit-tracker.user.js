@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.54-beta
+// @version      0.1.55-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -574,6 +574,49 @@
   }
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  // Read-only check of what you really hold (inventory + bazaar + item market listings) against the tracked stock.
+  let invInfo = null;
+  function countHeld(node, out) {
+    if (Array.isArray(node)) { node.forEach(n => countHeld(n, out)); return; }
+    if (!node || typeof node !== 'object') return;
+    const it = node.item && typeof node.item === 'object' ? node.item : null, id = it ? it.id : node.id;
+    const q = [node.amount, node.quantity, node.qty].find(x => x != null);
+    if (id != null && itemNames[id] && (q != null || node.uid != null || it)) { out[id] = (out[id] || 0) + (q != null ? Math.max(0, Number(q) || 0) : 1); return; }
+    Object.keys(node).forEach(k => { if (k !== '_metadata') countHeld(node[k], out); });
+  }
+  async function fetchAllPages(path, params) {
+    let j = await api(path, params); const pages = [j];
+    for (let n = 0; n < 30; n++) {
+      const next = j && j._metadata && j._metadata.links && j._metadata.links.next;
+      if (!next) break;
+      await sleep(700); j = await apiUrl(next); pages.push(j);
+    }
+    return pages;
+  }
+  async function checkInventory() {
+    await ensureItems();
+    const held = {}; invInfo = {};
+    for (const [name, path] of [['inventory', 'user/inventory'], ['bazaar', 'user/bazaar'], ['itemmarket', 'user/itemmarket']]) {
+      let pages;
+      try { pages = await fetchAllPages(path, { limit: 100 }); }
+      catch (e) {
+        if (name !== 'inventory' || e.rate) throw new Error(name + ': ' + e.message);
+        try { pages = await fetchAllPages(path, { cat: 'All', limit: 100 }); } catch (e2) { throw new Error(name + ': ' + e2.message); }
+      }
+      const got = {}; pages.forEach(pg => countHeld(pg, got));
+      Object.entries(got).forEach(([id, q]) => { held[id] = (held[id] || 0) + q; });
+      invInfo[name] = { pages: pages.length, keys: Object.keys(pages[0] || {}), kinds: Object.keys(got).length, sample: JSON.stringify(pages[0]).slice(0, 500) };
+      await sleep(700);
+    }
+    if (!Object.keys(invInfo).some(k => invInfo[k].kinds) || !(invInfo.inventory.kinds)) throw new Error('Your inventory came back empty or in a format I could not read, so nothing was changed. Use Settings > troubleshooting to copy a debug sample.');
+    const open = computeFlips(state.txs, flipOpts()).open, rows = [];
+    Object.entries(open).forEach(([id, q]) => {
+      const tracked = q.reduce((a, l) => a + l.qty, 0), have = held[id] || 0;
+      if (tracked > have) rows.push({ id, tracked, have, excess: tracked - have });
+    });
+    ui.inv = { at: Math.floor(Date.now() / 1000), rows };
+    return rows.length;
+  }
   // Rebuild the per-entry send/receive records from the stored log entries (no network needed).
   function rebuildSendTxs() {
     let added = 0;
@@ -878,6 +921,11 @@
     });
     rows.sort((a, b) => (b.c || 0) - (a.c || 0));
     let h = `<div class="tfp-h"><div><b>Unsold stock</b> <b>${fmt(total)}</b><div class="tfp-sub">at cost · FIFO · ${rows.length} item type(s)${unknown ? ' · some cost unknown' : ''}</div></div></div>`;
+    h += `<div class="tfp-sub"><a href="#" data-act="checkinv">${ui.busy ? 'Checking…' : 'Check against my inventory'}</a></div>`;
+    if (ui.inv) {
+      if (!ui.inv.rows.length) h += `<div class="tfp-msg">Matches your inventory, bazaar and market listings (checked ${fdate(ui.inv.at)}).</div>`;
+      else h += `<div class="tfp-row"><div class="tfp-top"><b>Not in your inventory (${ui.inv.rows.length})</b></div>` + ui.inv.rows.map(r => `<div class="tfp-sub">${r.excess}× ${esc(nameOf(r.id))} (tracked ${r.tracked}, you hold ${r.have})</div>`).join('') + `<div class="tfp-sub"><a href="#" data-act="removeexcess">${ui.armExcess ? 'tap again: remove these from stock' : 'remove these from stock'}</a></div></div>`;
+    }
     if (!rows.length) h += '<div class="tfp-msg">Nothing in stock. Items you buy show up here until they are sold.</div>';
     h += rows.map(r => `<div class="tfp-row"><div class="tfp-top"><span>${r.qty}× ${esc(nameOf(r.id))}</span><b class="${r.unk ? 'tfp-warn' : ''}">${fmt(r.c)}</b></div><div class="tfp-sub">${r.unk ? 'cost unknown · ' : fmt(r.c / r.qty) + ' each · '}oldest ${fdate(r.oldest)} · <a href="#" data-act="removestock" data-id="${esc(r.id)}">${ui.armRemove === r.id ? 'tap again: remove from stock' : 'remove'}</a></div></div>`).join('');
     const removed = Object.values(state.txs).filter(t => t.channel === 'writeoff' || (t.dir === 'buy' && isGift(t))).sort((a, b) => b.ts - a.ts);
@@ -971,11 +1019,12 @@
     const el = e.target.closest('[data-act]');
     if (!el) return;
     const act = el.dataset.act, id = el.dataset.id, v = el.dataset.v;
-    if (act === 'edit' || act === 'toggle' || act === 'removestock' || act === 'restorestock') e.preventDefault();
+    if (act === 'edit' || act === 'toggle' || act === 'removestock' || act === 'restorestock' || act === 'checkinv' || act === 'removeexcess') e.preventDefault();
     ui.msg = '';
     if (act !== 'giftall') ui.armGift = false;
     if (act !== 'giftolder') ui.armOlder = false;
     if (act !== 'removestock') ui.armRemove = null;
+    if (act !== 'removeexcess') ui.armExcess = false;
     try {
       if (act === 'close') ui.open = false, document.getElementById('tfp-wrap').classList.remove('open');
       else if (act === 'tab') { ui.tab = v; ui.editing = null; }
@@ -987,6 +1036,19 @@
         // A write-off: takes the remaining units out of stock (oldest buys first) without counting anything in profit.
         const left = ((computeFlips(state.txs, flipOpts()).open[id]) || []).reduce((a, l) => a + l.qty, 0);
         if (left > 0) { const ts = Math.floor(Date.now() / 1000), wid = 'wo:' + id + ':' + ts; state.txs[wid] = { id: wid, ts, dir: 'sell', channel: 'writeoff', gift: true, amount: 0, src: 'manual', locked: true, items: [{ id: Number(id), qty: left, name: nameOf(id), price: null }] }; save(); }
+      }
+      else if (act === 'checkinv') {
+        if (ui.busy) return;
+        ui.busy = true; render();
+        try { const n = await checkInventory(); ui.msg = n ? n + ' item type(s) are tracked as stock but not in your inventory.' : 'Your tracked stock matches what you hold.'; }
+        finally { ui.busy = false; }
+      }
+      else if (act === 'removeexcess') {
+        if (!ui.armExcess) { ui.armExcess = true; render(); return; }
+        ui.armExcess = false;
+        const ts = Math.floor(Date.now() / 1000);
+        (ui.inv ? ui.inv.rows : []).forEach(r => { const wid = 'wo:' + r.id + ':' + ts; state.txs[wid] = { id: wid, ts, dir: 'sell', channel: 'writeoff', gift: true, amount: 0, src: 'manual', locked: true, items: [{ id: Number(r.id), qty: r.excess, name: nameOf(r.id), price: null }] }; });
+        ui.msg = 'Removed ' + (ui.inv ? ui.inv.rows.length : 0) + ' item type(s) from stock.'; ui.inv = null; save();
       }
       else if (act === 'clearval') { const tx = state.txs[id]; tx.amount = null; tx.gift = false; tx.src = null; tx.locked = false; ui.editing = null; save(); }
       else if (act === 'restorestock') {
@@ -1065,7 +1127,7 @@
         const tb = document.querySelector('#topHeaderBanner .toolbar, .header-buttons-wrapper');
         const hdr = tb ? tb.outerHTML.replace(/<svg[\s\S]*?<\/svg>/g, '<svg/>').replace(/<form[\s\S]*?<\/form>/g, '<form/>') : null;
         let cats = null; try { cats = await api('torn/logcategories'); } catch (e) { cats = String(e.message || e); }
-        const sample = { itemSample: state.itemSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), header: hdr ? hdr.slice(0, 6000) : null, headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
+        const sample = { itemSample: state.itemSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, invInfo, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), header: hdr ? hdr.slice(0, 6000) : null, headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
         const ok = await copyText(JSON.stringify(sample, null, 1));
         ui.msg = ok ? 'Debug sample copied. Paste it to Claude.' : 'Could not copy. Sync first, then try again.';
       }
