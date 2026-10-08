@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.76-beta
+// @version      0.1.77-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -36,7 +36,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.76-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.77-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -1036,7 +1036,7 @@
       if (ui.showSkipped) skipped.forEach(f => {
         const tx = f.tx;
         const why = f.unmatched ? f.unmatched + ' unit(s) have no matching buy: bought before the sync window, or got another way. A longer look-back (Settings, then Re-sync from start) may find the buy.' : 'The items came from a buy or receive with no value. Find it in Stock or the sends and set a value.';
-        h += `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}${tradeTag(tx)}</span><span class="tfp-warn">not counted</span></div><div class="tfp-sub">${itemSummary(tx)} · ${gotWord(tx)} ${fmt(netAmt(tx))}</div><div class="tfp-sub tfp-warn">${why}</div></div>`;
+        h += `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}${tradeTag(tx)}</span><span class="tfp-warn">not counted</span></div><div class="tfp-sub">${itemSummary(tx)} · ${gotWord(tx)} ${fmt(netAmt(tx))}</div><div class="tfp-sub tfp-warn">${why}</div>${f.lines.filter(l => l.unmatched > 0).map(l => `<div class="tfp-sub"><a href="#" data-act="itemlog" data-id="${esc(l.itemId)}">${esc(nameOf(l.itemId))} history</a></div>`).join('')}</div>`;
       });
     }
     if (!Object.keys(state.txs).length) return h + '<div class="tfp-msg">Nothing imported yet. Tap Sync to read your Torn log.</div>';
@@ -1065,6 +1065,19 @@
     });
     return h;
   }
+  // Every buy, sale, send and removal of one item in time order with the running amount in stock, so a shortage can be traced.
+  function ledgerHtml() {
+    const id = ui.itemLog; if (!id) return '';
+    const txs = Object.values(state.txs).filter(t => t.items && t.items.some(i => String(i.id) === String(id))).sort((a, b) => (a.ts - b.ts) || String(a.id).localeCompare(String(b.id)));
+    let bal = 0;
+    const rows = txs.map(t => {
+      const qty = t.items.filter(i => String(i.id) === String(id)).reduce((a, i) => a + i.qty, 0), buy = t.dir === 'buy', gift = isGift(t);
+      if (buy && !gift) bal += qty; else if (!buy) bal -= qty;
+      const what = t.channel === 'writeoff' ? 'removed from stock' : buy ? (gift ? 'received as a gift (not stock)' : 'bought') : (gift ? 'given away' : 'sold');
+      return `<div class="tfp-sub">${fdate(t.ts)} · ${buy && !gift ? '+' : buy ? '' : '−'}${qty} ${what} (${chanLabel(t.channel)}${tradeTag(t)}) → <b class="${bal < 0 ? 'tfp-warn' : ''}">${bal} in stock</b></div>`;
+    });
+    return `<div class="tfp-row"><div class="tfp-top"><b>${esc(nameOf(id))} history</b><a href="#" data-act="itemlogclose">close</a></div>${rows.length ? rows.slice(-40).reverse().join('') : '<div class="tfp-sub">Nothing recorded for this item.</div>'}${rows.length > 40 ? '<div class="tfp-sub">(newest 40 of ' + rows.length + ')</div>' : ''}<div class="tfp-sub">A negative number means more was sold or sent than the tracker saw coming in.</div></div>`;
+  }
   function stockHtml() {
     const open = computeFlips(state.txs, flipOpts()).open;
     const rows = []; let total = 0, unknown = false;
@@ -1085,7 +1098,7 @@
     }
     if (state.inv && state.inv.unverified) h += `<div class="tfp-sub">${state.inv.unverified} item type(s) could not be checked (Torn did not accept their category).</div>`;
     if (!rows.length) h += '<div class="tfp-msg">Nothing in stock. Items you buy show up here until they are sold.</div>';
-    h += rows.map(r => `<div class="tfp-row"><div class="tfp-top"><span>${r.qty}× ${esc(nameOf(r.id))}</span><b class="${r.unk ? 'tfp-warn' : ''}">${fmt(r.c)}</b></div><div class="tfp-sub">${r.unk ? 'cost unknown · ' : fmt(r.c / r.qty) + ' each · '}oldest ${fdate(r.oldest)} · <a href="#" data-act="removestock" data-id="${esc(r.id)}">${ui.armRemove === r.id ? 'tap again: remove from stock' : 'remove'}</a></div></div>`).join('');
+    h += rows.map(r => `<div class="tfp-row"><div class="tfp-top"><span>${r.qty}× ${esc(nameOf(r.id))}</span><b class="${r.unk ? 'tfp-warn' : ''}">${fmt(r.c)}</b></div><div class="tfp-sub">${r.unk ? 'cost unknown · ' : fmt(r.c / r.qty) + ' each · '}oldest ${fdate(r.oldest)} · <a href="#" data-act="itemlog" data-id="${esc(r.id)}">history</a> · <a href="#" data-act="removestock" data-id="${esc(r.id)}">${ui.armRemove === r.id ? 'tap again: remove from stock' : 'remove'}</a></div></div>`).join('');
     const removed = Object.values(state.txs).filter(t => t.channel === 'writeoff' || (t.dir === 'buy' && isGift(t))).sort((a, b) => b.ts - a.ts);
     if (removed.length) {
       h += `<div class="tfp-row"><div class="tfp-sub">${link('showRemoved', removed.length + ' removed or received as gifts (not in stock, not in profit)')}</div>`;
@@ -1171,7 +1184,7 @@
       <div class="tfp-tabs">${tabs.map(t => `<button class="tfp-tab ${ui.tab === t[0] ? 'on' : ''}" data-act="tab" data-v="${t[0]}">${t[1]}</button>`).join('')}</div>
       ${lastSaveOk ? '' : '<div class="tfp-msg tfp-warn">⚠️ Could not save your data on this device (storage may be full). Export a backup in Settings.</div>'}
       ${ui.msg ? `<div class="tfp-msg">${esc(ui.msg)}</div>` : ''}
-      ${ui.tab === 'profit' ? profitHtml() : ui.tab === 'stock' ? stockHtml() : ui.tab === 'receipts' ? receiptsHtml() : settingsHtml()}`;
+      ${ui.itemLog && (ui.tab === 'profit' || ui.tab === 'stock') ? ledgerHtml() : ''}${ui.tab === 'profit' ? profitHtml() : ui.tab === 'stock' ? stockHtml() : ui.tab === 'receipts' ? receiptsHtml() : settingsHtml()}`;
   }
   function toast(msg) {
     let t = document.getElementById('tfp-toast');
@@ -1206,7 +1219,7 @@
     const el = e.target.closest('[data-act]');
     if (!el) return;
     const act = el.dataset.act, id = el.dataset.id, v = el.dataset.v;
-    if (act === 'edit' || act === 'toggle' || act === 'removestock' || act === 'restorestock' || act === 'checkinv' || act === 'removeexcess') e.preventDefault();
+    if (act === 'edit' || act === 'toggle' || act === 'removestock' || act === 'restorestock' || act === 'checkinv' || act === 'removeexcess' || act === 'itemlog' || act === 'itemlogclose') e.preventDefault();
     ui.msg = '';
     if (act !== 'giftall') ui.armGift = false;
     if (act !== 'giftolder') ui.armOlder = false;
@@ -1224,6 +1237,8 @@
         const left = ((computeFlips(state.txs, flipOpts()).open[id]) || []).reduce((a, l) => a + l.qty, 0);
         if (left > 0) { const ts = Math.floor(Date.now() / 1000), wid = 'wo:' + id + ':' + ts; state.txs[wid] = { id: wid, ts, dir: 'sell', channel: 'writeoff', gift: true, amount: 0, src: 'manual', locked: true, items: [{ id: Number(id), qty: left, name: nameOf(id), price: null }] }; save(); }
       }
+      else if (act === 'itemlog') ui.itemLog = id;
+      else if (act === 'itemlogclose') ui.itemLog = null;
       else if (act === 'checkinv') {
         if (ui.busy) return;
         ui.busy = true; render();
