@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.42-beta
+// @version      0.1.43-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -785,25 +785,23 @@
   }
   function stockHtml() {
     const open = computeFlips(state.txs, flipOpts()).open;
-    const hiddenIds = state.hiddenStock || {};
-    const rows = [], hidden = []; let total = 0, unknown = false;
+    const rows = []; let total = 0, unknown = false;
     Object.entries(open).forEach(([id, q]) => {
       const left = q.filter(l => l.qty > 0); if (!left.length) return;
       const qty = left.reduce((a, l) => a + l.qty, 0);
       const unk = left.some(l => l.unit == null);
       const c = unk ? null : left.reduce((a, l) => a + l.qty * l.unit, 0);
-      const row = { id, qty, c, unk, oldest: Math.min.apply(null, left.map(l => l.ts)) };
-      if (hiddenIds[id]) { hidden.push(row); return; }
       if (unk) unknown = true; else total += c;
-      rows.push(row);
+      rows.push({ id, qty, c, unk, oldest: Math.min.apply(null, left.map(l => l.ts)) });
     });
     rows.sort((a, b) => (b.c || 0) - (a.c || 0));
     let h = `<div class="tfp-h"><div><b>Unsold stock</b> <b>${fmt(total)}</b><div class="tfp-sub">at cost · FIFO · ${rows.length} item type(s)${unknown ? ' · some cost unknown' : ''}</div></div></div>`;
     if (!rows.length) h += '<div class="tfp-msg">Nothing in stock. Items you buy show up here until they are sold.</div>';
-    h += rows.map(r => `<div class="tfp-row"><div class="tfp-top"><span>${r.qty}× ${esc(nameOf(r.id))}</span><b class="${r.unk ? 'tfp-warn' : ''}">${fmt(r.c)}</b></div><div class="tfp-sub">${r.unk ? 'cost unknown · ' : fmt(r.c / r.qty) + ' each · '}oldest ${fdate(r.oldest)} · <a href="#" data-act="hide" data-id="${esc(r.id)}">hide</a></div></div>`).join('');
-    if (hidden.length) {
-      h += `<div class="tfp-row"><div class="tfp-sub">${link('showHidden', hidden.length + ' hidden')}</div>`;
-      if (ui.showHidden) h += hidden.map(r => `<div class="tfp-top"><span class="tfp-sub">${r.qty}× ${esc(nameOf(r.id))}</span><a href="#" data-act="unhide" data-id="${esc(r.id)}">show</a></div>`).join('');
+    h += rows.map(r => `<div class="tfp-row"><div class="tfp-top"><span>${r.qty}× ${esc(nameOf(r.id))}</span><b class="${r.unk ? 'tfp-warn' : ''}">${fmt(r.c)}</b></div><div class="tfp-sub">${r.unk ? 'cost unknown · ' : fmt(r.c / r.qty) + ' each · '}oldest ${fdate(r.oldest)} · <a href="#" data-act="removestock" data-id="${esc(r.id)}">${ui.armRemove === r.id ? 'tap again: remove from stock' : 'remove'}</a></div></div>`).join('');
+    const removed = Object.values(state.txs).filter(t => t.channel === 'writeoff').sort((a, b) => b.ts - a.ts);
+    if (removed.length) {
+      h += `<div class="tfp-row"><div class="tfp-sub">${link('showRemoved', removed.length + ' removed (not counted in profit)')}</div>`;
+      if (ui.showRemoved) h += removed.map(t => `<div class="tfp-top"><span class="tfp-sub">${t.items[0].qty}× ${esc(nameOf(t.items[0].id))} · ${fdate(t.ts)}</span><a href="#" data-act="restorestock" data-id="${esc(t.id)}">restore</a></div>`).join('');
       h += '</div>';
     }
     return h;
@@ -891,16 +889,23 @@
     const el = e.target.closest('[data-act]');
     if (!el) return;
     const act = el.dataset.act, id = el.dataset.id, v = el.dataset.v;
-    if (act === 'edit' || act === 'toggle' || act === 'hide' || act === 'unhide') e.preventDefault();
+    if (act === 'edit' || act === 'toggle' || act === 'removestock' || act === 'restorestock') e.preventDefault();
     ui.msg = '';
     if (act !== 'giftall') ui.armGift = false;
+    if (act !== 'removestock') ui.armRemove = null;
     try {
       if (act === 'close') ui.open = false, document.getElementById('tfp-wrap').classList.remove('open');
       else if (act === 'tab') { ui.tab = v; ui.editing = null; }
       else if (act === 'range') ui.range = Number(el.value);
       else if (act === 'toggle') ui[v] = !ui[v];
-      else if (act === 'hide') { state.hiddenStock = state.hiddenStock || {}; state.hiddenStock[id] = true; save(); }
-      else if (act === 'unhide') { delete (state.hiddenStock || {})[id]; save(); }
+      else if (act === 'removestock') {
+        if (ui.armRemove !== id) { ui.armRemove = id; render(); return; }
+        ui.armRemove = null;
+        // A write-off: takes the remaining units out of stock (oldest buys first) without counting anything in profit.
+        const left = ((computeFlips(state.txs, flipOpts()).open[id]) || []).reduce((a, l) => a + l.qty, 0);
+        if (left > 0) { const ts = Math.floor(Date.now() / 1000), wid = 'wo:' + id + ':' + ts; state.txs[wid] = { id: wid, ts, dir: 'sell', channel: 'writeoff', gift: true, amount: 0, src: 'manual', locked: true, items: [{ id: Number(id), qty: left, name: nameOf(id), price: null }] }; save(); }
+      }
+      else if (act === 'restorestock') { delete state.txs[id]; save(); }
       else if (act === 'setting') { const d = document.getElementById('tfp-days'); if (d) sset('startDays', Number(d.value) || 30); }
       else if (act === 'edit') ui.editing = ui.editing === id ? null : id;
       else if (act === 'dir') state.txs[id].dir = v, save();
