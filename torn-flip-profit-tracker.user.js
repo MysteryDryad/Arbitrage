@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.33-beta
+// @version      0.1.34-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -691,6 +691,7 @@
   .tfp-msg{background:#2a2a2a;border-radius:8px;padding:8px;margin:6px 0}
   .tfp-gap{height:6px}
   .tfp-sel{width:auto;padding:4px}
+  .tfp-ctl{display:flex;gap:6px;align-items:center}
   #tfp-card a{color:#7fb0ff}
   .tfp-disc{width:100%;border-collapse:collapse;margin-top:6px;font-size:12px}
   .tfp-disc td{border:1px solid #444;padding:4px;vertical-align:top}
@@ -702,7 +703,7 @@
   const itemSummary = tx => tx.items.slice(0, 5).map(i => i.qty + '× ' + esc(i.name || nameOf(i.id))).join(', ') + (tx.items.length > 5 ? ' + ' + (tx.items.length - 5) + ' more' : '') + (tx.count > 1 ? ' · ' + tx.count + ' sends' : '');
   const chanLabel = c => ({ market: 'Market', bazaar: 'Bazaar', trade: 'Trade', send: 'Send', recv: 'Received' }[c] || c);
 
-  const rangeSelect = () => `<select class="tfp-in tfp-sel" data-act="range">${[[1, 'Last 24h'], [7, 'Last 7 days'], [30, 'Last 30 days'], [0, 'All time']].map(r => `<option value="${r[0]}"${ui.range === r[0] ? ' selected' : ''}>${r[1]}</option>`).join('')}</select>`;
+  const rangeSelect = () => `<select class="tfp-in tfp-sel" data-act="range">${[[1, 'Last 24 hours'], [7, 'Last 7 days'], [30, 'Last 30 days'], [90, 'Last 90 days'], [0, 'All time']].map(r => `<option value="${r[0]}"${ui.range === r[0] ? ' selected' : ''}>${r[1]}</option>`).join('')}</select>`;
   const pnlCls = n => n == null ? 'tfp-warn' : n >= 0 ? 'tfp-pos' : 'tfp-neg';
   const link = (key, label) => `<a href="#" data-act="toggle" data-v="${key}">${ui[key] ? '▾' : '▸'} ${label}</a>`;
   function profitHtml() {
@@ -714,14 +715,15 @@
     const revenue = lines.reduce((a, l) => a + l.proceeds, 0), cost = lines.reduce((a, l) => a + (l.cost || 0), 0);
     const profit = done.reduce((a, f) => a + f.profit, 0);
     let h = `<div class="tfp-h"><div><span class="${pnlCls(profit)}" style="font-size:20px"><b>${fmt(profit)}</b></span>
-      <div class="tfp-sub">${done.length} flip${done.length === 1 ? '' : 's'}${cost > 0 ? ' · ' + (profit / cost * 100).toFixed(1) + '% return' : ''}</div></div>${rangeSelect()}</div>
+      <div class="tfp-sub">${done.length} flip${done.length === 1 ? '' : 's'}${cost > 0 ? ' · ' + (profit / cost * 100).toFixed(1) + '% return' : ''}</div></div><div class="tfp-ctl">${rangeSelect()}<button class="tfp-b" data-act="sync">${ui.busy ? 'Syncing…' : state.resume ? 'Continue sync' : 'Sync'}</button></div></div>
       <div class="tfp-sub">Sold for ${fmt(revenue)} · cost ${fmt(cost)}</div>`;
     if (res.pending.length) {
       h += `<div class="tfp-msg tfp-warn"><a href="#" data-act="toggle" data-v="showPending">⚠️ ${res.pending.length} need${res.pending.length === 1 ? 's' : ''} a value ${ui.showPending ? '▾' : '▸'}</a></div>`;
       if (ui.showPending) h += pendingHtml();
     }
     if (flips.length > done.length) h += `<div class="tfp-sub tfp-warn">${flips.length - done.length} sale(s) not counted: no matching buy, or a buy with no value.</div>`;
-    if (!flips.length) return h + '<div class="tfp-msg">No flips yet. They appear once you sell items you bought.</div>';
+    if (!Object.keys(state.txs).length) return h + '<div class="tfp-msg">Nothing imported yet. Tap Sync to read your Torn log.</div>';
+    if (!flips.length) return h + '<div class="tfp-msg">No flips in this time range. Flips appear once you sell items you bought.</div>';
     // One closed row per category; opening it lists that category's sales.
     const CATS = [['trade', 'Trade'], ['market', 'Market'], ['bazaar', 'Bazaar'], ['send', 'Sent']];
     CATS.forEach(([ch, label]) => {
@@ -807,8 +809,8 @@
       <tr><td>Key access level</td><td>Limited Access (needed for the log).</td></tr></table>
       <div class="tfp-sub">Tip: make a separate key just for this script. Deleting it in Torn settings revokes access at once.</div>`;
     return `${keyBox}<div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
-      <input class="tfp-in" id="tfp-days" data-act="setting" inputmode="numeric" value="${esc(sget('startDays', 30))}"><div class="tfp-gap"></div><button class="tfp-b" data-act="sync">${ui.busy ? 'Syncing…' : 'Sync now'}</button>
-      <div class="tfp-sub">Syncs automatically when you open this panel. Last sync: ${state.syncedAt || state.lastSync ? fdate(state.syncedAt || state.lastSync) : 'never'} · ${Object.keys(state.txs).length} records</div>
+      <input class="tfp-in" id="tfp-days" data-act="setting" inputmode="numeric" value="${esc(sget('startDays', 30))}">
+      <div class="tfp-sub">Sync from the Profit tab. Last sync: ${state.syncedAt || state.lastSync ? fdate(state.syncedAt || state.lastSync) : 'never'} · ${Object.keys(state.txs).length} records</div>
       <div class="tfp-gap"></div><div class="tfp-sub">${link('more', 'Backup &amp; troubleshooting')}</div>
       ${ui.more ? settingsMore() : ''}`;
   }
@@ -848,7 +850,7 @@
       else if (act === 'tab') { ui.tab = v; ui.editing = null; }
       else if (act === 'range') ui.range = Number(el.value);
       else if (act === 'toggle') ui[v] = !ui[v];
-      else if (act === 'setting') { sset('startDays', Number(val('tfp-days')) || 30); }
+      else if (act === 'setting') { const d = document.getElementById('tfp-days'); if (d) sset('startDays', Number(d.value) || 30); }
       else if (act === 'edit') ui.editing = ui.editing === id ? null : id;
       else if (act === 'dir') state.txs[id].dir = v, save();
       else if (act === 'saveval') {
@@ -876,7 +878,8 @@
       else if (act === 'clearkey') { sset('apikey', ''); state.me = null; save(); ui.msg = 'Key removed from this device.'; }
       else if (act === 'sync' || act === 'resync') {
         if (act === 'resync') { state.lastSync = 0; state.seenTitles = {}; state.tradeParts = {}; state.sendParts = {}; state.moneyEvents = {}; state.resume = null; save(); }
-        sset('startDays', Number(val('tfp-days')) || 30);
+        if (ui.busy) return;
+        { const d = document.getElementById('tfp-days'); if (d) sset('startDays', Number(d.value) || 30); }
         ui.busy = true; render();
         try { const n = await syncLog(); ui.msg = 'Sync done: ' + n + ' new record(s).'; }
         finally { ui.busy = false; }
@@ -909,14 +912,7 @@
     render();
   }
 
-  async function autoSync() {
-    if (ui.busy || !getKey() || (!state.resume && Math.floor(Date.now() / 1000) - (state.syncedAt || 0) < 300)) return;
-    ui.busy = true; ui.msg = 'Syncing…'; render();
-    try { const n = await syncLog(); ui.msg = n ? 'Synced: ' + n + ' new record(s).' : ''; }
-    catch (err) { ui.msg = String(err.message || err); }
-    finally { ui.busy = false; render(); }
-  }
-  function openPanel() { ui.open = true; document.getElementById('tfp-wrap').classList.add('open'); render(); bootP.then(() => { render(); autoSync(); }); }
+  function openPanel() { ui.open = true; document.getElementById('tfp-wrap').classList.add('open'); render(); bootP.then(() => render()); }
   function placeBtn(b, pos) {
     const de = document.documentElement;
     const left = Math.min(Math.max(0, pos.left), Math.max(0, de.scrollWidth - 40));
