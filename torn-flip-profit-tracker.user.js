@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.65-beta
+// @version      0.1.66-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -76,21 +76,21 @@
   let idbErr = null;
 
 
-  function http(url) {
+  function http(url, headers) {
     return new Promise((resolve, reject) => {
       if (typeof PDA_httpGet === 'function') {
-        PDA_httpGet(url, {}).then(r => resolve({ status: r.status || r.statusCode, text: r.responseText })).catch(reject);
+        PDA_httpGet(url, headers || {}).then(r => resolve({ status: r.status || r.statusCode, text: r.responseText })).catch(reject);
         return;
       }
       if (typeof GM_xmlhttpRequest === 'function') {
         GM_xmlhttpRequest({
-          method: 'GET', url,
+          method: 'GET', url, headers: headers || {},
           onload: r => resolve({ status: r.status, text: r.responseText }),
           onerror: reject, ontimeout: reject
         });
         return;
       }
-      fetch(url).then(async r => resolve({ status: r.status, text: await r.text() })).catch(reject);
+      fetch(url, headers ? { headers } : undefined).then(async r => resolve({ status: r.status, text: await r.text() })).catch(reject);
     });
   }
 
@@ -841,6 +841,42 @@
     if (rc.halved) why += ' (The page listed every row twice, so each was counted once.)';
     return 'PawnHub balance: valued ' + hits.length + ' of ' + itemEvents + ' item events' + (already ? ', ' + already + ' more already had the same amount on your sends (from a receipt or an earlier Balance import)' : '') + (rest.length ? ', ' + rest.length + ' have no send with the same item, quantity and time (or the send is not in your log yet)' : '') + '. The Balance page starts ' + (earliest ? fdate(earliest) : '?') + (olderCount ? ', so ' + olderCount + ' older send(s) have no PawnHub entry (see Profit, needs a value).' : '.') + why;
   }
+  // Weaver receipts through TornW3B's API (its own key, sent only to weav3r.dev): matched to your Torn trades by trade ID.
+  function rcFromWeaverApi(r) {
+    if (!r || !r.trade_id || !Array.isArray(r.items) || !r.items.length) return null;
+    const items = r.items.map(i => ({ id: Number(i.item_id), name: i.item_name, qty: Number(i.quantity), price: Number(i.price_used) }));
+    if (items.some(i => !i.id || !i.qty || !(i.price >= 0))) return null;
+    return { source: 'weaver', url: 'https://weav3r.dev/receipt/' + r.id, tradeId: Number(r.trade_id), buyer: r.buyer_name, seller: state.me.name, sellerId: state.me.id,
+      items, total: Number(r.total_value) || items.reduce((a, i) => a + i.price * i.qty, 0), ts: r.created_at || null };
+  }
+  async function weaverImport() {
+    const key = sget('w3bkey', '');
+    if (!key) throw new Error('Add your TornW3B key in Settings first.');
+    await ensureMe();
+    const base = 'https://weav3r.dev/api/trades/' + state.me.id;
+    const call = async url => {
+      const r = await http(url, { 'X-API-Key': key, Accept: 'application/json' });
+      if (r && r.status === 401) throw new Error('TornW3B did not accept your key (HTTP 401). Check it in Settings.');
+      if (r && r.status === 429) throw new Error('TornW3B is limiting requests. Wait a minute and tap again.');
+      if (!r || r.status >= 400) throw new Error('TornW3B answered HTTP ' + (r && r.status) + (r && r.status === 403 ? ' (access denied: the trades endpoint may need Premium)' : ''));
+      try { return JSON.parse(r.text); } catch (e) { throw new Error('TornW3B sent something I could not read.'); }
+    };
+    const list = (await call(base)).trades || [];
+    const w = state.w3b = state.w3b || { done: {}, miss: {} };
+    const now = Math.floor(Date.now() / 1000);
+    const todo = list.filter(t => t && t.id && !w.done[t.id] && !(w.miss[t.id] > now - 6 * 3600));
+    let attached = 0, missing = 0;
+    try {
+      for (const t of todo.slice(0, 40)) {
+        await sleep(900);
+        const rc = rcFromWeaverApi(await call(base + '/' + encodeURIComponent(t.id)));
+        const tx = rc && Object.values(state.txs).find(x => x.tradeId && String(x.tradeId) === String(rc.tradeId));
+        if (tx) { attachReceipt(rc, tx); w.done[t.id] = 1; attached++; } else { w.miss[t.id] = now; missing++; }
+      }
+    } finally { save(); }
+    const left = Math.max(0, todo.length - 40);
+    return 'Weaver: ' + attached + ' receipt(s) attached' + (missing ? ', ' + missing + ' not found in your log (older than your history, or not synced yet)' : '') + (left ? ', ' + left + ' more waiting: tap again' : '') + (!todo.length ? ' (nothing new)' : '') + '.';
+  }
   async function handleReceipt(rc) {
     if (rc.source === 'pawnhub-balance') return applyPawnHubBalance(rc);
     await ensureMe();
@@ -1031,6 +1067,7 @@
   function receiptsHtml() {
     let h = '<div class="tfp-sub">Easiest: open a receipt (Weaver, TornExchange or PawnHub), tap "Add to profit tracker" on that page, and repeat for each receipt. Then tap "Process saved receipts" here. On PawnHub\'s Balance page, tap the button once and then Process: it values all your matching sends at once. Pasting links only works for sites that don\'t build the page after it loads.</div><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-rc" placeholder="https://tornexchange.com/receipt/..."></textarea><div class="tfp-gap"></div><button class="tfp-b" data-act="addrc">Add receipt</button>';
     if (ui.failedLinks && ui.failedLinks.length) h += '<div class="tfp-msg">Could not read automatically. Open, and it adds itself (then come back here): ' + ui.failedLinks.map((u, i) => '<a href="' + esc(u.split('#')[0]) + '#tfp-add" target="_blank" rel="noopener">receipt ' + (i + 1) + '</a>').join(' · ') + '</div>';
+    if (sget('w3bkey', '')) h += ' <button class="tfp-b" data-act="w3bimport">' + (ui.busy ? 'Importing…' : 'Import Weaver receipts') + '</button>';
     const inbox = hasGM ? sget('inbox', []) : [];
     if (inbox.length) h += ` <button class="tfp-b" data-act="inbox">Process ${inbox.length} saved receipt(s)</button>`;
     if (ui.pendingReceipt) {
@@ -1051,11 +1088,15 @@
       <tr><td>Purpose of use</td><td>Read your own item log, item names and key info to calculate flip profit. Read-only; no game actions.</td></tr>
       <tr><td>Key storage</td><td>Only in this script's local storage on this device.</td></tr>
       <tr><td>Key sharing</td><td>Sent only to api.torn.com. Never shared with anyone else.</td></tr>
+      <tr><td>TornW3B key</td><td>Optional. Only if you add one for Weaver receipts: stored on this device, sent only to weav3r.dev. Your Torn key never goes there.</td></tr>
       <tr><td>Key access level</td><td>Limited Access (needed for the log).</td></tr></table>
       <div class="tfp-sub">Tip: make a separate key just for this script. Deleting it in Torn settings revokes access at once.</div>`;
     return `${keyBox}<div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
       <input class="tfp-in" id="tfp-days" data-act="setting" inputmode="numeric" value="${esc(sget('startDays', 30))}">
       <div class="tfp-sub">Sync from the Profit tab. Last sync: ${state.syncedAt || state.lastSync ? fdate(state.syncedAt || state.lastSync) : 'never'} · ${Object.keys(state.txs).length} records</div>
+      <div class="tfp-gap"></div><div class="tfp-sub">TornW3B key (optional, for importing Weaver receipts automatically). Use the key you registered on TornW3B, not your Torn key. It is stored on this device and sent only to weav3r.dev.</div>
+      <input class="tfp-in" id="tfp-w3b" type="password" autocomplete="off" placeholder="${sget('w3bkey', '') ? 'TornW3B key saved (hidden). Paste a new one to replace.' : 'Paste your TornW3B key'}"><div class="tfp-gap"></div>
+      <button class="tfp-b" data-act="savew3b">Save TornW3B key</button> ${sget('w3bkey', '') ? '<button class="tfp-b" data-act="clearw3b">Remove</button>' : ''}
       <div class="tfp-gap"></div><div class="tfp-sub">Check my inventory automatically (reads inventory, bazaar and market listings; only reports, never changes stock by itself)</div>
       <select class="tfp-in tfp-sel" data-act="invevery">${[[0, 'Off'], [30, 'Every 30 minutes'], [60, 'Every hour'], [180, 'Every 3 hours'], [360, 'Every 6 hours']].map(r => `<option value="${r[0]}"${Number(sget('invEvery', 60)) === r[0] ? ' selected' : ''}>${r[1]}</option>`).join('')}</select>
       <div class="tfp-gap"></div><div class="tfp-sub">${link('more', 'Backup &amp; troubleshooting')}</div>
@@ -1149,6 +1190,17 @@
         if (t && t.channel === 'writeoff') delete state.txs[id];
         else if (t) { t.gift = false; t.amount = null; t.src = null; t.locked = false; } // goes back to "needs a value"
         save();
+      }
+      else if (act === 'savew3b') {
+        const k = val('tfp-w3b').trim();
+        if (!/^[A-Za-z0-9_-]{8,64}$/.test(k)) throw new Error('That does not look like a TornW3B key.');
+        sset('w3bkey', k); ui.msg = 'TornW3B key saved on this device.';
+      }
+      else if (act === 'clearw3b') { sset('w3bkey', ''); ui.msg = 'TornW3B key removed from this device.'; }
+      else if (act === 'w3bimport') {
+        if (ui.busy) return;
+        ui.busy = true; render();
+        try { ui.msg = await weaverImport(); } finally { ui.busy = false; }
       }
       else if (act === 'invevery') { sset('invEvery', Number(el.value)); state.invTry = 0; save(); }
       else if (act === 'setting') { const d = document.getElementById('tfp-days'); if (d) sset('startDays', Number(d.value) || 30); }
