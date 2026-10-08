@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.30-beta
+// @version      0.1.31-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -376,6 +376,11 @@
     const m = String(d.trade_id || '').match(/ID=(\d+)/);
     return m ? m[1] : null;
   }
+  function compactTradeData(d) {
+    const o = {};
+    ['user', 'items', 'money'].forEach(k => { if (d[k] !== undefined) o[k] = d[k]; });
+    return o;
+  }
   function tradeMoney(d) {
     for (const k of ['money', 'amount', 'money_gained', 'money_spent', 'cost', 'value', 'total']) {
       if (typeof d[k] === 'number') return d[k];
@@ -418,6 +423,11 @@
   let lastSyncInfo = null;
   const ui = { open: false, tab: 'profit', items: false, breakdown: false, more: false, showPending: false, range: 30, editing: null, msg: '', pendingReceipt: null, candidates: [], busy: false };
   const save = () => sset('state', state);
+  // Read the saved copy back and compare, so a silently failing save shows up as a warning.
+  function verifySaved() {
+    try { const back = sget('state', null); lastSaveOk = !!back && Object.keys(back.txs || {}).length === Object.keys(state.txs || {}).length; }
+    catch (e) { lastSaveOk = false; }
+  }
   const netAmt = tx => (tx.channel === 'market' && tx.dir === 'sell' && tx.src === 'log' && tx.amount != null) ? tx.amount * (1 - flipOpts().marketFee) : tx.amount;
   const flipOpts = () => ({ marketFee: Math.min(100, Math.max(0, Number(sget('marketFee', 5)) || 0)) / 100 });
   const nameOf = id => itemNames[id] || ('Item ' + id);
@@ -500,7 +510,7 @@
           if (tid) {
             state.tradeParts = state.tradeParts || {};
             const tp = state.tradeParts[tid] = state.tradeParts[tid] || { parts: {} };
-            tp.parts[e.id] = { title, ts: e.timestamp, data: e.data || {} };
+            tp.parts[e.id] = { title, ts: e.timestamp, data: compactTradeData(e.data || {}) };
           }
           return;
         }
@@ -520,6 +530,7 @@
       if (oldest <= from) break;
       const to = oldest === prevTo ? oldest - 1 : oldest;
       prevTo = oldest; curTo = to;
+      state.resume = { from, to, newest }; save(); // checkpoint: an interrupted import continues from here
       await sleep(650);
       j = await fetchPage(to);
     }
@@ -536,7 +547,7 @@
     // The log arrives newest-first, so if we stopped at the page cap, older entries were not read: keep the old cursor.
     if (!capped) { state.lastSync = newest; state.syncedAt = Math.floor(Date.now() / 1000); state.resume = null; }
     else state.resume = { from, to: curTo, newest };
-    save();
+    save(); verifySaved();
     if (capped) throw new Error('Imported part of your history (' + added + ' new). Tap Sync now again to continue.');
     return added;
   }
@@ -836,13 +847,13 @@
   }
 
   async function autoSync() {
-    if (ui.busy || !getKey() || Math.floor(Date.now() / 1000) - (state.syncedAt || 0) < 300) return;
+    if (ui.busy || !getKey() || (!state.resume && Math.floor(Date.now() / 1000) - (state.syncedAt || 0) < 300)) return;
     ui.busy = true; ui.msg = 'Syncing…'; render();
     try { const n = await syncLog(); ui.msg = n ? 'Synced: ' + n + ' new record(s).' : ''; }
     catch (err) { ui.msg = String(err.message || err); }
     finally { ui.busy = false; render(); }
   }
-  function openPanel() { ui.open = true; document.getElementById('tfp-wrap').classList.add('open'); render(); autoSync(); }
+  function openPanel() { verifySaved(); ui.open = true; document.getElementById('tfp-wrap').classList.add('open'); render(); autoSync(); }
   function placeBtn(b, pos) {
     const de = document.documentElement;
     const left = Math.min(Math.max(0, pos.left), Math.max(0, de.scrollWidth - 40));
