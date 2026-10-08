@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.77-beta
+// @version      0.1.78-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -36,7 +36,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.77-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.78-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -419,7 +419,10 @@
     { re: /bazaar.*(buy|bought|purchase)/i, channel: 'bazaar', dir: 'buy' },
     { re: /bazaar.*(sell|sold|sale)/i, channel: 'bazaar', dir: 'sell' },
     { re: /item ?market.*(buy|bought|purchase)/i, channel: 'market', dir: 'buy' },
-    { re: /item ?market.*(sell|sold|sale)/i, channel: 'market', dir: 'sell' }
+    { re: /item ?market.*(sell|sold|sale)/i, channel: 'market', dir: 'sell' },
+    { re: /^item abroad buy/i, channel: 'abroad', dir: 'buy' }, // flowers and plushies bought while travelling
+    { re: /^item shop buy/i, channel: 'shop', dir: 'buy' },
+    { re: /^item shop sell/i, channel: 'shop', dir: 'sell' }
   ];
 
   function pickItems(d) {
@@ -758,7 +761,7 @@
         if (title) state.seenTitles[title] = (state.seenTitles[title] || 0) + 1;
         if (e.timestamp > newest) newest = e.timestamp;
         state.seenExamples = state.seenExamples || {};
-        if (title && !state.seenExamples[title] && Object.keys(state.seenExamples).length < 80 && !/^(Crime|Forums|Message|Faction newsletter)/i.test(title)) state.seenExamples[title] = e;
+        if (title && !state.seenExamples[title] && (Object.keys(state.seenExamples).length < 80 || /abroad|shop (buy|sell)/i.test(title)) && !/^(Crime|Forums|Message|Faction newsletter)/i.test(title)) state.seenExamples[title] = e;
         if (/^Money (receive|send)/i.test(title) && e.data && typeof e.data.money === 'number') {
           state.moneyEvents = state.moneyEvents || {};
           state.moneyEvents[e.id] = { ts: e.timestamp, dir: /receive/i.test(title) ? 'in' : 'out', cp: e.data.sender != null ? e.data.sender : (e.data.receiver != null ? e.data.receiver : (e.data.user != null ? e.data.user : null)), amount: e.data.money };
@@ -1002,7 +1005,7 @@
   const fdate = ts => { const d = new Date(ts * 1000); return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }) + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' }) + ' TCT'; };
   const itemSummary = tx => tx.items.slice(0, 5).map(i => i.qty + '× ' + esc(i.name || nameOf(i.id))).join(', ') + (tx.items.length > 5 ? ' + ' + (tx.items.length - 5) + ' more' : '') + (tx.count > 1 ? ' · ' + tx.count + ' sends' : '');
   const tradeTag = tx => tx.tradeId ? ' · #' + tx.tradeId : '';
-  const chanLabel = c => ({ market: 'Market', bazaar: 'Bazaar', trade: 'Trade', send: 'Send', recv: 'Received' }[c] || c);
+  const chanLabel = c => ({ market: 'Market', bazaar: 'Bazaar', trade: 'Trade', send: 'Send', recv: 'Received', abroad: 'Abroad', shop: 'Shop' }[c] || c);
 
   const rangeSelect = () => `<select class="tfp-in tfp-sel" data-act="range">${[[1, 'Last 24 hours'], [7, 'Last 7 days'], [30, 'Last 30 days'], [90, 'Last 90 days'], [0, 'All time']].map(r => `<option value="${r[0]}"${ui.range === r[0] ? ' selected' : ''}>${r[1]}</option>`).join('')}</select>`;
   const pnlCls = n => n == null ? 'tfp-warn' : n >= 0 ? 'tfp-pos' : 'tfp-neg';
@@ -1042,7 +1045,7 @@
     if (!Object.keys(state.txs).length) return h + '<div class="tfp-msg">Nothing imported yet. Tap Sync to read your Torn log.</div>';
     if (!flips.length) return h + '<div class="tfp-msg">No flips in this time range. Flips appear once you sell items you bought.</div>';
     // One closed row per category; opening it lists that category's sales.
-    const CATS = [['trade', 'Trade'], ['market', 'Market'], ['bazaar', 'Bazaar'], ['send', 'Sent']];
+    const CATS = [['trade', 'Trade'], ['market', 'Market'], ['bazaar', 'Bazaar'], ['send', 'Sent'], ['shop', 'Shop']];
     CATS.forEach(([ch, label]) => {
       const fs = done.filter(f => f.tx.channel === ch); // sales that could not be costed are listed once, under "not counted"
       const pend = res.pending.filter(tx => tx.channel === ch && tx.dir === 'sell' && tx.ts >= cutoff).sort((a, b) => b.ts - a.ts);
@@ -1450,7 +1453,7 @@
   }
 
   if (typeof module !== 'undefined') {
-    module.exports = { parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
+    module.exports = { LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
   }
   if (typeof document !== 'undefined' && !globalThis.__TFP_TEST) init();
 })();
