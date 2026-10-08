@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.45-beta
+// @version      0.1.46-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -496,6 +496,8 @@
     catch (e) { lastSaveOk = false; }
   }
   const netAmt = tx => tx.amount;
+  const gotWord = tx => tx.channel === 'send' ? 'received' : 'sold for';
+  const costOf = f => f.lines.some(l => l.matched > 0 && l.cost == null) ? null : f.lines.reduce((a, l) => a + (l.cost || 0), 0);
   const flipOpts = () => ({ marketFee: 0, values: itemValues }); // Torn's market-sale log amount is already after the fee
   const nameOf = id => itemNames[id] || ('Item ' + id);
 
@@ -762,7 +764,7 @@
       if (ui.showSkipped) skipped.forEach(f => {
         const tx = f.tx;
         const why = f.unmatched ? f.unmatched + ' unit(s) have no matching buy: bought before the sync window, or got another way. A longer look-back (Settings, then Re-sync from start) may find the buy.' : 'The items came from a buy or receive with no value. Find it in Stock or the sends and set a value.';
-        h += `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}</span><span class="tfp-warn">not counted</span></div><div class="tfp-sub">${itemSummary(tx)} · sold for ${fmt(netAmt(tx))}</div><div class="tfp-sub tfp-warn">${why}</div></div>`;
+        h += `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}</span><span class="tfp-warn">not counted</span></div><div class="tfp-sub">${itemSummary(tx)} · ${gotWord(tx)} ${fmt(netAmt(tx))}</div><div class="tfp-sub tfp-warn">${why}</div></div>`;
       });
     }
     if (!Object.keys(state.txs).length) return h + '<div class="tfp-msg">Nothing imported yet. Tap Sync to read your Torn log.</div>';
@@ -784,7 +786,7 @@
         if (f.unmatched) flag += ` <span class="tfp-warn">⚠️ ${f.unmatched} unit(s) had no matching buy</span>`;
         if (f.costUnknown) flag += ' <span class="tfp-warn">⚠️ a matching buy has no value</span>';
         h += `<div class="tfp-gap"></div><div class="tfp-top"><span>${fdate(tx.ts)}${tx.src === 'receipt' ? ' 🧾' : tx.src === 'manual' ? ' ✍️' : ''}</span><b class="${pnlCls(f.profit)}">${fmt(f.profit)}</b></div>
-          <div class="tfp-sub">${itemSummary(tx)} · sold for ${fmt(netAmt(tx))} <a href="#" data-act="edit" data-id="${esc(tx.id)}">✎</a>${flag}</div>`;
+          <div class="tfp-sub">${itemSummary(tx)} · ${gotWord(tx)} ${fmt(netAmt(tx))} · cost ${costOf(f) == null ? '?' : fmt(costOf(f))} <a href="#" data-act="edit" data-id="${esc(tx.id)}">✎</a>${flag}</div>`;
         if (ui.editing === tx.id) h += editBox(tx);
       });
       h += '</div>';
