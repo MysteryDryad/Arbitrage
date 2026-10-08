@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.69-beta
+// @version      0.1.70-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -966,6 +966,7 @@
   // All times are shown in Torn City Time (TCT, the same as UTC) so they match the game logs and PawnHub.
   const fdate = ts => { const d = new Date(ts * 1000); return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }) + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' }) + ' TCT'; };
   const itemSummary = tx => tx.items.slice(0, 5).map(i => i.qty + '× ' + esc(i.name || nameOf(i.id))).join(', ') + (tx.items.length > 5 ? ' + ' + (tx.items.length - 5) + ' more' : '') + (tx.count > 1 ? ' · ' + tx.count + ' sends' : '');
+  const tradeTag = tx => tx.tradeId ? ' · #' + tx.tradeId : '';
   const chanLabel = c => ({ market: 'Market', bazaar: 'Bazaar', trade: 'Trade', send: 'Send', recv: 'Received' }[c] || c);
 
   const rangeSelect = () => `<select class="tfp-in tfp-sel" data-act="range">${[[1, 'Last 24 hours'], [7, 'Last 7 days'], [30, 'Last 30 days'], [90, 'Last 90 days'], [0, 'All time']].map(r => `<option value="${r[0]}"${ui.range === r[0] ? ' selected' : ''}>${r[1]}</option>`).join('')}</select>`;
@@ -1000,7 +1001,7 @@
       if (ui.showSkipped) skipped.forEach(f => {
         const tx = f.tx;
         const why = f.unmatched ? f.unmatched + ' unit(s) have no matching buy: bought before the sync window, or got another way. A longer look-back (Settings, then Re-sync from start) may find the buy.' : 'The items came from a buy or receive with no value. Find it in Stock or the sends and set a value.';
-        h += `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}</span><span class="tfp-warn">not counted</span></div><div class="tfp-sub">${itemSummary(tx)} · ${gotWord(tx)} ${fmt(netAmt(tx))}</div><div class="tfp-sub tfp-warn">${why}</div></div>`;
+        h += `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}${tradeTag(tx)}</span><span class="tfp-warn">not counted</span></div><div class="tfp-sub">${itemSummary(tx)} · ${gotWord(tx)} ${fmt(netAmt(tx))}</div><div class="tfp-sub tfp-warn">${why}</div></div>`;
       });
     }
     if (!Object.keys(state.txs).length) return h + '<div class="tfp-msg">Nothing imported yet. Tap Sync to read your Torn log.</div>';
@@ -1021,7 +1022,7 @@
         let flag = '';
         if (f.unmatched) flag += ` <span class="tfp-warn">⚠️ ${f.unmatched} unit(s) had no matching buy</span>`;
         if (f.costUnknown) flag += ' <span class="tfp-warn">⚠️ a matching buy has no value</span>';
-        h += `<div class="tfp-gap"></div><div class="tfp-top"><span>${fdate(tx.ts)}${tx.src === 'receipt' ? ' 🧾' : tx.src === 'manual' ? ' ✍️' : ''}</span><b class="${pnlCls(f.profit)}">${fmt(f.profit)}</b></div>
+        h += `<div class="tfp-gap"></div><div class="tfp-top"><span>${fdate(tx.ts)}${tradeTag(tx)}${tx.src === 'receipt' ? ' 🧾' : tx.src === 'manual' ? ' ✍️' : ''}</span><b class="${pnlCls(f.profit)}">${fmt(f.profit)}</b></div>
           <div class="tfp-sub">${itemSummary(tx)} · ${gotWord(tx)} ${fmt(netAmt(tx))} · cost ${costOf(f) == null ? '?' : fmt(costOf(f))} <a href="#" data-act="edit" data-id="${esc(tx.id)}">✎</a>${flag}</div>`;
         if (ui.editing === tx.id) h += editBox(tx);
       });
@@ -1072,7 +1073,7 @@
     const older = state.pawnhubSince ? res.pending.filter(t => t.channel === 'send' && t.dir === 'sell' && t.ts < state.pawnhubSince - 600) : [];
     const olderBtn = older.length ? `<button class="tfp-b" data-act="giftolder">${ui.armOlder ? 'Tap again to confirm: ' + older.length + ' not counted' : older.length + ' sends from before PawnHub Balance starts: leave out of profit'}</button> ` : '';
     return olderBtn + bulk + res.pending.sort((a, b) => b.ts - a.ts).map(tx => {
-      let h = `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}</span><span>⚠️</span></div><div class="tfp-sub">${itemSummary(tx)}${tx.cp ? ' · player ' + esc(tx.cp) : ''}${tx.title ? ' · ' + esc(tx.title) : ''}</div>`;
+      let h = `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}${tradeTag(tx)}</span><span>⚠️</span></div><div class="tfp-sub">${itemSummary(tx)}${tx.cp ? ' · player ' + esc(tx.cp) : ''}${tx.title ? ' · ' + esc(tx.title) : ''}</div>`;
       if (!tx.dir) h += `<div class="tfp-gap"></div><button class="tfp-b" data-act="dir" data-id="${esc(tx.id)}" data-v="sell">I sold these</button> <button class="tfp-b" data-act="dir" data-id="${esc(tx.id)}" data-v="buy">I bought these</button>`;
       else {
         h += editBox(tx);
@@ -1091,7 +1092,7 @@
     if (ui.pendingReceipt) {
       const rc = ui.pendingReceipt;
       h += `<div class="tfp-msg"><b>${rc.source === 'weaver' ? 'Weaver' : rc.source === 'pawnhub' ? 'PawnHub' : 'TornExchange'} receipt</b> · ${fmt(rc.total)}<br>${rc.items.map(i => i.qty + '× ' + esc(i.name)).join(', ')}</div>`;
-      ui.candidates.forEach(c => { h += `<div class="tfp-row"><div class="tfp-top"><span>${fdate(c.tx.ts)} · ${chanLabel(c.tx.channel)}</span><button class="tfp-b" data-act="attach" data-id="${esc(c.tx.id)}">Attach</button></div><div class="tfp-sub">${itemSummary(c.tx)}</div></div>`; });
+      ui.candidates.forEach(c => { h += `<div class="tfp-row"><div class="tfp-top"><span>${fdate(c.tx.ts)} · ${chanLabel(c.tx.channel)}${tradeTag(c.tx)}</span><button class="tfp-b" data-act="attach" data-id="${esc(c.tx.id)}">Attach</button></div><div class="tfp-sub">${itemSummary(c.tx)}</div></div>`; });
       h += '<div class="tfp-gap"></div><button class="tfp-b" data-act="newtrade">Add as a new trade instead</button>';
     }
     return h;
