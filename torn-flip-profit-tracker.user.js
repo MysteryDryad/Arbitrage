@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.62-beta
+// @version      0.1.64-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -273,7 +273,28 @@
     return null;
   }
 
+  // Some receipt sites refuse scripted requests (HTTP 403). The fallback loads the receipt like a browser would, in a hidden frame; the script running on the receipt site reads the page and posts it back.
+  function viaFrame(url) {
+    return new Promise((resolve, reject) => {
+      let origin; try { origin = new URL(url).origin; } catch (e) { reject(new Error('Bad link')); return; }
+      const f = document.createElement('iframe');
+      f.style.cssText = 'position:fixed;left:-20px;top:-20px;width:2px;height:2px;border:0;opacity:0;pointer-events:none';
+      let done = false, timer;
+      const finish = (fn, v) => { if (done) return; done = true; window.removeEventListener('message', onMsg); clearTimeout(timer); f.remove(); fn(v); };
+      const onMsg = ev => { if (ev.origin === origin && ev.data && ev.data.tfpReceipt) finish(resolve, ev.data.tfpReceipt); };
+      timer = setTimeout(() => finish(reject, new Error('The receipt did not load in the background either')), 25000);
+      window.addEventListener('message', onMsg);
+      f.src = url.split('#')[0] + '#tfp-frame';
+      document.body.appendChild(f);
+    });
+  }
   async function fetchReceipt(url) {
+    try { return await fetchReceiptDirect(url); }
+    catch (e) {
+      try { return await viaFrame(url); } catch (e2) { throw new Error((e.message || e) + ' (background load also failed: ' + (e2.message || e2) + ')'); }
+    }
+  }
+  async function fetchReceiptDirect(url) {
     const r = await http(url);
     if (!r || r.status >= 400) throw new Error('The site refused the link (HTTP ' + (r && r.status) + ')');
     const doc = new DOMParser().parseFromString(r.text, 'text/html');
@@ -840,14 +861,16 @@
     if (text[0] === '{') return handleReceipt(JSON.parse(text));
     const links = text.split(/\s+/).filter(t => /^https?:\/\//i.test(t));
     if (!links.length) throw new Error('Paste a receipt link or copied receipt data.');
-    let attached = 0, review = 0, failed = [];
+    let attached = 0, review = 0, failed = [], notes = [];
     for (const url of links) {
       try {
         const rc = await fetchReceipt(url);
         const msg = await handleReceipt(rc);
+        if (rc.source === 'pawnhub-balance') { notes.push(msg); continue; }
         if (/attached/i.test(msg)) attached++; else review++;
       } catch (e) { failed.push(url + ' (' + (e.message || e) + ')'); }
     }
+    if (notes.length && !failed.length && !attached && !review) return notes.join(' ');
     if (links.length === 1 && !failed.length) return review ? 'Pick which trade this receipt belongs to.' : 'Receipt attached to a matching trade.';
     if (links.length === 1) throw new Error(failed[0].replace(/^\S+ \(/, '').replace(/\)$/, '') + ' Open it, tap "Add to profit tracker" on the page, then tap "Process saved receipt".');
     return attached + ' attached' + (review ? ', ' + review + ' need you to pick a trade (shown below)' : '') + (failed.length ? ', ' + failed.length + ' could not be read' : '') + '.';
@@ -1259,6 +1282,14 @@
   /* ===================== init ===================== */
   function init() {
     if (/tornexchange\.com|weav3r\.dev|z0cl\.eu/.test(location.hostname)) {
+      if (window.top !== window && /tfp-frame/.test(location.hash)) { // loaded by the tracker in a hidden frame: read the receipt and send it back
+        let tries = 0; const t = setInterval(() => {
+          const rc = parseReceiptDoc(document, location.href.split('#')[0]);
+          if (rc) { clearInterval(t); try { window.parent.postMessage({ tfpReceipt: rc }, '*'); } catch (e) { /* parent gone */ } }
+          else if (++tries > 20) clearInterval(t);
+        }, 1000);
+        return;
+      }
       mountReceiptButton();
       setInterval(mountReceiptButton, 3000);
     } else {
