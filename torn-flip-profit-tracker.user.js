@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.14-beta
+// @version      0.1.15-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -423,10 +423,13 @@
     let j = await api('user/log', { from, limit: 100, sort: 'asc' });
     let pages = 0, added = 0, newest = state.lastSync || 0;
     lastRaw = [];
-    lastSyncInfo = { from, topKeys: Object.keys(j || {}), logType: Array.isArray(j && j.log) ? 'array' : typeof (j && j.log), entries: 0, pages: 0, firstRaw: [] };
+    lastSyncInfo = { from, topKeys: Object.keys(j || {}), logType: Array.isArray(j && j.log) ? 'array' : typeof (j && j.log), entries: 0, pages: 0, firstRaw: [], pageInfo: [] };
     while (j && pages++ < 100) {
       const arr = normalizeLog(j.log);
       lastSyncInfo.pages = pages; lastSyncInfo.entries += arr.length;
+      { const ts = arr.map(x => x.timestamp).filter(Number); const md = j._metadata || {};
+        lastSyncInfo.pageInfo.push({ count: arr.length, newest: ts.length ? Math.max.apply(null, ts) : null, oldest: ts.length ? Math.min.apply(null, ts) : null,
+          meta: JSON.stringify(md).replace(/key=[A-Za-z0-9]+/g, 'key=HIDDEN').slice(0, 400) }); }
       arr.slice(0, 8 - lastSyncInfo.firstRaw.length).forEach(e => lastSyncInfo.firstRaw.push(e));
       arr.forEach(e => {
         const title = (e.details && e.details.title) || e.title || '';
