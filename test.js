@@ -88,5 +88,10 @@ const sb = Object.values(T.buildSendTxs(sp, id => 'N' + id)).sort((a, b) => a.ts
 eq('send batch order', sb.map(b => [b.channel, b.cp, b.count]), [['recv', 7, 1], ['send', 8, 1], ['send', 7, 2], ['send', 7, 1]]);
 eq('send batch merges two entries', sb.find(b => b.count === 2).items.map(i => i.id + ':' + i.qty).sort(), ['276:2', '385:15']);
 eq('four batches', sb.length, 4);
+// PawnHub variant: name is plain text beside the "qty x price" label, with the header total shown first
+const ph2Html = `<body><h1>Trade #13481517</h1><section><div class="party"><b>Rosiestarfish</b><span>$1,767,500</span></div>
+<div class="row">Camel Plushie <small>25 x $70,700</small></div><div class="row">Kitten Plushie <small>10 x $600</small></div><strong>$1,767,500</strong></section></body>`;
+const ph2 = T.parsePawnHub(new JSDOM(ph2Html.replace('$1,767,500</span>', '$1,773,500</span>').replace('<strong>$1,767,500</strong>', '<strong>$1,773,500</strong>')).window.document, 'u');
+eq('PawnHub text-beside-label layout', ph2 && [ph2.items.map(i => i.name), ph2.total, ph2.party], [['Camel Plushie', 'Kitten Plushie'], 1773500, 'Rosiestarfish']);
 console.log(fail ? fail + ' FAILED' : 'ALL PASSED');
 process.exit(fail ? 1 : 0);

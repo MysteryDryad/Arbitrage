@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.34-beta
+// @version      0.1.35-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -202,12 +202,18 @@
     const leaves = leafTexts(doc);
     const tid = leaves.join(' ').match(/Trade\s*#(\d+)/i);
     const items = [];
-    leaves.forEach((t, i) => {
-      let m = t.match(/^(\d[\d,]*)\s*[x×]\s*\$?\s*([\d,]+)$/i), name = null;
-      if (m) name = leaves[i - 1];
-      else if ((m = t.match(/^(.+?)\s+(\d[\d,]*)\s*[x×]\s*\$?\s*([\d,]+)$/i))) { name = m[1]; m = [null, m[2], m[3]]; }
-      if (!m || !name) return;
-      items.push({ id: null, name: name.trim(), qty: Number(m[1].replace(/,/g, '')), price: Number(m[2].replace(/,/g, '')) });
+    const QTY = /^(\d[\d,]*)\s*[x×]\s*\$?\s*([\d,]+)$/i;
+    doc.querySelectorAll('body *').forEach(el => {
+      if (el.children.length) return;
+      const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      const m = t.match(QTY);
+      if (!m) return;
+      // The item name is the text next to the "qty x $price" label: the rest of its parent, or the element before it.
+      const par = el.parentElement;
+      let name = par ? (par.textContent || '').replace(/\s+/g, ' ').replace(t, '').trim() : '';
+      if (!name || /^\$[\d,]+$/.test(name)) { const prev = el.previousElementSibling; name = prev ? (prev.textContent || '').replace(/\s+/g, ' ').trim() : ''; }
+      if (!name || /^\$[\d,]+$/.test(name)) return;
+      items.push({ id: null, name, qty: Number(m[1].replace(/,/g, '')), price: Number(m[2].replace(/,/g, '')) });
     });
     if (!tid || !items.length) return null;
     const total = items.reduce((a, i) => a + i.qty * i.price, 0);
@@ -888,9 +894,13 @@
       else if (act === 'attach') { attachReceipt(ui.pendingReceipt, state.txs[id]); ui.pendingReceipt = null; ui.candidates = []; ui.msg = 'Receipt attached.'; }
       else if (act === 'newtrade') { createFromReceipt(ui.pendingReceipt); ui.pendingReceipt = null; ui.candidates = []; ui.msg = 'Added as a new trade.'; }
       else if (act === 'inbox') {
-        const inbox = sget('inbox', []); sset('inbox', []);
+        const inbox = sget('inbox', []), keep = [];
         let last = '';
-        for (const rc of inbox) last = await handleReceipt(rc);
+        for (const rc of inbox) {
+          try { last = await handleReceipt(rc); }
+          catch (e) { last = String(e.message || e); if (!/match item name/i.test(last)) keep.push(rc); } // unreadable names are a stale parse: drop it and re-add from the page
+        }
+        sset('inbox', keep);
         ui.msg = last || 'Inbox empty.';
       }
       else if (act === 'export') { const t = document.getElementById('tfp-bk'); t.value = JSON.stringify(state); await copyText(t.value); ui.msg = 'Exported (also copied).'; render(); document.getElementById('tfp-bk').value = JSON.stringify(state); return; }
