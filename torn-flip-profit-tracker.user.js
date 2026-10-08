@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flip Profit Tracker
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.4-beta
+// @version      0.1.5-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -655,7 +655,11 @@
     b.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:2147483647';
     b.addEventListener('click', async () => {
       const rc = parseReceiptDoc(document, location.href.split('#')[0]);
-      if (!rc) { toast("Couldn't read this receipt yet. Let the page finish loading and try again."); return; }
+      if (!rc) {
+        const ok = await copyText(document.body.innerHTML.replace(/<script[\s\S]*?<\/script>/gi, '').slice(0, 40000));
+        toast("Couldn't read this receipt. " + (ok ? 'Page HTML copied; paste it to Claude.' : 'Let the page finish loading and try again.'));
+        return;
+      }
       const json = JSON.stringify(rc);
       let msg = '';
       if (hasGM) { const inbox = sget('inbox', []); inbox.push(rc); sset('inbox', inbox); msg = 'Saved. Open Torn > Receipts tab to attach. '; }
