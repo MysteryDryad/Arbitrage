@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.46-beta
+// @version      0.1.47-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -820,7 +820,7 @@
     const label = tx.dir === 'buy' ? 'Amount paid ($)' : 'Amount received ($)';
     return `<div class="tfp-gap"></div><div class="tfp-sub">${label}</div>
       <input class="tfp-in" id="tfp-val-${esc(tx.id)}" inputmode="numeric" value="${tx.amount != null ? tx.amount : ''}">
-      <div class="tfp-gap"></div><button class="tfp-b" data-act="saveval" data-id="${esc(tx.id)}">Save &amp; lock</button>`;
+      <div class="tfp-gap"></div><button class="tfp-b" data-act="saveval" data-id="${esc(tx.id)}">Save &amp; lock</button>${tx.amount != null && (tx.channel === 'send' || tx.channel === 'recv') ? ` <button class="tfp-b" data-act="clearval" data-id="${esc(tx.id)}">Clear value</button>` : ''}`;
   }
   function pendingHtml() {
     const res = computeFlips(state.txs, flipOpts());
@@ -915,6 +915,7 @@
         const left = ((computeFlips(state.txs, flipOpts()).open[id]) || []).reduce((a, l) => a + l.qty, 0);
         if (left > 0) { const ts = Math.floor(Date.now() / 1000), wid = 'wo:' + id + ':' + ts; state.txs[wid] = { id: wid, ts, dir: 'sell', channel: 'writeoff', gift: true, amount: 0, src: 'manual', locked: true, items: [{ id: Number(id), qty: left, name: nameOf(id), price: null }] }; save(); }
       }
+      else if (act === 'clearval') { const tx = state.txs[id]; tx.amount = null; tx.gift = false; tx.src = null; tx.locked = false; ui.editing = null; save(); }
       else if (act === 'restorestock') {
         const t = state.txs[id];
         if (t && t.channel === 'writeoff') delete state.txs[id];
