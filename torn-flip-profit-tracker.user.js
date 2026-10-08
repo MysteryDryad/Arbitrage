@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.74-beta
+// @version      0.1.75-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -36,6 +36,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
+  const VERSION = '0.1.75-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -1159,7 +1160,7 @@
     if (!card) return;
     const needs = computeFlips(state.txs, flipOpts()).pending.length;
     const tabs = [['profit', 'Profit' + (needs ? ' ⚠️' : '')], ['stock', 'Stock' + (state.inv && state.inv.rows.length ? ' ⚠️' : '')], ['receipts', 'Receipts'], ['settings', 'Settings']];
-    card.innerHTML = `<div class="tfp-h"><b>💰 Arbitrage</b><button class="tfp-b" data-act="close">✕</button></div>
+    card.innerHTML = `<div class="tfp-h"><span><b>💰 Arbitrage</b> <span class="tfp-sub">v${VERSION}</span></span><button class="tfp-b" data-act="close">✕</button></div>
       <div class="tfp-tabs">${tabs.map(t => `<button class="tfp-tab ${ui.tab === t[0] ? 'on' : ''}" data-act="tab" data-v="${t[0]}">${t[1]}</button>`).join('')}</div>
       ${lastSaveOk ? '' : '<div class="tfp-msg tfp-warn">⚠️ Could not save your data on this device (storage may be full). Export a backup in Settings.</div>'}
       ${ui.msg ? `<div class="tfp-msg">${esc(ui.msg)}</div>` : ''}

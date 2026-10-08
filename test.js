@@ -102,5 +102,6 @@ const balTxs = { s1: { id: 's1', channel: 'send', dir: 'sell', ts: Date.UTC(2026
   s3: { id: 's3', channel: 'send', dir: 'sell', ts: Date.UTC(2026, 9, 7, 6, 16, 5) / 1000, items: [{ id: 215, qty: 1678 }] } };
 const hits = T.matchPawnHubEvents(bal.events, balTxs, { 'tribulus omanense': 385, 'kitten plushie': 215 });
 eq('balance events match sends by item, qty and time', hits.map(h => [h.txId, h.event.total]).sort(), [['s1', 13540800], ['s2', 1090700]]);
+{ const src = require('fs').readFileSync(__dirname + '/torn-flip-profit-tracker.user.js', 'utf8'); const h = (src.match(/@version\s+(\S+)/) || [])[1], c = (src.match(/const VERSION = '([^']+)'/) || [])[1]; eq('VERSION matches header', c, h); }
 console.log(fail ? fail + ' FAILED' : 'ALL PASSED');
 process.exit(fail ? 1 : 0);
