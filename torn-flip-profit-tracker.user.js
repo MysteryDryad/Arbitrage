@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.79-beta
+// @version      0.1.80-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -36,7 +36,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.79-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.80-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -1009,6 +1009,8 @@
   .tfp-cat-h b{font-size:15px}
   .tfp-chev{display:inline-block;width:14px;color:#888}
   .tfp-cat .tfp-sub{padding-left:14px}
+  .tfp-note{font-size:11px;color:#8a7a4a;margin:6px 0}
+  #tfp-card .tfp-note a{color:#a8935a}
   .tfp-foot{color:#777;font-size:11px;margin-top:10px}
   .tfp-sel{width:auto;padding:4px}
   .tfp-ctl{display:flex;gap:6px;align-items:center}
@@ -1047,10 +1049,10 @@
       <div class="tfp-stats"><div class="tfp-stat"><span>Sold for</span><b>${fmt(revenue)}</b></div><div class="tfp-stat"><span>Cost</span><b>${fmt(cost)}</b></div><div class="tfp-stat"><span>${done.length} flip${done.length === 1 ? '' : 's'}</span><b>${cost > 0 ? (profit / cost * 100).toFixed(1) + '% return' : '–'}</b></div></div>`;
     const skipped = flips.filter(f => f.profit == null);
     if (res.pending.length || skipped.length) {
-      h += '<div class="tfp-chips">';
-      if (res.pending.length) h += `<a href="#" class="tfp-chip" data-act="toggle" data-v="showPending"><b>⚠️ ${res.pending.length} ${ui.showPending ? '▾' : '▸'}</b><span>need a value</span></a>`;
-      if (skipped.length) h += `<a href="#" class="tfp-chip" data-act="toggle" data-v="showSkipped"><b>⚠️ ${skipped.length} ${ui.showSkipped ? '▾' : '▸'}</b><span>sales not counted (no cost)</span></a>`;
-      h += '</div>';
+      const bits = [];
+      if (res.pending.length) bits.push(`<a href="#" data-act="toggle" data-v="showPending">${res.pending.length} need a value ${ui.showPending ? '▾' : '▸'}</a>`);
+      if (skipped.length) bits.push(`<a href="#" data-act="toggle" data-v="showSkipped">${skipped.length} not counted ${ui.showSkipped ? '▾' : '▸'}</a>`);
+      h += '<div class="tfp-note">⚠️ ' + bits.join(' · ') + '</div>';
       if (res.pending.length && ui.showPending) h += pendingHtml();
     }
     if (skipped.length && ui.showSkipped) skipped.forEach(f => {
