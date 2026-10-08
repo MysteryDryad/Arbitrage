@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.16-beta
+// @version      0.1.17-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -375,7 +375,7 @@
   }
 
   /* ===================== state ===================== */
-  let state = sget('state', null) || { v: 1, me: null, lastSync: 0, txs: {}, receipts: {}, seenTitles: {}, seenExamples: {}, tradeParts: {} };
+  let state = sget('state', null) || { v: 1, me: null, lastSync: 0, txs: {}, receipts: {}, seenTitles: {}, seenExamples: {}, tradeParts: {}, moneyEvents: {} };
   let itemNames = sget('items', null) || {};
   let lastRaw = [];
   let lastSyncInfo = null;
@@ -439,6 +439,10 @@
         if (e.timestamp > newest) newest = e.timestamp;
         state.seenExamples = state.seenExamples || {};
         if (title && !state.seenExamples[title] && Object.keys(state.seenExamples).length < 80 && !/^(Crime|Forums|Message|Faction newsletter)/i.test(title)) state.seenExamples[title] = e;
+        if (/^Money (receive|send)/i.test(title) && e.data && typeof e.data.money === 'number') {
+          state.moneyEvents = state.moneyEvents || {};
+          state.moneyEvents[e.id] = { ts: e.timestamp, dir: /receive/i.test(title) ? 'in' : 'out', cp: e.data.sender != null ? e.data.sender : (e.data.receiver != null ? e.data.receiver : (e.data.user != null ? e.data.user : null)), amount: e.data.money };
+        }
         if (/^Trade /i.test(title)) {
           const tid = tradeIdOf(e);
           if (tid) {
@@ -584,7 +588,12 @@
     return res.pending.sort((a, b) => b.ts - a.ts).map(tx => {
       let h = `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}</span><span>⚠️</span></div><div class="tfp-sub">${itemSummary(tx)}${tx.cp ? ' · ' + esc(tx.cp) : ''}</div>`;
       if (!tx.dir) h += `<div class="tfp-gap"></div><button class="tfp-b" data-act="dir" data-id="${esc(tx.id)}" data-v="sell">I sold these</button> <button class="tfp-b" data-act="dir" data-id="${esc(tx.id)}" data-v="buy">I bought these</button>`;
-      else h += editBox(tx);
+      else {
+        h += editBox(tx);
+        const want = tx.dir === 'sell' ? 'in' : 'out';
+        const sug = Object.entries(state.moneyEvents || {}).filter(([, m]) => m.dir === want && Math.abs(m.ts - tx.ts) < 86400 && (tx.cp == null || m.cp == null || String(m.cp) === String(tx.cp))).slice(0, 3);
+        if (tx.channel === 'send' || tx.channel === 'recv') sug.forEach(([mid, m]) => { h += `<div class="tfp-gap"></div><button class="tfp-b" data-act="usemoney" data-id="${esc(tx.id)}" data-v="${esc(mid)}">Use ${fmt(m.amount)} ${want === 'in' ? 'received' : 'sent'} ${fdate(m.ts)}</button>`; });
+      }
       return h + '</div>';
     }).join('');
   }
@@ -658,6 +667,11 @@
         if (n == null) throw new Error('Enter a number.');
         const tx = state.txs[id]; tx.amount = n; tx.src = 'manual'; tx.locked = true; ui.editing = null; save();
       }
+      else if (act === 'usemoney') {
+        const m = state.moneyEvents[v], tx = state.txs[id];
+        if (!m || !tx) throw new Error('That payment is no longer available.');
+        tx.amount = m.amount; tx.src = 'manual'; tx.locked = true; save();
+      }
       else if (act === 'savekey') {
         const k = val('tfp-key').trim();
         if (!/^[A-Za-z0-9]{16}$/.test(k)) throw new Error('A Torn API key is 16 letters and numbers.');
@@ -671,7 +685,7 @@
       }
       else if (act === 'clearkey') { sset('apikey', ''); state.me = null; save(); ui.msg = 'Key removed from this device.'; }
       else if (act === 'sync' || act === 'resync') {
-        if (act === 'resync') { state.lastSync = 0; state.seenTitles = {}; state.seenExamples = {}; state.tradeParts = {}; save(); }
+        if (act === 'resync') { state.lastSync = 0; state.seenTitles = {}; state.seenExamples = {}; state.tradeParts = {}; state.moneyEvents = {}; save(); }
         sset('startDays', Number(val('tfp-days')) || 30);
         { const f = parseFloat(val('tfp-fee')); sset('marketFee', isNaN(f) ? 5 : f); }
         ui.busy = true; render();
