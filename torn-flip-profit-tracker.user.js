@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.25-beta
+// @version      0.1.26-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -407,6 +407,7 @@
   let lastSyncInfo = null;
   const ui = { open: false, tab: 'profit', items: false, breakdown: false, more: false, showPending: false, range: 30, editing: null, msg: '', pendingReceipt: null, candidates: [], busy: false };
   const save = () => sset('state', state);
+  const netAmt = tx => (tx.channel === 'market' && tx.dir === 'sell' && tx.src === 'log' && tx.amount != null) ? tx.amount * (1 - flipOpts().marketFee) : tx.amount;
   const flipOpts = () => ({ marketFee: Math.min(100, Math.max(0, Number(sget('marketFee', 5)) || 0)) / 100 });
   const nameOf = id => itemNames[id] || ('Item ' + id);
 
@@ -655,7 +656,7 @@
       if (f.costUnknown) flag += ' <span class="tfp-warn">⚠️ a matching buy has no value</span>';
       h += `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)} ${badge(tx)}</span>
         <b class="${pnlCls(f.profit)}">${fmt(f.profit)}</b></div>
-        <div class="tfp-sub">${itemSummary(tx)} · sold for ${fmt(tx.amount)}${tx.channel === 'market' && tx.src === 'log' && flipOpts().marketFee ? ' (' + fmt(tx.amount * (1 - flipOpts().marketFee)) + ' after fee)' : ''} <a href="#" data-act="edit" data-id="${esc(tx.id)}">✎</a>${flag}</div>`;
+        <div class="tfp-sub">${itemSummary(tx)} · sold for ${fmt(netAmt(tx))} <a href="#" data-act="edit" data-id="${esc(tx.id)}">✎</a>${flag}</div>`;
       if (ui.editing === tx.id) h += editBox(tx);
       if (ui.items) f.lines.forEach(l => {
         h += `<div class="tfp-line"><span>${l.qty}× ${esc(l.name || nameOf(l.itemId))}</span><span class="${pnlCls(l.profit)}">${fmt(l.profit)}</span></div>`;
