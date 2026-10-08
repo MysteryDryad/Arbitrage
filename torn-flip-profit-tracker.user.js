@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.60-beta
+// @version      0.1.61-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -800,7 +800,7 @@
     const dupEx = itemEv.filter(e => !matched.has(e) && done(e)).slice(0, 2).map(e => e.qty + '× ' + e.item + ' ' + fmt(e.total) + ' ' + e.role + ' at ' + fdate(e.ts) + ' = send at ' + fdate(near(e).ts));
     if (already) why += ' Roles on the page: ' + Object.entries(roles).map(([r, n]) => r + ' ' + n).join(', ') + '. Already-applied examples: ' + dupEx.join('; ') + '.';
     if (rc.halved) why += ' (The page listed every row twice, so each was counted once.)';
-    return 'PawnHub balance: valued ' + hits.length + ' of ' + itemEvents + ' item events' + (already ? ', ' + already + ' more were already applied (imported before, or listed twice on the page)' : '') + (rest.length ? ', ' + rest.length + ' have no send with the same item, quantity and time (or the send is not in your log yet)' : '') + '. The Balance page starts ' + (earliest ? fdate(earliest) : '?') + (olderCount ? ', so ' + olderCount + ' older send(s) have no PawnHub entry (see Profit, needs a value).' : '.') + why;
+    return 'PawnHub balance: valued ' + hits.length + ' of ' + itemEvents + ' item events' + (already ? ', ' + already + ' more already had the same amount on your sends (from a receipt or an earlier Balance import)' : '') + (rest.length ? ', ' + rest.length + ' have no send with the same item, quantity and time (or the send is not in your log yet)' : '') + '. The Balance page starts ' + (earliest ? fdate(earliest) : '?') + (olderCount ? ', so ' + olderCount + ' older send(s) have no PawnHub entry (see Profit, needs a value).' : '.') + why;
   }
   async function handleReceipt(rc) {
     if (rc.source === 'pawnhub-balance') return applyPawnHubBalance(rc);
