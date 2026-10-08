@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.32-beta
+// @version      0.1.33-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -953,7 +953,7 @@
     }
     if (!document.getElementById('tfp-wrap')) {
       const w = document.createElement('div'); w.id = 'tfp-wrap'; if (IS_PDA_ENV) w.classList.add('pda'); w.innerHTML = '<div id="tfp-card"></div>';
-      w.addEventListener('click', ev => { if (ev.target === w) { w.classList.remove('open'); ui.open = false; } else onAction(ev); });
+      w.addEventListener('click', ev => { if (ev.target === w) { w.classList.remove('open'); ui.open = false; } else if (!ev.target.closest('select, input, textarea')) onAction(ev); });
       w.addEventListener('change', ev => { if (ev.target.matches('select[data-act], input[data-act]')) onAction(ev); });
       document.body.appendChild(w);
     }
