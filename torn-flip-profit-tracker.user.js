@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.70-beta
+// @version      0.1.71-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -691,6 +691,32 @@
     catch (e) { state.invErr = String(e.message || e).slice(0, 200); save(); }
     if (ui.open) render();
   }
+  // One tap does the whole setup: read the whole log (continuing if it was cut short), then Weaver receipts and the inventory check when possible.
+  async function syncAll() {
+    const step = t => { if (ui.busy) { ui.msg = t; render(); } };
+    let added = 0, note = '';
+    for (let round = 0; round < 12; round++) {
+      try { added += await syncLog(); break; }
+      catch (e) { if (!e.capped || round === 11) throw e; added += e.added || 0; step('Reading your log… (part ' + (round + 2) + ')'); await sleep(1500); }
+    }
+    let out = 'Sync done: ' + added + ' new record(s).';
+    if (sget('w3bkey', '')) {
+      let att = 0, last = null;
+      try {
+        for (let round = 0; round < 15; round++) {
+          step('Importing Weaver receipts… ' + att + ' attached');
+          last = await weaverImport(); att += last.attached;
+          if (!last.left) break;
+        }
+        out += ' ' + (last ? last.text.replace(/^Weaver: \d+ receipt\(s\) attached/, 'Weaver: ' + att + ' receipt(s) attached') : '');
+      } catch (e) { out += ' Weaver import stopped: ' + String(e.message || e) + ' (tap Import Weaver receipts to retry).'; }
+    }
+    if (Object.values(computeFlips(state.txs, flipOpts()).open).some(q => q.some(l => l.qty > 0))) {
+      try { step('Checking your inventory…'); const n = await checkInventory(); out += n ? ' ' + n + ' stock item type(s) are not in your inventory (see Stock).' : ' Stock matches your inventory.'; }
+      catch (e) { out += ' Inventory check skipped: ' + String(e.message || e).slice(0, 120); }
+    }
+    return out;
+  }
   async function syncLog() {
     await ensureMe(); await ensureItems();
     const startDays = Number(sget('startDays', 30)) || 30;
@@ -780,7 +806,7 @@
     if (!capped) { state.lastSync = newest; state.syncedAt = Math.floor(Date.now() / 1000); state.resume = null; }
     else state.resume = { from, to: curTo, newest };
     save(); verifySaved();
-    if (capped) throw new Error('Imported part of your history (' + added + ' new). Tap Sync now again to continue.');
+    if (capped) { const er = new Error('Imported part of your history (' + added + ' new). Tap Sync now again to continue.'); er.capped = true; er.added = added; throw er; }
     return added;
   }
 
@@ -893,7 +919,8 @@
         await sleep(900);
       }
     } finally { save(); }
-    return 'Weaver: ' + attached + ' receipt(s) attached' + (ended ? ', ' + ended + ' skipped (their trades were cancelled, expired or declined)' : '') + (missing ? ', ' + missing + ' not found in your log (' + lost.join('; ') + ')' : '') + (left ? ', ' + left + ' more waiting: tap again' : '') + (!attached && !missing && !left ? ' (nothing new)' : '') + '.';
+    const text = 'Weaver: ' + attached + ' receipt(s) attached' + (ended ? ', ' + ended + ' skipped (their trades were cancelled, expired or declined)' : '') + (missing ? ', ' + missing + ' not found in your log (' + lost.join('; ') + ')' : '') + (left ? ', ' + left + ' more waiting: tap again' : '') + (!attached && !missing && !left ? ' (nothing new)' : '') + '.';
+    return { text, attached, left, ended, missing };
   }
   async function handleReceipt(rc) {
     if (rc.source === 'pawnhub-balance') return applyPawnHubBalance(rc);
@@ -1219,7 +1246,7 @@
       else if (act === 'w3bimport') {
         if (ui.busy) return;
         ui.busy = true; render();
-        try { ui.msg = await weaverImport(); } finally { ui.busy = false; }
+        try { ui.msg = (await weaverImport()).text; } finally { ui.busy = false; }
       }
       else if (act === 'invevery') { sset('invEvery', Number(el.value)); state.invTry = 0; save(); }
       else if (act === 'setting') { const d = document.getElementById('tfp-days'); if (d) sset('startDays', Number(d.value) || 30); }
@@ -1265,7 +1292,7 @@
         if (ui.busy) return;
         { const d = document.getElementById('tfp-days'); if (d) sset('startDays', Number(d.value) || 30); }
         ui.busy = true; render();
-        try { const n = await syncLog(); ui.msg = 'Sync done: ' + n + ' new record(s).'; }
+        try { ui.msg = await syncAll(); }
         finally { ui.busy = false; }
       }
       else if (act === 'addrc') { ui.msg = await addReceiptInput(val('tfp-rc')); }
