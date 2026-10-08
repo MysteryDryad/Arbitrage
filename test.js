@@ -93,5 +93,11 @@ const ph2Html = `<body><h1>Trade #13481517</h1><section><div class="party"><b>Ro
 <div class="row">Camel Plushie <small>25 x $70,700</small></div><div class="row">Kitten Plushie <small>10 x $600</small></div><strong>$1,767,500</strong></section></body>`;
 const ph2 = T.parsePawnHub(new JSDOM(ph2Html.replace('$1,767,500</span>', '$1,773,500</span>').replace('<strong>$1,767,500</strong>', '<strong>$1,773,500</strong>')).window.document, 'u');
 eq('PawnHub text-beside-label layout', ph2 && [ph2.items.map(i => i.name), ph2.total, ph2.party], [['Camel Plushie', 'Kitten Plushie'], 1773500, 'Rosiestarfish']);
+// multi-item trade total is split by market value when there is no receipt
+const mvT = { a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 1, qty: 1, price: null }, { id: 2, qty: 1, price: null }], amount: 1000 },
+  b: { id: 'b', ts: 2, dir: 'sell', channel: 'market', src: 'log', items: [{ id: 1, qty: 1, price: null }], amount: 300 } };
+const mvR = T.computeFlips(mvT, { values: { 1: 100, 2: 900 } });
+eq('cost split by market value', mvR.flips[0].profit, 300 - 100);
+eq('cost split by qty without values', T.computeFlips(mvT).flips[0].profit, 300 - 500);
 console.log(fail ? fail + ' FAILED' : 'ALL PASSED');
 process.exit(fail ? 1 : 0);

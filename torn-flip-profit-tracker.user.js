@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.35-beta
+// @version      0.1.36-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -242,6 +242,7 @@
   /* ===================== ledger engine (pure) ===================== */
   function computeFlips(txsObj, opts) {
     const fee = (opts && opts.marketFee) || 0;
+    const vals = (opts && opts.values) || {};
     // Fee applies only to item-market sales whose amount came from the log (receipt/manual values are used as entered).
     const net = tx => (tx.channel === 'market' && tx.dir === 'sell' && tx.src === 'log') ? tx.amount * (1 - fee) : tx.amount;
     const txs = Object.values(txsObj).sort((a, b) => (a.ts - b.ts) || String(a.id).localeCompare(String(b.id)));
@@ -249,12 +250,15 @@
     const flips = [], pending = [];
 
     function addLots(tx) {
-      const totalQty = tx.items.reduce((s, i) => s + i.qty, 0) || 1;
       const allPriced = tx.items.every(i => i.price != null);
-      tx.items.forEach(i => {
+      // No per-item prices (no receipt): split the trade total by each item's market value, or by quantity if values are unknown.
+      const mvW = tx.items.map(i => i.qty * (vals[i.id] || 0));
+      const w = mvW.every(x => x > 0) ? mvW : tx.items.map(i => i.qty);
+      const wsum = w.reduce((a, b) => a + b, 0) || 1;
+      tx.items.forEach((i, idx) => {
         let unit = null;
         if (allPriced) unit = i.price;
-        else if (tx.amount != null) unit = tx.amount / totalQty;
+        else if (tx.amount != null) unit = tx.amount * w[idx] / wsum / (i.qty || 1);
         (lots[i.id] = lots[i.id] || []).push({ qty: i.qty, unit, ts: tx.ts });
       });
     }
@@ -280,7 +284,8 @@
       if (tx.amount == null) { pending.push(tx); continue; }
 
       const allPriced = tx.items.every(i => i.price != null);
-      let weights = allPriced ? tx.items.map(i => i.price * i.qty) : consumed.map(c => c.cost || 0);
+      const mvW = tx.items.map(i => i.qty * (vals[i.id] || 0));
+      let weights = allPriced ? tx.items.map(i => i.price * i.qty) : (mvW.every(x => x > 0) ? mvW : consumed.map(c => c.cost || 0));
       if (!weights.some(w => w > 0)) weights = tx.items.map(i => i.qty);
       const wsum = weights.reduce((s, w) => s + w, 0) || 1;
 
@@ -462,6 +467,7 @@
   /* ===================== state ===================== */
   let state = Object.assign({ v: 1, me: null, lastSync: 0, txs: {}, receipts: {}, seenTitles: {}, seenExamples: {}, tradeParts: {}, sendParts: {}, moneyEvents: {} }, sget('state', null) || {});
   let itemNames = sget('items', null) || {};
+  let itemValues = sget('itemvals', null) || {};
   let lastRaw = [];
   let lastSyncInfo = null;
   const ui = { open: false, tab: 'profit', items: false, breakdown: false, more: false, showPending: false, range: 30, editing: null, msg: '', pendingReceipt: null, candidates: [], busy: false };
@@ -473,7 +479,8 @@
   };
   const STATE_DEFAULTS = () => ({ v: 1, me: null, lastSync: 0, txs: {}, receipts: {}, seenTitles: {}, seenExamples: {}, tradeParts: {}, sendParts: {}, moneyEvents: {} });
   // Load the saved state from IndexedDB when it is newer than what script storage gave us.
-  const bootP = !hasIDB ? Promise.resolve() : Promise.all([idb.get('state').catch(() => null), idb.get('items').catch(() => null)]).then(([v, it]) => {
+  const bootP = !hasIDB ? Promise.resolve() : Promise.all([idb.get('state').catch(() => null), idb.get('items').catch(() => null), idb.get('itemvals').catch(() => null)]).then(([v, it, iv]) => {
+    if (iv && Object.keys(iv).length >= Object.keys(itemValues).length) itemValues = iv;
     if (v && v.txs && (v.savedAt || 0) >= (state.savedAt || 0)) state = Object.assign(STATE_DEFAULTS(), v);
     if (it && Object.keys(it).length >= Object.keys(itemNames).length) itemNames = it;
   }).catch(() => {});
@@ -484,7 +491,7 @@
     catch (e) { lastSaveOk = false; }
   }
   const netAmt = tx => tx.amount;
-  const flipOpts = () => ({ marketFee: 0 }); // Torn's market-sale log amount is already after the fee
+  const flipOpts = () => ({ marketFee: 0, values: itemValues }); // Torn's market-sale log amount is already after the fee
   const nameOf = id => itemNames[id] || ('Item ' + id);
 
   /* ===================== Torn API ===================== */
@@ -513,12 +520,13 @@
     save(); return state.me;
   }
   async function ensureItems() {
-    if (Object.keys(itemNames).length) return;
+    if (Object.keys(itemNames).length && Object.keys(itemValues).length) return;
     try {
       const j = await api('torn/items');
       const list = Array.isArray(j.items) ? j.items : Object.entries(j.items || {}).map(([id, v]) => Object.assign({ id }, v));
-      list.forEach(i => { itemNames[i.id] = i.name; });
-      sset('items', itemNames); if (hasIDB) idb.set('items', itemNames).catch(() => {});
+      list.forEach(i => { itemNames[i.id] = i.name; const mv = i.value && i.value.market_value != null ? i.value.market_value : i.market_value; if (mv > 0) itemValues[i.id] = mv; });
+      sset('items', itemNames); sset('itemvals', itemValues);
+      if (hasIDB) { idb.set('items', itemNames).catch(() => {}); idb.set('itemvals', itemValues).catch(() => {}); }
     } catch (e) { console.warn('[TFP] item names failed', e); }
   }
 
@@ -664,13 +672,21 @@
   async function addReceiptInput(text) {
     text = (text || '').trim();
     if (!text) throw new Error('Paste a receipt link first.');
-    let rc;
-    if (text[0] === '{') rc = JSON.parse(text);
-    else if (/^https?:\/\//i.test(text)) {
-      rc = await fetchReceipt(text);
-      if (!rc) throw new Error("Couldn't read that receipt from the link. Open it, tap \"Add to profit tracker\" on the page, then paste here.");
-    } else throw new Error('Paste a receipt link or copied receipt data.');
-    return handleReceipt(rc);
+    if (text[0] === '{') return handleReceipt(JSON.parse(text));
+    const links = text.split(/\s+/).filter(t => /^https?:\/\//i.test(t));
+    if (!links.length) throw new Error('Paste a receipt link or copied receipt data.');
+    let attached = 0, review = 0, failed = [];
+    for (const url of links) {
+      try {
+        const rc = await fetchReceipt(url);
+        if (!rc) { failed.push(url); continue; }
+        const msg = await handleReceipt(rc);
+        if (/attached/i.test(msg)) attached++; else review++;
+      } catch (e) { failed.push(url + ' (' + (e.message || e) + ')'); }
+    }
+    if (links.length === 1 && !failed.length) return review ? 'Pick which trade this receipt belongs to.' : 'Receipt attached to a matching trade.';
+    if (links.length === 1) throw new Error("Couldn't read that receipt from the link. Open it, tap \"Add to profit tracker\" on the page, then paste here.");
+    return attached + ' attached' + (review ? ', ' + review + ' need you to pick a trade (shown below)' : '') + (failed.length ? ', ' + failed.length + ' could not be read' : '') + '.';
   }
 
   /* ===================== UI ===================== */
@@ -791,7 +807,7 @@
     }).join('');
   }
   function receiptsHtml() {
-    let h = '<div class="tfp-sub">Paste a Weaver, TornExchange or PawnHub receipt link (or data copied with the "Add to profit tracker" button on the receipt page).</div><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-rc" placeholder="https://tornexchange.com/receipt/..."></textarea><div class="tfp-gap"></div><button class="tfp-b" data-act="addrc">Add receipt</button>';
+    let h = '<div class="tfp-sub">Paste one or more receipt links, one per line (Weaver, TornExchange or PawnHub), or data copied with the "Add to profit tracker" button on the receipt page).</div><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-rc" placeholder="https://tornexchange.com/receipt/..."></textarea><div class="tfp-gap"></div><button class="tfp-b" data-act="addrc">Add receipt</button>';
     const inbox = hasGM ? sget('inbox', []) : [];
     if (inbox.length) h += ` <button class="tfp-b" data-act="inbox">Process ${inbox.length} saved receipt(s)</button>`;
     if (ui.pendingReceipt) {
