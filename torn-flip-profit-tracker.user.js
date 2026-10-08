@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.71-beta
+// @version      0.1.72-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -797,7 +797,7 @@
     Object.entries(built).forEach(([id, tx]) => {
       delete state.tradeParts[String(tx.tradeId)]; // parts are only needed until the trade is built
       const old = state.txs[id];
-      if (old && old.locked) return;
+      if (old && old.locked) { if (tx.dir && old.dir !== tx.dir && old.src === 'receipt' && /weav3r/.test(old.receiptUrl || '')) old.dir = tx.dir; return; } // the log decides whether you bought or sold; repairs trades a receipt had flipped
       if (!old) added++;
       state.txs[id] = tx;
     });
@@ -909,7 +909,7 @@
           if (r && r.created_at) w.at[t.id] = r.created_at;
           const rc = rcFromWeaverApi(r);
           const tx = rc && Object.values(state.txs).find(x => x.tradeId && String(x.tradeId) === String(rc.tradeId));
-          if (tx) { attachReceipt(rc, tx); w.done[t.id] = 1; attached++; } else if (rc && state.tradeEnd && state.tradeEnd[rc.tradeId]) { w.done[t.id] = 1; ended++; } else { w.miss[t.id] = now; missing++; if (lost.length < 3) lost.push(rc ? 'trade ' + rc.tradeId + ' with ' + rc.buyer + ', ' + fmt(rc.total) + (rc.ts ? ' at ' + fdate(rc.ts) : '') + (state.tradeEnd && state.tradeEnd[rc.tradeId] ? ' (' + state.tradeEnd[rc.tradeId].kind + ')' : '') : 'receipt ' + t.id + ' (unreadable)'); }
+          if (tx) { if (tx.dir) rc.role = tx.dir; attachReceipt(rc, tx); w.done[t.id] = 1; attached++; } // your log says whether you bought or sold; the receipt only names the other player else if (rc && state.tradeEnd && state.tradeEnd[rc.tradeId]) { w.done[t.id] = 1; ended++; } else { w.miss[t.id] = now; missing++; if (lost.length < 3) lost.push(rc ? 'trade ' + rc.tradeId + ' with ' + rc.buyer + ', ' + fmt(rc.total) + (rc.ts ? ' at ' + fdate(rc.ts) : '') + (state.tradeEnd && state.tradeEnd[rc.tradeId] ? ' (' + state.tradeEnd[rc.tradeId].kind + ')' : '') : 'receipt ' + t.id + ' (unreadable)'); }
         }
         if (list.length < 100) break;
         const last = list[list.length - 1];
