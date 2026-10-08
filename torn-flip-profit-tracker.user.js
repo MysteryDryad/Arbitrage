@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.48-beta
+// @version      0.1.49-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
 // @match        https://weav3r.dev/receipt/*
-// @match        https://z0cl.eu/PawnHub/trade_receipt.php*
+// @match        https://z0cl.eu/PawnHub/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
@@ -224,11 +224,45 @@
     return { source: 'pawnhub', url, tradeId: Number(tid[1]), buyer: null, seller: null, buyerId: null, sellerId: null, party: idx > 0 ? leaves[idx - 1] : null, items, total, timeText: null, ts: null };
   }
 
+  // PawnHub "balance events" page: one row per item PawnHub credited you for (time UTC, item, role, qty, unit, total).
+  function parsePawnHubBalance(doc, url) {
+    const events = [];
+    const TIME = /(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})\s*UTC/;
+    doc.querySelectorAll('tr').forEach(tr => {
+      const cells = Array.from(tr.children).map(c => (c.textContent || '').replace(/\s+/g, ' ').trim());
+      const ti = cells.findIndex(c => TIME.test(c));
+      if (ti < 0 || cells.length < ti + 6) return;
+      const m = cells[ti].match(TIME);
+      const qty = firstNumber(cells[ti + 3]), unit = firstNumber(cells[ti + 4]), total = firstNumber(cells[ti + 5]);
+      if (!qty || unit == null || total == null) return;
+      events.push({ ts: Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) / 1000, item: cells[ti + 1], role: cells[ti + 2], qty, unit, total });
+    });
+    if (!events.length) return null;
+    return { source: 'pawnhub-balance', url, events, total: events.reduce((a, e) => a + e.total, 0) };
+  }
+  // Pair each credited item event with the send of the same item and quantity closest in time (event times have minute precision).
+  function matchPawnHubEvents(events, txsObj, byName) {
+    const sends = Object.values(txsObj).filter(t => t.channel === 'send' && t.dir === 'sell' && t.src !== 'receipt' && t.items && t.items.length === 1);
+    const used = new Set(), out = [];
+    events.slice().sort((a, b) => a.ts - b.ts).forEach(ev => {
+      const id = byName[String(ev.item).toLowerCase()];
+      if (!id) return;
+      let best = null;
+      sends.forEach(t => {
+        if (used.has(t.id) || t.items[0].id !== id || t.items[0].qty !== ev.qty) return;
+        const d = Math.abs(t.ts - ev.ts);
+        if (d <= 600 && (!best || d < best.d)) best = { t, d };
+      });
+      if (best) { used.add(best.t.id); out.push({ txId: best.t.id, event: ev }); }
+    });
+    return out;
+  }
+
   function parseReceiptDoc(doc, url) {
     const host = (() => { try { return new URL(url).hostname; } catch (e) { return ''; } })();
     if (/tornexchange/i.test(host)) return parseTornExchange(doc, url);
     if (/weav3r/i.test(host)) return parseWeaver(doc, url);
-    if (/z0cl/i.test(host)) return parsePawnHub(doc, url);
+    if (/z0cl/i.test(host)) return parsePawnHubBalance(doc, url) || parsePawnHub(doc, url);
     return null;
   }
 
@@ -665,7 +699,20 @@
     rc.seller = rc.party;
     rc.role = rc.party.toLowerCase() === String((state.me && state.me.name) || '').toLowerCase() ? 'sell' : 'buy';
   }
+  async function applyPawnHubBalance(rc) {
+    await ensureItems();
+    const byName = {}; Object.entries(itemNames).forEach(([id, n]) => { byName[String(n).toLowerCase()] = Number(id); });
+    const hits = matchPawnHubEvents(rc.events, state.txs, byName);
+    hits.forEach(({ txId, event }) => {
+      const t = state.txs[txId];
+      t.items[0].price = event.unit; t.amount = event.total; t.gift = false; t.src = 'receipt'; t.locked = true; t.receiptUrl = rc.url;
+    });
+    save();
+    const itemEvents = rc.events.filter(e => byName[String(e.item).toLowerCase()]).length;
+    return 'PawnHub balance: matched ' + hits.length + ' of ' + itemEvents + ' item events to your sends' + (itemEvents > hits.length ? ' (the rest have no send with the same item, quantity and time, or the send is not in your log yet)' : '') + '.';
+  }
   async function handleReceipt(rc) {
+    if (rc.source === 'pawnhub-balance') return applyPawnHubBalance(rc);
     await ensureMe();
     if (rc.source === 'pawnhub') await resolvePawnHub(rc);
     if (!roleFor(rc, state.me)) throw new Error("Your name (" + state.me.name + ") isn't the buyer or seller on this receipt.");
@@ -842,7 +889,7 @@
     }).join('');
   }
   function receiptsHtml() {
-    let h = '<div class="tfp-sub">Easiest: open a receipt (Weaver, TornExchange or PawnHub), tap "Add to profit tracker" on that page, and repeat for each receipt. Then tap "Process saved receipts" here. Pasting links only works for sites that don\'t build the page after it loads.</div><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-rc" placeholder="https://tornexchange.com/receipt/..."></textarea><div class="tfp-gap"></div><button class="tfp-b" data-act="addrc">Add receipt</button>';
+    let h = '<div class="tfp-sub">Easiest: open a receipt (Weaver, TornExchange or PawnHub), tap "Add to profit tracker" on that page, and repeat for each receipt. Then tap "Process saved receipts" here. On PawnHub\'s Balance page, tap the button once and then Process: it values all your matching sends at once. Pasting links only works for sites that don\'t build the page after it loads.</div><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-rc" placeholder="https://tornexchange.com/receipt/..."></textarea><div class="tfp-gap"></div><button class="tfp-b" data-act="addrc">Add receipt</button>';
     const inbox = hasGM ? sget('inbox', []) : [];
     if (inbox.length) h += ` <button class="tfp-b" data-act="inbox">Process ${inbox.length} saved receipt(s)</button>`;
     if (ui.pendingReceipt) {
@@ -1080,7 +1127,7 @@
   }
 
   if (typeof module !== 'undefined') {
-    module.exports = { buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
+    module.exports = { parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
   }
   if (typeof document !== 'undefined' && !globalThis.__TFP_TEST) init();
 })();

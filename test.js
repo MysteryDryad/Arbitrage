@@ -87,5 +87,17 @@ const sp = { s1: { ts: 1000, kind: 'send', cp: 7, items: [{ id: 385, qty: 10 }] 
 const sb = Object.values(T.buildSendTxs(sp, id => 'N' + id)).sort((a, b) => a.ts - b.ts);
 eq('each send is its own record', sb.length, 5);
 eq('send keeps its own items', sb.filter(b => b.channel === 'send' && b.cp === 7).map(b => b.items.map(i => i.id + ':' + i.qty).join()).sort(), ['276:2,385:5', '385:1', '385:10']);
+// PawnHub balance page
+const balHtml = `<body><table><tr><th>TIME</th><th>ITEM</th><th>ROLE</th><th>QTY</th><th>UNIT</th><th>TOTAL</th></tr>
+<tr><td>2026-10-08 06:21 UTC</td><td>Tribulus Omanense</td><td>Trader</td><td>224</td><td>$60,450</td><td>$13,540,800</td></tr>
+<tr><td>2026-10-08 06:16 UTC</td><td>Kitten Plushie</td><td>Trader</td><td>1,678</td><td>$650</td><td>$1,090,700</td></tr>
+<tr><td>2026-10-08 06:53 UTC</td><td>Trader payout credit #1702</td><td>Trader_payout_credit</td><td>1</td><td>$112,000,000</td><td>$112,000,000</td></tr></table></body>`;
+const bal = T.parsePawnHubBalance(new JSDOM(balHtml).window.document, 'u');
+eq('PawnHub balance parse', [bal.events.length, bal.events[0].ts, bal.events[0].qty, bal.events[0].total], [3, Date.UTC(2026, 9, 8, 6, 21) / 1000, 224, 13540800]);
+const balTxs = { s1: { id: 's1', channel: 'send', dir: 'sell', ts: Date.UTC(2026, 9, 8, 6, 20, 49) / 1000, items: [{ id: 385, qty: 224 }] },
+  s2: { id: 's2', channel: 'send', dir: 'sell', ts: Date.UTC(2026, 9, 8, 6, 16, 5) / 1000, items: [{ id: 215, qty: 1678 }] },
+  s3: { id: 's3', channel: 'send', dir: 'sell', ts: Date.UTC(2026, 9, 7, 6, 16, 5) / 1000, items: [{ id: 215, qty: 1678 }] } };
+const hits = T.matchPawnHubEvents(bal.events, balTxs, { 'tribulus omanense': 385, 'kitten plushie': 215 });
+eq('balance events match sends by item, qty and time', hits.map(h => [h.txId, h.event.total]).sort(), [['s1', 13540800], ['s2', 1090700]]);
 console.log(fail ? fail + ' FAILED' : 'ALL PASSED');
 process.exit(fail ? 1 : 0);
