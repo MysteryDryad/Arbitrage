@@ -1,17 +1,19 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.15-beta
+// @version      0.1.16-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
 // @match        https://weav3r.dev/receipt/*
+// @match        https://z0cl.eu/PawnHub/trade_receipt.php*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
 // @connect      api.torn.com
 // @connect      tornexchange.com
 // @connect      weav3r.dev
+// @connect      z0cl.eu
 // @updateURL    https://update.greasyfork.org/scripts/599222/Arbitrage.user.js
 // @downloadURL  https://update.greasyfork.org/scripts/599222/Arbitrage.user.js
 // @run-at       document-idle
@@ -777,7 +779,7 @@
 
   /* ===================== init ===================== */
   function init() {
-    if (/tornexchange\.com|weav3r\.dev/.test(location.hostname)) {
+    if (/tornexchange\.com|weav3r\.dev|z0cl\.eu/.test(location.hostname)) {
       mountReceiptButton();
       setInterval(mountReceiptButton, 3000);
     } else {
