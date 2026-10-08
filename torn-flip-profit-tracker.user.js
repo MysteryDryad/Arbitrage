@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.53-beta
+// @version      0.1.54-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -615,6 +615,7 @@
       { const ts = arr.map(x => x.timestamp).filter(Number); const md = j._metadata || {};
         lastSyncInfo.pageInfo.push({ count: arr.length, newest: ts.length ? Math.max.apply(null, ts) : null, oldest: ts.length ? Math.min.apply(null, ts) : null,
           meta: JSON.stringify(md).replace(/key=[A-Za-z0-9]+/g, 'key=HIDDEN').slice(0, 400) }); }
+      { const o = arr.reduce((m, x) => Number(x.timestamp) && x.timestamp < m ? x.timestamp : m, state.oldestLog || Infinity); if (o !== Infinity) state.oldestLog = o; }
       arr.slice(0, 8 - lastSyncInfo.firstRaw.length).forEach(e => lastSyncInfo.firstRaw.push(e));
       arr.forEach(e => {
         const title = (e.details && e.details.title) || e.title || '';
@@ -811,7 +812,7 @@
     const ts = Object.values(state.txs).map(t => t.ts).filter(Number);
     if (!ts.length) return '';
     const first = Math.min.apply(null, ts), days = (Date.now() / 1000 - first) / 86400;
-    return 'Your imported history starts ' + fdate(first) + ' (' + (days < 1 ? 'under a day' : days.toFixed(1) + ' days') + ' ago)' + (ui.range && days < ui.range ? ': ranges longer than that show the same numbers.' : '.');
+    return 'Your imported history starts ' + fdate(first) + ' (' + (days < 1 ? 'under a day' : days.toFixed(1) + ' days') + ' ago)' + (ui.range && days < ui.range ? ': ranges longer than that show the same numbers.' : '.') + (state.oldestLog ? ' Oldest Torn log entry read: ' + fdate(state.oldestLog) + '.' : '');
   }
   function profitHtml() {
     const cutoff = ui.range ? Date.now() / 1000 - ui.range * 86400 : 0;
