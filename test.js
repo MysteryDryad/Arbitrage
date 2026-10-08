@@ -81,5 +81,12 @@ const phHtml = `<body><div>PAWNHUB RECEIPT</div><h1>Trade #13481517</h1><div>Sav
 const ph = T.parsePawnHub(new JSDOM(phHtml).window.document, 'https://z0cl.eu/PawnHub/trade_receipt.php?r=x');
 eq('PawnHub parse', [ph.tradeId, ph.total, ph.items, ph.party], [13481517, 1767500, [{ id: null, name: 'Camel Plushie', qty: 25, price: 70700 }], 'Rosiestarfish']);
 eq('PawnHub rejects total mismatch', T.parsePawnHub(new JSDOM(phHtml.replace('<b>$1,767,500</b>', '').replace('<span>$1,767,500</span>', '<span>$1</span>')).window.document, 'u'), null);
+// direct sends are batched per player within 30 minutes
+const sp = { s1: { ts: 1000, kind: 'send', cp: 7, items: [{ id: 385, qty: 10 }] }, s2: { ts: 1500, kind: 'send', cp: 7, items: [{ id: 385, qty: 5 }, { id: 276, qty: 2 }] },
+  s3: { ts: 9000, kind: 'send', cp: 7, items: [{ id: 385, qty: 1 }] }, s4: { ts: 1200, kind: 'send', cp: 8, items: [{ id: 385, qty: 3 }] }, r1: { ts: 1100, kind: 'recv', cp: 7, items: [{ id: 5, qty: 4 }] } };
+const sb = Object.values(T.buildSendTxs(sp, id => 'N' + id)).sort((a, b) => a.ts - b.ts);
+eq('send batch order', sb.map(b => [b.channel, b.cp, b.count]), [['recv', 7, 1], ['send', 8, 1], ['send', 7, 2], ['send', 7, 1]]);
+eq('send batch merges two entries', sb.find(b => b.count === 2).items.map(i => i.id + ':' + i.qty).sort(), ['276:2', '385:15']);
+eq('four batches', sb.length, 4);
 console.log(fail ? fail + ' FAILED' : 'ALL PASSED');
 process.exit(fail ? 1 : 0);

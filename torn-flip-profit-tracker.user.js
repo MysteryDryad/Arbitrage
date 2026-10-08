@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.31-beta
+// @version      0.1.32-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -61,8 +61,20 @@
     let ok = false;
     if (hasGM) { try { GM_setValue(NS + k, raw); ok = true; } catch (e) { console.warn('[TFP] GM storage failed', e); } }
     try { localStorage.setItem(NS + k, raw); ok = true; } catch (e) { console.warn('[TFP] localStorage failed', e); }
-    if (k === 'state') lastSaveOk = ok;
+    return ok;
   }
+
+  // IndexedDB holds the big data (state, item names): GM/localStorage silently fail for large values on some setups.
+  const idb = {
+    dbp: null,
+    open() { return new Promise((res, rej) => { try { const r = indexedDB.open('tfp', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); } catch (e) { rej(e); } }); },
+    db() { return this.dbp || (this.dbp = this.open()); },
+    async get(k) { const db = await this.db(); return new Promise((res, rej) => { const q = db.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); },
+    async set(k, v) { const db = await this.db(); return new Promise((res, rej) => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = () => res(true); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error); }); }
+  };
+  const hasIDB = typeof indexedDB !== 'undefined';
+  let idbErr = null;
+
 
   function http(url) {
     return new Promise((resolve, reject) => {
@@ -321,9 +333,7 @@
     { re: /bazaar.*(buy|bought|purchase)/i, channel: 'bazaar', dir: 'buy' },
     { re: /bazaar.*(sell|sold|sale)/i, channel: 'bazaar', dir: 'sell' },
     { re: /item ?market.*(buy|bought|purchase)/i, channel: 'market', dir: 'buy' },
-    { re: /item ?market.*(sell|sold|sale)/i, channel: 'market', dir: 'sell' },
-    { re: /(item|items).*(send|sent)|send.*item/i, channel: 'send', dir: 'sell', noMoney: true },
-    { re: /(item|items).*(receive|received)|receive.*item/i, channel: 'recv', dir: 'buy', noMoney: true }
+    { re: /item ?market.*(sell|sold|sale)/i, channel: 'market', dir: 'sell' }
   ];
 
   function pickItems(d) {
@@ -416,20 +426,59 @@
     return out;
   }
 
+
+  /* ===================== direct item sends/receives: batch them per player ===================== */
+  // parts: { entryId: { ts, kind: 'send'|'recv', cp, items:[{id,qty}], msg } }. Entries to the same player within
+  // 30 minutes become one record, so a burst of sends is one value to enter instead of dozens.
+  function buildSendTxs(parts, nameOf) {
+    const list = Object.entries(parts || {}).map(([id, p]) => Object.assign({ id }, p))
+      .sort((a, b) => (a.kind + a.cp).localeCompare(b.kind + b.cp) || a.ts - b.ts);
+    const groups = [];
+    list.forEach(p => {
+      const g = groups[groups.length - 1];
+      if (g && g.kind === p.kind && String(g.cp) === String(p.cp) && p.ts - g.last <= 1800) { g.entries.push(p); g.last = p.ts; }
+      else groups.push({ kind: p.kind, cp: p.cp, entries: [p], last: p.ts });
+    });
+    const out = {};
+    groups.forEach(g => {
+      const byId = {};
+      g.entries.forEach(e => (e.items || []).forEach(i => { byId[i.id] = (byId[i.id] || 0) + i.qty; }));
+      const items = Object.entries(byId).map(([id, qty]) => ({ id: Number(id), qty, name: nameOf(Number(id)), price: null }));
+      if (!items.length) return;
+      const first = g.entries[0];
+      const id = 'send:' + first.id;
+      out[id] = { id, ts: g.last, dir: g.kind === 'send' ? 'sell' : 'buy', channel: g.kind, cp: g.cp, tradeId: null, items, amount: null, src: null, locked: false,
+        count: g.entries.length, msg: g.entries.map(e => e.msg).filter(Boolean)[0] || '', title: g.kind === 'send' ? 'Item send' : 'Item receive' };
+    });
+    return out;
+  }
+
   /* ===================== state ===================== */
-  let state = sget('state', null) || { v: 1, me: null, lastSync: 0, txs: {}, receipts: {}, seenTitles: {}, seenExamples: {}, tradeParts: {}, moneyEvents: {} };
+  let state = Object.assign({ v: 1, me: null, lastSync: 0, txs: {}, receipts: {}, seenTitles: {}, seenExamples: {}, tradeParts: {}, sendParts: {}, moneyEvents: {} }, sget('state', null) || {});
   let itemNames = sget('items', null) || {};
   let lastRaw = [];
   let lastSyncInfo = null;
   const ui = { open: false, tab: 'profit', items: false, breakdown: false, more: false, showPending: false, range: 30, editing: null, msg: '', pendingReceipt: null, candidates: [], busy: false };
-  const save = () => sset('state', state);
+  const save = () => {
+    state.savedAt = Date.now();
+    const smallOk = sset('state', state);
+    if (!hasIDB) { lastSaveOk = smallOk; return; }
+    idb.set('state', state).then(() => { lastSaveOk = true; idbErr = null; }).catch(e => { idbErr = String(e && e.message || e); lastSaveOk = smallOk; });
+  };
+  const STATE_DEFAULTS = () => ({ v: 1, me: null, lastSync: 0, txs: {}, receipts: {}, seenTitles: {}, seenExamples: {}, tradeParts: {}, sendParts: {}, moneyEvents: {} });
+  // Load the saved state from IndexedDB when it is newer than what script storage gave us.
+  const bootP = !hasIDB ? Promise.resolve() : Promise.all([idb.get('state').catch(() => null), idb.get('items').catch(() => null)]).then(([v, it]) => {
+    if (v && v.txs && (v.savedAt || 0) >= (state.savedAt || 0)) state = Object.assign(STATE_DEFAULTS(), v);
+    if (it && Object.keys(it).length >= Object.keys(itemNames).length) itemNames = it;
+  }).catch(() => {});
   // Read the saved copy back and compare, so a silently failing save shows up as a warning.
   function verifySaved() {
+    if (hasIDB) return;
     try { const back = sget('state', null); lastSaveOk = !!back && Object.keys(back.txs || {}).length === Object.keys(state.txs || {}).length; }
     catch (e) { lastSaveOk = false; }
   }
-  const netAmt = tx => (tx.channel === 'market' && tx.dir === 'sell' && tx.src === 'log' && tx.amount != null) ? tx.amount * (1 - flipOpts().marketFee) : tx.amount;
-  const flipOpts = () => ({ marketFee: Math.min(100, Math.max(0, Number(sget('marketFee', 5)) || 0)) / 100 });
+  const netAmt = tx => tx.amount;
+  const flipOpts = () => ({ marketFee: 0 }); // Torn's market-sale log amount is already after the fee
   const nameOf = id => itemNames[id] || ('Item ' + id);
 
   /* ===================== Torn API ===================== */
@@ -463,7 +512,7 @@
       const j = await api('torn/items');
       const list = Array.isArray(j.items) ? j.items : Object.entries(j.items || {}).map(([id, v]) => Object.assign({ id }, v));
       list.forEach(i => { itemNames[i.id] = i.name; });
-      sset('items', itemNames);
+      sset('items', itemNames); if (hasIDB) idb.set('items', itemNames).catch(() => {});
     } catch (e) { console.warn('[TFP] item names failed', e); }
   }
 
@@ -506,12 +555,17 @@
           state.moneyEvents[e.id] = { ts: e.timestamp, dir: /receive/i.test(title) ? 'in' : 'out', cp: e.data.sender != null ? e.data.sender : (e.data.receiver != null ? e.data.receiver : (e.data.user != null ? e.data.user : null)), amount: e.data.money };
         }
         if (/^Trade /i.test(title)) {
-          const tid = tradeIdOf(e);
+          const tid = /^Trade (completed|items (incoming|outgoing)|money (incoming|outgoing))/i.test(title) ? tradeIdOf(e) : null;
           if (tid) {
             state.tradeParts = state.tradeParts || {};
             const tp = state.tradeParts[tid] = state.tradeParts[tid] || { parts: {} };
             tp.parts[e.id] = { title, ts: e.timestamp, data: compactTradeData(e.data || {}) };
           }
+          return;
+        }
+        if (/^Item (send|receive)$/i.test(title) && e.data) {
+          state.sendParts = state.sendParts || {};
+          state.sendParts[e.id] = { ts: e.timestamp, kind: /send/i.test(title) ? 'send' : 'recv', cp: e.data.receiver != null ? e.data.receiver : (e.data.sender != null ? e.data.sender : null), items: pickItems(e.data).map(i => ({ id: i.id, qty: i.qty })), msg: String(e.data.message || '').slice(0, 80) };
           return;
         }
         const rule = LOG_RULES.find(r => r.re.test(title));
@@ -543,6 +597,16 @@
       if (old && old.locked) return;
       if (!old) added++;
       state.txs[id] = tx;
+    });
+    const sends = buildSendTxs(state.sendParts, nameOf);
+    Object.keys(state.txs).forEach(id => { // drop earlier per-entry send/receive records and stale batches; keep ones you valued
+      const t = state.txs[id];
+      if ((t.channel === 'send' || t.channel === 'recv') && !t.locked && (id.indexOf('log:') === 0 || (id.indexOf('send:') === 0 && !sends[id]))) delete state.txs[id];
+    });
+    Object.entries(sends).forEach(([id, tx]) => {
+      const old = state.txs[id];
+      if (!old) added++;
+      state.txs[id] = old && old.locked ? Object.assign({}, tx, { amount: old.amount, src: old.src, locked: true }) : tx;
     });
     // The log arrives newest-first, so if we stopped at the page cap, older entries were not read: keep the old cursor.
     if (!capped) { state.lastSync = newest; state.syncedAt = Math.floor(Date.now() / 1000); state.resume = null; }
@@ -635,7 +699,7 @@
   `;
   const badge = tx => tx.src === 'receipt' ? '🧾' : tx.src === 'log' ? '📒' : tx.src === 'manual' ? '✍️' : '⚠️';
   const fdate = ts => { const d = new Date(ts * 1000); return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }); };
-  const itemSummary = tx => tx.items.map(i => i.qty + '× ' + esc(i.name || nameOf(i.id))).join(', ');
+  const itemSummary = tx => tx.items.slice(0, 5).map(i => i.qty + '× ' + esc(i.name || nameOf(i.id))).join(', ') + (tx.items.length > 5 ? ' + ' + (tx.items.length - 5) + ' more' : '') + (tx.count > 1 ? ' · ' + tx.count + ' sends' : '');
   const chanLabel = c => ({ market: 'Market', bazaar: 'Bazaar', trade: 'Trade', send: 'Send', recv: 'Received' }[c] || c);
 
   const rangeSelect = () => `<select class="tfp-in tfp-sel" data-act="range">${[[1, 'Last 24h'], [7, 'Last 7 days'], [30, 'Last 30 days'], [0, 'All time']].map(r => `<option value="${r[0]}"${ui.range === r[0] ? ' selected' : ''}>${r[1]}</option>`).join('')}</select>`;
@@ -711,7 +775,8 @@
       else {
         h += editBox(tx);
         const want = tx.dir === 'sell' ? 'in' : 'out';
-        const sug = Object.entries(state.moneyEvents || {}).filter(([, m]) => m.dir === want && Math.abs(m.ts - tx.ts) < 6 * 3600 && tx.cp != null && m.cp != null && String(m.cp) === String(tx.cp)).slice(0, 3);
+        const sug = Object.entries(state.moneyEvents || {}).filter(([, m]) => m.dir === want && Math.abs(m.ts - tx.ts) < 24 * 3600 && tx.cp != null && m.cp != null && String(m.cp) === String(tx.cp)).slice(0, 3);
+        if (tx.channel === 'send' || tx.channel === 'recv') h += `<div class="tfp-gap"></div><button class="tfp-b" data-act="gift" data-id="${esc(tx.id)}">Gift / no payment ($0)</button>`;
         if (tx.channel === 'send' || tx.channel === 'recv') sug.forEach(([mid, m]) => { h += `<div class="tfp-gap"></div><button class="tfp-b" data-act="usemoney" data-id="${esc(tx.id)}" data-v="${esc(mid)}">Use ${fmt(m.amount)} ${want === 'in' ? 'received' : 'sent'} ${fdate(m.ts)}</button>`; });
       }
       return h + '</div>';
@@ -742,9 +807,7 @@
       <tr><td>Key access level</td><td>Limited Access (needed for the log).</td></tr></table>
       <div class="tfp-sub">Tip: make a separate key just for this script. Deleting it in Torn settings revokes access at once.</div>`;
     return `${keyBox}<div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
-      <input class="tfp-in" id="tfp-days" data-act="setting" inputmode="numeric" value="${esc(sget('startDays', 30))}"><div class="tfp-gap"></div><div class="tfp-sub">Item market fee % (market sales only)</div>
-      <input class="tfp-in" id="tfp-fee" data-act="setting" inputmode="decimal" value="${esc(sget('marketFee', 5))}"><div class="tfp-gap"></div>
-      <button class="tfp-b" data-act="sync">${ui.busy ? 'Syncing…' : 'Sync now'}</button>
+      <input class="tfp-in" id="tfp-days" data-act="setting" inputmode="numeric" value="${esc(sget('startDays', 30))}"><div class="tfp-gap"></div><button class="tfp-b" data-act="sync">${ui.busy ? 'Syncing…' : 'Sync now'}</button>
       <div class="tfp-sub">Syncs automatically when you open this panel. Last sync: ${state.syncedAt || state.lastSync ? fdate(state.syncedAt || state.lastSync) : 'never'} · ${Object.keys(state.txs).length} records</div>
       <div class="tfp-gap"></div><div class="tfp-sub">${link('more', 'Backup &amp; troubleshooting')}</div>
       ${ui.more ? settingsMore() : ''}`;
@@ -785,7 +848,7 @@
       else if (act === 'tab') { ui.tab = v; ui.editing = null; }
       else if (act === 'range') ui.range = Number(el.value);
       else if (act === 'toggle') ui[v] = !ui[v];
-      else if (act === 'setting') { sset('startDays', Number(val('tfp-days')) || 30); const f = parseFloat(val('tfp-fee')); sset('marketFee', isNaN(f) ? 5 : f); }
+      else if (act === 'setting') { sset('startDays', Number(val('tfp-days')) || 30); }
       else if (act === 'edit') ui.editing = ui.editing === id ? null : id;
       else if (act === 'dir') state.txs[id].dir = v, save();
       else if (act === 'saveval') {
@@ -793,6 +856,7 @@
         if (n == null) throw new Error('Enter a number.');
         const tx = state.txs[id]; tx.amount = n; tx.src = 'manual'; tx.locked = true; ui.editing = null; save();
       }
+      else if (act === 'gift') { const tx = state.txs[id]; tx.amount = 0; tx.src = 'manual'; tx.locked = true; save(); }
       else if (act === 'usemoney') {
         const m = state.moneyEvents[v], tx = state.txs[id];
         if (!m || !tx) throw new Error('That payment is no longer available.');
@@ -811,9 +875,8 @@
       }
       else if (act === 'clearkey') { sset('apikey', ''); state.me = null; save(); ui.msg = 'Key removed from this device.'; }
       else if (act === 'sync' || act === 'resync') {
-        if (act === 'resync') { state.lastSync = 0; state.seenTitles = {}; state.tradeParts = {}; state.moneyEvents = {}; state.resume = null; save(); }
+        if (act === 'resync') { state.lastSync = 0; state.seenTitles = {}; state.tradeParts = {}; state.sendParts = {}; state.moneyEvents = {}; state.resume = null; save(); }
         sset('startDays', Number(val('tfp-days')) || 30);
-        { const f = parseFloat(val('tfp-fee')); sset('marketFee', isNaN(f) ? 5 : f); }
         ui.busy = true; render();
         try { const n = await syncLog(); ui.msg = 'Sync done: ' + n + ' new record(s).'; }
         finally { ui.busy = false; }
@@ -838,7 +901,7 @@
         const tb = document.querySelector('#topHeaderBanner .toolbar, .header-buttons-wrapper');
         const hdr = tb ? tb.outerHTML.replace(/<svg[\s\S]*?<\/svg>/g, '<svg/>').replace(/<form[\s\S]*?<\/form>/g, '<form/>') : null;
         let cats = null; try { cats = await api('torn/logcategories'); } catch (e) { cats = String(e.message || e); }
-        const sample = { storage: { hasGM, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), header: hdr ? hdr.slice(0, 6000) : null, headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
+        const sample = { storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), header: hdr ? hdr.slice(0, 6000) : null, headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
         const ok = await copyText(JSON.stringify(sample, null, 1));
         ui.msg = ok ? 'Debug sample copied. Paste it to Claude.' : 'Could not copy. Sync first, then try again.';
       }
@@ -853,7 +916,7 @@
     catch (err) { ui.msg = String(err.message || err); }
     finally { ui.busy = false; render(); }
   }
-  function openPanel() { verifySaved(); ui.open = true; document.getElementById('tfp-wrap').classList.add('open'); render(); autoSync(); }
+  function openPanel() { ui.open = true; document.getElementById('tfp-wrap').classList.add('open'); render(); bootP.then(() => { render(); autoSync(); }); }
   function placeBtn(b, pos) {
     const de = document.documentElement;
     const left = Math.min(Math.max(0, pos.left), Math.max(0, de.scrollWidth - 40));
@@ -938,7 +1001,7 @@
   }
 
   if (typeof module !== 'undefined') {
-    module.exports = { parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
+    module.exports = { buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
   }
   if (typeof document !== 'undefined' && !globalThis.__TFP_TEST) init();
 })();
