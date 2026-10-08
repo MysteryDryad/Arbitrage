@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.56-beta
+// @version      0.1.57-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -629,6 +629,21 @@
     });
     ui.inv = { at: Math.floor(Date.now() / 1000), rows, unverified: unverified.length };
     return rows.length;
+  }
+  // Rebuild the per-entry send/receive records from the stored log entries (no network needed).
+  function rebuildSendTxs() {
+    let added = 0;
+    const sends = buildSendTxs(state.sendParts, nameOf);
+    Object.keys(state.txs).forEach(id => { // drop earlier per-entry send/receive records and stale batches; keep ones you valued
+      const t = state.txs[id];
+      if ((t.channel === 'send' || t.channel === 'recv') && !t.locked && (id.indexOf('log:') === 0 || (id.indexOf('send:') === 0 && !sends[id]))) delete state.txs[id];
+    });
+    Object.entries(sends).forEach(([id, tx]) => {
+      const old = state.txs[id];
+      if (!old) added++;
+      state.txs[id] = old && old.locked && !(old.count > 1) ? Object.assign({}, tx, { amount: old.amount, src: old.src, gift: old.gift, locked: true }) : tx; // a value entered for an old merged batch no longer fits one entry: dropped
+    });
+    return added;
   }
   async function syncLog() {
     await ensureMe(); await ensureItems();
