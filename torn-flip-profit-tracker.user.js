@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.44-beta
+// @version      0.1.45-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -733,6 +733,13 @@
   const rangeSelect = () => `<select class="tfp-in tfp-sel" data-act="range">${[[1, 'Last 24 hours'], [7, 'Last 7 days'], [30, 'Last 30 days'], [90, 'Last 90 days'], [0, 'All time']].map(r => `<option value="${r[0]}"${ui.range === r[0] ? ' selected' : ''}>${r[1]}</option>`).join('')}</select>`;
   const pnlCls = n => n == null ? 'tfp-warn' : n >= 0 ? 'tfp-pos' : 'tfp-neg';
   const link = (key, label) => `<a href="#" data-act="toggle" data-v="${key}">${ui[key] ? '▾' : '▸'} ${label}</a>`;
+  // The log the API gives us may reach back less far than the selected range: say where the data really starts.
+  function historyNote() {
+    const ts = Object.values(state.txs).map(t => t.ts).filter(Number);
+    if (!ts.length) return '';
+    const first = Math.min.apply(null, ts), days = (Date.now() / 1000 - first) / 86400;
+    return 'Your imported history starts ' + fdate(first) + ' (' + (days < 1 ? 'under a day' : days.toFixed(1) + ' days') + ' ago)' + (ui.range && days < ui.range ? ': ranges longer than that show the same numbers.' : '.');
+  }
   function profitHtml() {
     const cutoff = ui.range ? Date.now() / 1000 - ui.range * 86400 : 0;
     const res = computeFlips(state.txs, flipOpts());
@@ -743,7 +750,8 @@
     const profit = done.reduce((a, f) => a + f.profit, 0);
     let h = `<div class="tfp-h"><div><span class="${pnlCls(profit)}" style="font-size:20px"><b>${fmt(profit)}</b></span>
       <div class="tfp-sub">${done.length} flip${done.length === 1 ? '' : 's'}${cost > 0 ? ' · ' + (profit / cost * 100).toFixed(1) + '% return' : ''}</div></div><div class="tfp-ctl">${rangeSelect()}<button class="tfp-b" data-act="sync">${ui.busy ? 'Syncing…' : state.resume ? 'Continue sync' : 'Sync'}</button></div></div>
-      <div class="tfp-sub">Sold for ${fmt(revenue)} · cost ${fmt(cost)}</div>`;
+      <div class="tfp-sub">Sold for ${fmt(revenue)} · cost ${fmt(cost)}</div>
+      <div class="tfp-sub">${historyNote()}</div>`;
     if (res.pending.length) {
       h += `<div class="tfp-msg tfp-warn"><a href="#" data-act="toggle" data-v="showPending">⚠️ ${res.pending.length} need${res.pending.length === 1 ? 's' : ''} a value ${ui.showPending ? '▾' : '▸'}</a></div>`;
       if (ui.showPending) h += pendingHtml();
@@ -1021,7 +1029,7 @@
     if (!document.getElementById('tfp-wrap')) {
       const w = document.createElement('div'); w.id = 'tfp-wrap'; if (IS_PDA_ENV) w.classList.add('pda'); w.innerHTML = '<div id="tfp-card"></div>';
       w.addEventListener('click', ev => { if (ev.target === w) { w.classList.remove('open'); ui.open = false; } else if (!ev.target.closest('select, input, textarea')) onAction(ev); });
-      w.addEventListener('change', ev => { if (ev.target.matches('select[data-act], input[data-act]')) onAction(ev); });
+      ['change', 'input'].forEach(t => w.addEventListener(t, ev => { if (ev.target.matches('select[data-act]') || (t === 'change' && ev.target.matches('input[data-act]'))) onAction(ev); }));
       document.body.appendChild(w);
     }
     if (!document.getElementById('tfp-btn')) {
