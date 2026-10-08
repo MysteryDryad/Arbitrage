@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.72-beta
+// @version      0.1.73-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -1036,7 +1036,7 @@
     // One closed row per category; opening it lists that category's sales.
     const CATS = [['trade', 'Trade'], ['market', 'Market'], ['bazaar', 'Bazaar'], ['send', 'Sent']];
     CATS.forEach(([ch, label]) => {
-      const fs = flips.filter(f => f.tx.channel === ch);
+      const fs = done.filter(f => f.tx.channel === ch); // sales that could not be costed are listed once, under "not counted"
       const pend = res.pending.filter(tx => tx.channel === ch && tx.dir === 'sell' && tx.ts >= cutoff).sort((a, b) => b.ts - a.ts);
       const gifts = Object.values(state.txs).filter(t => t.channel === ch && isGift(t) && t.ts >= cutoff).sort((a, b) => b.ts - a.ts);
       if (!fs.length && !pend.length && !gifts.length) return;
