@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.13-beta
+// @version      0.1.14-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -12,8 +12,8 @@
 // @connect      api.torn.com
 // @connect      tornexchange.com
 // @connect      weav3r.dev
-// @updateURL    https://raw.githubusercontent.com/MysteryDryad/Arbitrage/claude/torn-flip-tracker-handoff-0o79ga/torn-flip-profit-tracker.user.js
-// @downloadURL  https://raw.githubusercontent.com/MysteryDryad/Arbitrage/claude/torn-flip-tracker-handoff-0o79ga/torn-flip-profit-tracker.user.js
+// @updateURL    https://update.greasyfork.org/scripts/599222/Arbitrage.user.js
+// @downloadURL  https://update.greasyfork.org/scripts/599222/Arbitrage.user.js
 // @run-at       document-idle
 // ==/UserScript==
 
