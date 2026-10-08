@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flip Profit Tracker
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.10-beta
+// @version      0.1.11-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -12,6 +12,8 @@
 // @connect      api.torn.com
 // @connect      tornexchange.com
 // @connect      weav3r.dev
+// @updateURL    https://raw.githubusercontent.com/MysteryDryad/Arbitrage/claude/torn-flip-tracker-handoff-0o79ga/torn-flip-profit-tracker.user.js
+// @downloadURL  https://raw.githubusercontent.com/MysteryDryad/Arbitrage/claude/torn-flip-tracker-handoff-0o79ga/torn-flip-profit-tracker.user.js
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -467,7 +469,7 @@
   .tfp-gap{height:6px}
   .tfp-disc{width:100%;border-collapse:collapse;margin-top:6px;font-size:12px}
   .tfp-disc td{border:1px solid #444;padding:4px;vertical-align:top}
-  .tfp-disc td:first-child{color:#999;white-space:nowrap}
+  .tfp-disc td:first-child{color:#999;white-space:nowrap;padding-right:10px}
   #tfp-toast{position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:2147483647;background:#222;color:#fff;border:1px solid #555;border-radius:8px;padding:8px 12px;font:13px Arial}
   `;
   const badge = tx => tx.src === 'receipt' ? '🧾' : tx.src === 'log' ? '📒' : tx.src === 'manual' ? '✍️' : '⚠️';
