@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.91-beta
+// @version      0.1.92-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -36,7 +36,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.91-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.92-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -434,11 +434,11 @@
     return out;
   }
   function pickMoney(d, items) {
-    for (const k of ['total_cost', 'total', 'total_price', 'money', 'cost_total', 'cost', 'price', 'value']) {
+    for (const k of ['total_cost', 'total', 'total_price', 'money', 'cost_total', 'total_value', 'cost', 'price', 'value']) {
       if (typeof d[k] === 'number') return d[k];
     }
     const qty = items.reduce((s, i) => s + i.qty, 0) || 1;
-    for (const k of ['cost_each', 'price_each', 'cost_per', 'unit_price']) {
+    for (const k of ['cost_each', 'value_each', 'price_each', 'cost_per', 'unit_price']) {
       if (typeof d[k] === 'number') return d[k] * qty;
     }
     return null;
@@ -558,7 +558,7 @@
     if (!other || !other.txs) return mine;
     Object.entries(other.txs).forEach(([id, t]) => {
       const m = mine.txs[id];
-      if (!m) { if (t.locked) mine.txs[id] = t; }
+      if (!m) mine.txs[id] = t; // a record only the other copy has (a page with stale data must not drop it)
       else if (valued(t) && !valued(m)) mine.txs[id] = Object.assign({}, m, { amount: t.amount, src: t.src, gift: t.gift, locked: t.locked, receiptUrl: t.receiptUrl, items: t.items && m.items && t.items.length === m.items.length ? t.items : m.items });
     });
     ['receipts', 'tradeEnd', 'tradeParts', 'sendParts', 'moneyEvents'].forEach(k => { if (other[k]) mine[k] = Object.assign({}, other[k], mine[k] || {}); });
@@ -744,6 +744,17 @@
           last = await weaverImport(); att += last.attached;
           if (!last.left) break;
         }
+        // A receipt whose trade is not in your data may have been missed (log read cut short, or an older copy of your data saved over it): read the log again from a bit before it, once per receipt.
+        if (last && last.reread && last.reread.length) {
+          const w = state.w3b; last.reread.forEach(r => { w.re[r.id] = Math.floor(Date.now() / 1000); });
+          state.lastSync = Math.min(state.lastSync || 0, Math.min.apply(null, last.reread.map(r => r.ts)) - 86400); state.resume = null; save();
+          for (let round = 0; round < 12; round++) {
+            try { added += await syncLog(); break; }
+            catch (e) { if (!e.capped || round === 11) throw e; added += e.added || 0; step('Re-reading recent log… (part ' + (round + 2) + ')'); await sleep(1500); }
+          }
+          step('Importing Weaver receipts… ' + att + ' attached');
+          last = await weaverImport(); att += last.attached;
+        }
         out += ' ' + (last ? last.text.replace(/^Weaver: \d+ receipt\(s\) attached/, 'Weaver: ' + att + ' receipt(s) attached') : '');
       } catch (e) { out += ' Weaver import stopped: ' + String(e.message || e) + ' (tap Import Weaver receipts to retry).'; }
     }
@@ -927,9 +938,10 @@
       try { return JSON.parse(r.text); } catch (e) { throw new Error('TornW3B sent something I could not read.'); }
     };
     const w = state.w3b = state.w3b || { done: {}, miss: {}, at: {} };
-    w.at = w.at || {};
+    w.at = w.at || {}; w.re = w.re || {};
     const now = Math.floor(Date.now() / 1000);
     let budget = 40, attached = 0, missing = 0, ended = 0, left = 0, pages = 0, to = null, listed = 0, already = 0, newest = 0, noId = 0;
+    const reread = [];
     const lost = [];
     const seen = new Set();
     try {
@@ -950,7 +962,7 @@
           if (tx) { if (tx.dir) rc.role = tx.dir; attachReceipt(rc, tx); w.done[t.id] = 1; attached++; }
           else if (rc && state.tradeEnd && state.tradeEnd[rc.tradeId]) { w.done[t.id] = 1; ended++; }
           else if (!rc) { w.done[t.id] = 1; noId++; } // nothing to match it with: no Torn trade number or no item prices
-          else { w.miss[t.id] = now; missing++; if (lost.length < 5) lost.push(rc ? 'trade ' + rc.tradeId + ' with ' + rc.buyer + ', ' + fmt(rc.total) + (rc.ts ? ' at ' + fdate(rc.ts) : '') + (() => { const tp = state.tradeParts && state.tradeParts[rc.tradeId]; return tp ? ' [log has: ' + Object.values(tp.parts || {}).map(p => p.title).join(', ') + ']' : ' [no log entry with this trade ID]'; })() : 'receipt ' + t.id + ' (unreadable)'); }
+          else { w.miss[t.id] = now; missing++; if (rc.ts && rc.ts > now - 14 * 86400 && !w.re[t.id]) reread.push({ id: t.id, ts: rc.ts }); if (lost.length < 5) lost.push(rc ? 'trade ' + rc.tradeId + ' with ' + rc.buyer + ', ' + fmt(rc.total) + (rc.ts ? ' at ' + fdate(rc.ts) : '') + (() => { const tp = state.tradeParts && state.tradeParts[rc.tradeId]; return tp ? ' [log has: ' + Object.values(tp.parts || {}).map(p => p.title).join(', ') + ']' : ' [no log entry with this trade ID]'; })() : 'receipt ' + t.id + ' (unreadable)'); }
         }
         if (list.length < 100) break;
         const last = list[list.length - 1];
@@ -961,7 +973,7 @@
       }
     } finally { save(); }
     const text = 'Weaver: ' + attached + ' receipt(s) attached' + (ended ? ', ' + ended + ' skipped (their trades were cancelled, expired or declined)' : '') + (noId ? ', ' + noId + ' ignored (no Torn trade number or no prices)' : '') + (missing ? ', ' + missing + ' not found in your log (' + lost.join('; ') + ')' : '') + (left ? ', ' + left + ' more waiting: tap again' : '') + (!attached && !missing && !left ? ' (nothing new)' : '') + '. TornW3B lists ' + listed + ' receipt(s)' + (newest ? ', newest ' + fdate(newest) : '') + '; ' + already + ' already attached.';
-    return { text, attached, left, ended, missing };
+    return { text, attached, left, ended, missing, reread };
   }
   async function handleReceipt(rc) {
     if (rc.source === 'pawnhub-balance') return applyPawnHubBalance(rc);
