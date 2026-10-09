@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.87-beta
+// @version      0.1.88-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -36,7 +36,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.87-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.88-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -945,7 +945,7 @@
           // your log says whether you bought or sold; the receipt only names the other player
           if (tx) { if (tx.dir) rc.role = tx.dir; attachReceipt(rc, tx); w.done[t.id] = 1; attached++; }
           else if (rc && state.tradeEnd && state.tradeEnd[rc.tradeId]) { w.done[t.id] = 1; ended++; }
-          else { w.miss[t.id] = now; missing++; if (lost.length < 3) lost.push(rc ? 'trade ' + rc.tradeId + ' with ' + rc.buyer + ', ' + fmt(rc.total) + (rc.ts ? ' at ' + fdate(rc.ts) : '') : 'receipt ' + t.id + ' (unreadable)'); }
+          else { w.miss[t.id] = now; missing++; if (lost.length < 5) lost.push(rc ? 'trade ' + rc.tradeId + ' with ' + rc.buyer + ', ' + fmt(rc.total) + (rc.ts ? ' at ' + fdate(rc.ts) : '') + (() => { const tp = state.tradeParts && state.tradeParts[rc.tradeId]; return tp ? ' [log has: ' + Object.values(tp.parts || {}).map(p => p.title).join(', ') + ']' : ' [no log entry with this trade ID]'; })() : 'receipt ' + t.id + ' (unreadable)'); }
         }
         if (list.length < 100) break;
         const last = list[list.length - 1];
