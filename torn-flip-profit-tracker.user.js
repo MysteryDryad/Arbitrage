@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.84-beta
+// @version      0.1.85-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -36,7 +36,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.84-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.85-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -549,7 +549,7 @@
   let itemValues = sget('itemvals', null) || {};
   let lastRaw = [];
   let lastSyncInfo = null;
-  const ui = { open: false, tab: 'profit', items: false, breakdown: false, more: false, showPending: false, range: 30, editing: null, msg: '', pendingReceipt: null, candidates: [], busy: false };
+  const ui = { open: false, tab: 'profit', items: false, breakdown: false, more: false, showPending: false, range: [1, 7, 30, 90, 0].includes(Number(sget('range', 30))) ? Number(sget('range', 30)) : 30, editing: null, msg: '', pendingReceipt: null, candidates: [], busy: false };
   // Several Torn pages (and your phone's page cache) can hold their own copy of the data. Before one overwrites the other, fold in what the other copy has that this one lacks, so a value from a receipt or Balance import can never be lost to a stale copy.
   const valued = t => t && (t.locked || t.src === 'receipt' || t.src === 'manual') && t.amount != null;
   function mergeState(mine, other) {
@@ -1279,7 +1279,7 @@
       else if (act === 'tab') { if (v !== ui.tab) navPush(); ui.tab = v; ui.editing = null; ui.itemLog = null; card0().scrollTop = 0; }
       else if (act === 'back') { const b = (ui.nav || []).pop(); if (b) { ui.tab = b.tab; ui.itemLog = b.itemLog; ui.editing = null; card0().scrollTop = 0; } }
       else if (act === 'home') { ui.nav = []; ui.tab = 'profit'; ui.itemLog = null; ui.editing = null; card0().scrollTop = 0; }
-      else if (act === 'range') ui.range = Number(el.value);
+      else if (act === 'range') { ui.range = Number(el.value); sset('range', ui.range); }
       else if (act === 'toggle') ui[v] = !ui[v];
       else if (act === 'removestock') {
         if (ui.armRemove !== id) { ui.armRemove = id; render(); return; }
