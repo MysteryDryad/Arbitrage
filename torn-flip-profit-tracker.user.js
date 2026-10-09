@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.85-beta
+// @version      0.1.86-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -36,7 +36,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.85-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.86-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -99,7 +99,7 @@
   async function httpRetry(url, headers) {
     for (let t = 0; ; t++) {
       try { const r = await http(url, headers); if (r) return r; throw Object.assign(new Error('No reply from the network'), { noReply: true }); }
-      catch (e) { if (t < 3 && (e.noReply || /undefined is not an object|network|failed to fetch/i.test(String(e && e.message)))) { await new Promise(res => setTimeout(res, 3000 * (t + 1))); continue; } throw e; }
+      catch (e) { if (t < 4 && (e.noReply || /undefined is not an object|network|failed to fetch|handshake|connection|timed? ?out|socket|reset|terminated|ssl|tls/i.test(String(e && e.message)))) { await new Promise(res => setTimeout(res, 3000 * (t + 1))); continue; } throw e; }
     }
   }
   function copyText(text) {
