@@ -104,5 +104,7 @@ const hits = T.matchPawnHubEvents(bal.events, balTxs, { 'tribulus omanense': 385
 eq('balance events match sends by item, qty and time', hits.map(h => [h.txId, h.event.total]).sort(), [['s1', 13540800], ['s2', 1090700]]);
 { const src = require('fs').readFileSync(__dirname + '/torn-flip-profit-tracker.user.js', 'utf8'); const h = (src.match(/@version\s+(\S+)/) || [])[1], c = (src.match(/const VERSION = '([^']+)'/) || [])[1]; eq('VERSION matches header', c, h); }
 { const e = { id: 'a1', timestamp: 5, details: { title: 'Item abroad buy' }, data: { item: 385, amount: 100, cost_each: 600 } }; const rule = T.LOG_RULES.find(r => r.re.test('Item abroad buy')); const tx = T.parseLogEntry(e, rule, id => 'N' + id); eq('abroad buy becomes a stock buy', [tx.dir, tx.channel, tx.items[0].qty, tx.amount], ['buy', 'abroad', 100, 60000]); }
+{ const stale = { txs: { s1: { id: 's1', amount: null, src: null, items: [{ id: 1, qty: 1 }] } }, receipts: {}, w3b: { done: {} } }, fresh = { txs: { s1: { id: 's1', amount: 500, src: 'receipt', locked: true, items: [{ id: 1, qty: 1, price: 500 }] }, s2: { id: 's2', amount: 7, src: 'manual', locked: true, items: [{ id: 2, qty: 1 }] } }, receipts: {}, w3b: { done: { x: 1 } }, lastSync: 9 };
+  const m = T.mergeState(stale, fresh); eq('stale copy keeps values from the newer copy', [m.txs.s1.amount, m.txs.s1.locked, !!m.txs.s2, m.w3b.done.x, m.lastSync], [500, true, true, 1, 9]); }
 console.log(fail ? fail + ' FAILED' : 'ALL PASSED');
 process.exit(fail ? 1 : 0);

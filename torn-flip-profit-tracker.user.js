@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.83-beta
+// @version      0.1.84-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -36,7 +36,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.83-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.84-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -550,8 +550,26 @@
   let lastRaw = [];
   let lastSyncInfo = null;
   const ui = { open: false, tab: 'profit', items: false, breakdown: false, more: false, showPending: false, range: 30, editing: null, msg: '', pendingReceipt: null, candidates: [], busy: false };
+  // Several Torn pages (and your phone's page cache) can hold their own copy of the data. Before one overwrites the other, fold in what the other copy has that this one lacks, so a value from a receipt or Balance import can never be lost to a stale copy.
+  const valued = t => t && (t.locked || t.src === 'receipt' || t.src === 'manual') && t.amount != null;
+  function mergeState(mine, other) {
+    if (!other || !other.txs) return mine;
+    Object.entries(other.txs).forEach(([id, t]) => {
+      const m = mine.txs[id];
+      if (!m) { if (t.locked) mine.txs[id] = t; }
+      else if (valued(t) && !valued(m)) mine.txs[id] = Object.assign({}, m, { amount: t.amount, src: t.src, gift: t.gift, locked: t.locked, receiptUrl: t.receiptUrl, items: t.items && m.items && t.items.length === m.items.length ? t.items : m.items });
+    });
+    ['receipts', 'tradeEnd', 'tradeParts', 'sendParts', 'moneyEvents'].forEach(k => { if (other[k]) mine[k] = Object.assign({}, other[k], mine[k] || {}); });
+    if (other.w3b) { const w = mine.w3b = mine.w3b || { done: {}, miss: {}, at: {} }; ['done', 'at'].forEach(k => { w[k] = Object.assign({}, other.w3b[k] || {}, w[k] || {}); }); w.miss = w.miss || {}; }
+    if ((other.lastSync || 0) > (mine.lastSync || 0) && !mine.resume) mine.lastSync = other.lastSync;
+    if (other.pawnhubSince && (!mine.pawnhubSince || other.pawnhubSince < mine.pawnhubSince)) mine.pawnhubSince = other.pawnhubSince;
+    if (!mine.me && other.me) mine.me = other.me;
+    return mine;
+  }
+  let lastWrite = state.savedAt || 0;
   const save = () => {
-    state.savedAt = Date.now();
+    try { const stored = sget('state', null); if (stored && (stored.savedAt || 0) > lastWrite) mergeState(state, stored); } catch (e) { /* storage unreadable: save as is */ }
+    state.savedAt = Date.now(); lastWrite = state.savedAt;
     const smallOk = sset('state', state);
     if (!hasIDB) { lastSaveOk = smallOk; return; }
     idb.set('state', state).then(() => { lastSaveOk = true; idbErr = null; }).catch(e => { idbErr = String(e && e.message || e); lastSaveOk = smallOk; });
@@ -560,7 +578,11 @@
   // Load the saved state from IndexedDB when it is newer than what script storage gave us.
   const bootP = !hasIDB ? Promise.resolve() : Promise.all([idb.get('state').catch(() => null), idb.get('items').catch(() => null), idb.get('itemvals').catch(() => null)]).then(([v, it, iv]) => {
     if (iv && Object.keys(iv).length >= Object.keys(itemValues).length) itemValues = iv;
-    if (v && v.txs && (v.savedAt || 0) >= (state.savedAt || 0)) state = Object.assign(STATE_DEFAULTS(), v);
+    if (v && v.txs) {
+      if ((v.savedAt || 0) >= (state.savedAt || 0)) { const old = state; state = mergeState(Object.assign(STATE_DEFAULTS(), v), old); }
+      else mergeState(state, v);
+      lastWrite = Math.max(lastWrite, state.savedAt || 0);
+    }
     if (it && Object.keys(it).length >= Object.keys(itemNames).length) itemNames = it;
   }).catch(() => {});
   // Read the saved copy back and compare, so a silently failing save shows up as a warning.
@@ -1473,13 +1495,15 @@
       mountTornUI();
       setInterval(mountTornUI, 2500);
       bootP.then(() => { setTimeout(autoInbox, 2500); setTimeout(autoCheckInventory, 20000); });
-      document.addEventListener('visibilitychange', () => { if (!document.hidden) bootP.then(autoInbox); });
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) bootP.then(() => { // another page may have saved newer data while this one slept
+        try { const st = sget('state', null); if (st && (st.savedAt || 0) > lastWrite && !ui.busy) { const mine = state; state = mergeState(Object.assign(STATE_DEFAULTS(), st), mine); lastWrite = st.savedAt; if (ui.open) render(); } } catch (e) { /* ignore */ }
+        autoInbox(); }); });
       setInterval(autoCheckInventory, 5 * 60 * 1000);
     }
   }
 
   if (typeof module !== 'undefined') {
-    module.exports = { LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
+    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
   }
   if (typeof document !== 'undefined' && !globalThis.__TFP_TEST) init();
 })();
