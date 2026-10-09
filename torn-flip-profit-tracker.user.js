@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.80-beta
+// @version      0.1.81-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -36,7 +36,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.80-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.81-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -421,8 +421,8 @@
     { re: /item ?market.*(buy|bought|purchase)/i, channel: 'market', dir: 'buy' },
     { re: /item ?market.*(sell|sold|sale)/i, channel: 'market', dir: 'sell' },
     { re: /^item abroad buy/i, channel: 'abroad', dir: 'buy' }, // flowers and plushies bought while travelling
-    { re: /^item shop buy/i, channel: 'shop', dir: 'buy' },
-    { re: /^item shop sell/i, channel: 'shop', dir: 'sell' }
+    { re: /^(item |city )?shop (buy|bought|purchase)/i, channel: 'shop', dir: 'buy' },
+    { re: /^(item |city )?shop (sell|sold|sale)|^(item )?sell.*(shop|npc)|^npc.*sell/i, channel: 'shop', dir: 'sell' }
   ];
 
   function pickItems(d) {
@@ -761,7 +761,7 @@
         if (title) state.seenTitles[title] = (state.seenTitles[title] || 0) + 1;
         if (e.timestamp > newest) newest = e.timestamp;
         state.seenExamples = state.seenExamples || {};
-        if (title && !state.seenExamples[title] && (Object.keys(state.seenExamples).length < 80 || /abroad|shop (buy|sell)/i.test(title)) && !/^(Crime|Forums|Message|Faction newsletter)/i.test(title)) state.seenExamples[title] = e;
+        if (title && !state.seenExamples[title] && (Object.keys(state.seenExamples).length < 80 || /abroad|shop|museum|cache|ranked|item use|points/i.test(title)) && !/^(Crime|Forums|Message|Faction newsletter)/i.test(title)) state.seenExamples[title] = e;
         if (/^Money (receive|send)/i.test(title) && e.data && typeof e.data.money === 'number') {
           state.moneyEvents = state.moneyEvents || {};
           state.moneyEvents[e.id] = { ts: e.timestamp, dir: /receive/i.test(title) ? 'in' : 'out', cp: e.data.sender != null ? e.data.sender : (e.data.receiver != null ? e.data.receiver : (e.data.user != null ? e.data.user : null)), amount: e.data.money };
@@ -1196,12 +1196,15 @@
       <div class="tfp-row"><b>Troubleshooting</b><div class="tfp-gap"></div><button class="tfp-b" data-act="debug">Copy debug sample</button> <button class="tfp-b" data-act="resync">Re-sync from start</button></div>`;
   }
 
+  const card0 = () => document.getElementById('tfp-card') || {};
+  const navPush = () => { ui.nav = ui.nav || []; ui.nav.push({ tab: ui.tab, itemLog: ui.itemLog || null }); if (ui.nav.length > 20) ui.nav.shift(); };
   function render() {
     const card = document.getElementById('tfp-card');
     if (!card) return;
     const needs = computeFlips(state.txs, flipOpts()).pending.length;
     const tabs = [['profit', 'Profit' + (needs ? ' ⚠️' : '')], ['stock', 'Stock' + (state.inv && state.inv.rows.length ? ' ⚠️' : '')], ['receipts', 'Receipts'], ['settings', 'Settings']];
-    card.innerHTML = `<div class="tfp-h"><span><b>💰 Arbitrage</b> <span class="tfp-sub">v${VERSION}</span></span><button class="tfp-b" data-act="close">✕</button></div>
+    const away = ui.tab !== 'profit' || ui.itemLog || ui.editing, back = ui.nav && ui.nav.length;
+    card.innerHTML = `<div class="tfp-h"><span>${back ? '<button class="tfp-b" data-act="back">‹ Back</button> ' : ''}${away ? '<button class="tfp-b" data-act="home">⌂ Home</button> ' : ''}<b>💰 Arbitrage</b> <span class="tfp-sub">v${VERSION}</span></span><button class="tfp-b" data-act="close">✕</button></div>
       <div class="tfp-tabs">${tabs.map(t => `<button class="tfp-tab ${ui.tab === t[0] ? 'on' : ''}" data-act="tab" data-v="${t[0]}">${t[1]}</button>`).join('')}</div>
       ${lastSaveOk ? '' : '<div class="tfp-msg tfp-warn">⚠️ Could not save your data on this device (storage may be full). Export a backup in Settings.</div>'}
       ${ui.msg ? `<div class="tfp-msg">${esc(ui.msg)}</div>` : ''}
@@ -1248,7 +1251,9 @@
     if (act !== 'removeexcess') ui.armExcess = false;
     try {
       if (act === 'close') ui.open = false, document.getElementById('tfp-wrap').classList.remove('open');
-      else if (act === 'tab') { ui.tab = v; ui.editing = null; }
+      else if (act === 'tab') { if (v !== ui.tab) navPush(); ui.tab = v; ui.editing = null; ui.itemLog = null; card0().scrollTop = 0; }
+      else if (act === 'back') { const b = (ui.nav || []).pop(); if (b) { ui.tab = b.tab; ui.itemLog = b.itemLog; ui.editing = null; card0().scrollTop = 0; } }
+      else if (act === 'home') { ui.nav = []; ui.tab = 'profit'; ui.itemLog = null; ui.editing = null; card0().scrollTop = 0; }
       else if (act === 'range') ui.range = Number(el.value);
       else if (act === 'toggle') ui[v] = !ui[v];
       else if (act === 'removestock') {
@@ -1258,7 +1263,7 @@
         const left = ((computeFlips(state.txs, flipOpts()).open[id]) || []).reduce((a, l) => a + l.qty, 0);
         if (left > 0) { const ts = Math.floor(Date.now() / 1000), wid = 'wo:' + id + ':' + ts; state.txs[wid] = { id: wid, ts, dir: 'sell', channel: 'writeoff', gift: true, amount: 0, src: 'manual', locked: true, items: [{ id: Number(id), qty: left, name: nameOf(id), price: null }] }; save(); }
       }
-      else if (act === 'itemlog') ui.itemLog = id;
+      else if (act === 'itemlog') { navPush(); ui.itemLog = id; card0().scrollTop = 0; }
       else if (act === 'itemlogclose') ui.itemLog = null;
       else if (act === 'checkinv') {
         if (ui.busy) return;
