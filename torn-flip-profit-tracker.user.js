@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.86-beta
+// @version      0.1.87-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -36,7 +36,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.86-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.87-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -1479,16 +1479,21 @@
       mountReceiptButton();
       setInterval(mountReceiptButton, 3000);
       { // any receipt page you open is added by itself once it has loaded (nothing is sent anywhere; it is saved on this device)
-        let tries = 0; const t = setInterval(() => {
+        // The Balance page fills in as it loads, so keep re-reading it until the number of rows stops growing.
+        let tries = 0, count = -1, stable = 0, banner = null;
+        const t = setInterval(() => {
           const rc = parseReceiptDoc(document, location.href.split('#')[0]);
           if (rc && hasGM) {
-            clearInterval(t);
-            const inbox = sget('inbox', []).filter(x => x.url !== rc.url); inbox.push(rc); sset('inbox', inbox);
-            const b = document.createElement('div');
-            b.textContent = '✅ Added to Arbitrage. Go back to Torn and it will be picked up.';
-            b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#1b5e20;color:#fff;font:14px Arial,sans-serif;padding:10px;text-align:center';
-            document.body.appendChild(b);
-          } else if (++tries > 30) { clearInterval(t); if (/tfp-add/.test(location.hash)) toast("Couldn't read this receipt. Let the page finish loading, then tap the 💰 button."); }
+            const n = rc.events ? rc.events.length : 0, grow = rc.source === 'pawnhub-balance';
+            if (n !== count) {
+              count = n; stable = 0;
+              const inbox = sget('inbox', []).filter(x => x.url !== rc.url); inbox.push(rc); sset('inbox', inbox);
+              if (!banner) { banner = document.createElement('div'); banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#1b5e20;color:#fff;font:14px Arial,sans-serif;padding:10px;text-align:center'; document.body.appendChild(banner); }
+              banner.textContent = '✅ Added to Arbitrage' + (grow ? ' (' + n + ' rows read)' : '') + '. Go back to Torn and it will be picked up.';
+            }
+            if (!grow || ++stable >= 5) clearInterval(t);
+          } else if (++tries > 30 && count < 0) { clearInterval(t); if (/tfp-add/.test(location.hash)) toast("Couldn't read this receipt. Let the page finish loading, then tap the 💰 button."); }
+          if (tries++ > 90) clearInterval(t);
         }, 1000);
       }
     } else {
