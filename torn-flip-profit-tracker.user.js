@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.88-beta
+// @version      0.1.89-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -36,7 +36,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.88-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.89-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -733,6 +733,7 @@
       catch (e) { if (!e.capped || round === 11) throw e; added += e.added || 0; step('Reading your log… (part ' + (round + 2) + ')'); await sleep(1500); }
     }
     let out = 'Sync done: ' + added + ' new record(s).';
+    try { if (sget('inbox', []).length) await processInbox(); } catch (e) { /* receipts stay queued */ }
     if (sget('w3bkey', '')) {
       let att = 0, last = null;
       try {
@@ -1251,7 +1252,7 @@
       const inbox = sget('inbox', []), keep = [];
       let last = '';
       for (const rc of inbox) {
-        try { last = await handleReceipt(rc); }
+        try { last = await handleReceipt(rc); if (/^No matching trade/.test(last)) { ui.pendingReceipt = null; ui.candidates = []; if (!rc.tries || rc.tries < 50) keep.push(Object.assign(rc, { tries: (rc.tries || 0) + 1 })); last = 'Receipt saved. Its trade is not in your log yet; it will attach by itself after a later sync.'; } }
         catch (e) { last = String(e.message || e); if (!/match item name/i.test(last)) keep.push(rc); } // unreadable names are a stale parse: drop it and re-add from the page
       }
       sset('inbox', keep);
