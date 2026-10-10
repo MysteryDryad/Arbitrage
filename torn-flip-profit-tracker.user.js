@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.93-beta
+// @version      0.1.94-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -36,7 +36,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.93-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.94-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -1110,11 +1110,13 @@
       const fs = done.filter(f => f.tx.channel === ch); // sales that could not be costed are listed once, under "not counted"
       const pend = res.pending.filter(tx => tx.channel === ch && tx.dir === 'sell' && tx.ts >= cutoff).sort((a, b) => b.ts - a.ts);
       const gifts = Object.values(state.txs).filter(t => t.channel === ch && isGift(t) && t.ts >= cutoff).sort((a, b) => b.ts - a.ts);
-      if (!fs.length && !pend.length && !gifts.length) return;
+      const buys = ['trade', 'bazaar', 'market', 'shop'].includes(ch) ? Object.values(state.txs).filter(t => t.channel === ch && t.dir === 'buy' && !isGift(t) && t.items && t.ts >= cutoff).sort((a, b) => b.ts - a.ts) : [];
+      if (!fs.length && !pend.length && !gifts.length && !(ch === 'trade' && buys.length)) return;
       const cp = fs.reduce((a, f) => a + (f.profit || 0), 0), key = 'cat_' + ch;
-      h += `<div class="tfp-cat"><div class="tfp-top"><a href="#" class="tfp-cat-h" data-act="toggle" data-v="${key}"><span class="tfp-chev">${ui[key] ? '▾' : '▸'}</span><b>${label}</b><div class="tfp-sub">${fs.length + pend.length} sale${fs.length + pend.length === 1 ? '' : 's'}${pend.length ? ' · <span class="tfp-warn">' + pend.length + ' need a value</span>' : ''}${gifts.length ? ' · ' + gifts.length + ' gifted' : ''}</div></a><b class="${pnlCls(cp)}" style="font-size:15px">${fmt(cp)}</b></div>`;
+      h += `<div class="tfp-cat"><div class="tfp-top"><a href="#" class="tfp-cat-h" data-act="toggle" data-v="${key}"><span class="tfp-chev">${ui[key] ? '▾' : '▸'}</span><b>${label}</b><div class="tfp-sub">${fs.length + pend.length} sale${fs.length + pend.length === 1 ? '' : 's'}${pend.length ? ' · <span class="tfp-warn">' + pend.length + ' need a value</span>' : ''}${gifts.length ? ' · ' + gifts.length + ' gifted' : ''}${buys.length ? ' · ' + buys.length + ' bought' : ''}</div></a><b class="${pnlCls(cp)}" style="font-size:15px">${fmt(cp)}</b></div>`;
       if (ui[key]) pend.forEach(tx => { h += `<div class="tfp-gap"></div><div class="tfp-top"><span>${fdate(tx.ts)} ⚠️</span><span class="tfp-warn">needs value</span></div><div class="tfp-sub">${itemSummary(tx)}${tx.cp ? ' · player ' + esc(tx.cp) : ''}${tx.title ? ' · ' + esc(tx.title) : ''}</div>` + editBox(tx); });
       if (ui[key]) gifts.forEach(tx => { h += `<div class="tfp-gap"></div><div class="tfp-top"><span>${fdate(tx.ts)} 🎁</span><span class="tfp-sub">gift · not counted</span></div><div class="tfp-sub">${itemSummary(tx)}${tx.cp ? ' · player ' + esc(tx.cp) : ''} <a href="#" data-act="edit" data-id="${esc(tx.id)}">✎</a></div>` + (ui.editing === tx.id ? editBox(tx) : ''); });
+      if (ui[key] && buys.length) { h += '<div class="tfp-gap"></div><div class="tfp-sub"><b>Bought</b> (cost goes against later sales)</div>'; buys.slice(0, 60).forEach(t => { h += `<div class="tfp-top"><span>${fdate(t.ts)}${tradeTag(t)}${t.src === 'receipt' ? ' 🧾' : ''}</span><span>${t.amount == null ? '<span class="tfp-warn">no value</span>' : fmt(t.amount)}</span></div><div class="tfp-sub">${itemSummary(t)}${t.cp ? ' · player ' + esc(t.cp) : ''}</div>`; }); if (buys.length > 60) h += '<div class="tfp-sub">(newest 60 of ' + buys.length + ')</div>'; h += '<div class="tfp-gap"></div>'; }
       if (ui[key]) fs.forEach(f => {
         const tx = f.tx;
         let flag = '';
