@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.92-beta
+// @version      0.1.93-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -36,7 +36,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.92-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.93-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -755,7 +755,7 @@
           step('Importing Weaver receipts… ' + att + ' attached');
           last = await weaverImport(); att += last.attached;
         }
-        out += ' ' + (last ? last.text.replace(/^Weaver: \d+ receipt\(s\) attached/, 'Weaver: ' + att + ' receipt(s) attached') : '');
+        out += ' ' + (last ? last.text.replace(/^Weaver: \d+ receipt\(s\) attached/, 'Weaver: ' + att + ' receipt(s) attached').replace(att ? ' (nothing new)' : '\u0000', '') : '');
       } catch (e) { out += ' Weaver import stopped: ' + String(e.message || e) + ' (tap Import Weaver receipts to retry).'; }
     }
     if (Object.values(computeFlips(state.txs, flipOpts()).open).some(q => q.some(l => l.qty > 0))) {
