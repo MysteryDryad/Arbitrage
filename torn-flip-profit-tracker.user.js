@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.94-beta
+// @version      0.1.95-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -36,7 +36,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.94-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.95-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -1281,7 +1281,7 @@
   async function autoInbox() {
     if (!hasGM || inboxBusy || !sget('inbox', []).length) return;
     try { ui.msg = await processInbox(); } catch (e) { ui.msg = String(e.message || e); }
-    if (ui.msg) { toast(ui.msg.slice(0, 160)); if (ui.open) render(); }
+    if (ui.msg) { ui.msg = '📥 ' + ui.msg; toast(ui.msg.slice(0, 160)); if (ui.open) render(); }
   }
   async function onAction(e) {
     const el = e.target.closest('[data-act]');
@@ -1523,6 +1523,10 @@
         try { const st = sget('state', null); if (st && (st.savedAt || 0) > lastWrite && !ui.busy) { const mine = state; state = mergeState(Object.assign(STATE_DEFAULTS(), st), mine); lastWrite = st.savedAt; if (ui.open) render(); } } catch (e) { /* ignore */ }
         autoInbox(); }); });
       setInterval(autoCheckInventory, 5 * 60 * 1000);
+      // PDA keeps Torn in its own tab, and a tab you left may not report that it came back, so also look at the inbox every few seconds and when the page gets focus.
+      setInterval(() => { if (!document.hidden) bootP.then(autoInbox); }, 4000);
+      window.addEventListener('focus', () => bootP.then(autoInbox));
+      window.addEventListener('pageshow', () => bootP.then(autoInbox));
     }
   }
 
