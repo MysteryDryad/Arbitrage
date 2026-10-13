@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.115-beta
+// @version      0.1.116-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.115-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.116-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -573,7 +573,7 @@
   let itemValues = sget('itemvals', null) || {};
   let lastRaw = [];
   let lastSyncInfo = null;
-  const ui = { open: false, tab: 'profit', items: false, breakdown: false, more: false, showPending: false, range: [1, 7, 30, 90, 0].includes(Number(sget('range', 30))) ? Number(sget('range', 30)) : 30, editing: null, msg: '', pendingReceipt: null, candidates: [], busy: false };
+  const ui = { open: false, tab: 'profit', items: false, breakdown: false, more: false, showPending: false, range: (r => ['today', 'yesterday', 'custom'].includes(r) ? r : [1, 7, 30, 90, 0].includes(Number(r)) ? Number(r) : 30)(sget('range', 30)), from: sget('rangeFrom', ''), to: sget('rangeTo', ''), editing: null, msg: '', pendingReceipt: null, candidates: [], busy: false };
   // Several Torn pages (and your phone's page cache) can hold their own copy of the data. Before one overwrites the other, fold in what the other copy has that this one lacks, so a value from a receipt or Balance import can never be lost to a stale copy.
   const valued = t => t && (t.locked || t.src === 'receipt' || t.src === 'manual') && t.amount != null;
   function mergeState(mine, other) {
@@ -1114,7 +1114,18 @@
   const tradeTag = tx => tx.tradeId ? ' · #' + tx.tradeId : '';
   const chanLabel = c => ({ market: 'Market', bazaar: 'Bazaar', trade: 'Trade', send: 'Send', recv: 'Received', abroad: 'Abroad', shop: 'Shop' }[c] || c);
 
-  const rangeSelect = () => `<select class="tfp-in tfp-sel" data-act="range">${[[1, 'Last 24 hours'], [7, 'Last 7 days'], [30, 'Last 30 days'], [90, 'Last 90 days'], [0, 'All time']].map(r => `<option value="${r[0]}"${ui.range === r[0] ? ' selected' : ''}>${r[1]}</option>`).join('')}</select>`;
+  // Profit ranges are in TCT (UTC) days, like the log. Presets, single days and a from-to range.
+  const dayStr = ts => new Date(ts * 1000).toISOString().slice(0, 10);
+  const dayTs = str => /^\d{4}-\d{2}-\d{2}$/.test(str || '') ? Date.parse(str + 'T00:00:00Z') / 1000 : null;
+  function rangeBounds() {
+    const now = Date.now() / 1000, today = Math.floor(now / 86400) * 86400, r = ui.range;
+    if (r === 'today') return [today, Infinity];
+    if (r === 'yesterday') return [today - 86400, today];
+    if (r === 'custom') { const lo = dayTs(ui.from) != null ? dayTs(ui.from) : today, hi = dayTs(ui.to) != null ? dayTs(ui.to) : lo; return [Math.min(lo, hi), Math.max(lo, hi) + 86400]; }
+    return [r ? now - r * 86400 : 0, Infinity];
+  }
+  const rangeSelect = () => `<select class="tfp-in tfp-sel" data-act="range">${[['today', 'Today'], ['yesterday', 'Yesterday'], [1, 'Last 24 hours'], [7, 'Last 7 days'], [30, 'Last 30 days'], [90, 'Last 90 days'], [0, 'All time'], ['custom', 'Pick days…']].map(r => `<option value="${r[0]}"${ui.range === r[0] ? ' selected' : ''}>${r[1]}</option>`).join('')}</select>`;
+  const rangeDates = () => ui.range === 'custom' ? `<div class="tfp-ctl" style="margin:6px 0"><span class="tfp-sub">From</span><input type="date" class="tfp-in tfp-sel" data-act="rangefrom" value="${esc(ui.from || dayStr(Date.now() / 1000))}"><span class="tfp-sub">to</span><input type="date" class="tfp-in tfp-sel" data-act="rangeto" value="${esc(ui.to || ui.from || dayStr(Date.now() / 1000))}"></div>` : '';
   const pnlCls = n => n == null ? 'tfp-warn' : n >= 0 ? 'tfp-pos' : 'tfp-neg';
   const link = (key, label) => `<a href="#" data-act="toggle" data-v="${key}">${ui[key] ? '▾' : '▸'} ${label}</a>`;
   // The log the API gives us may reach back less far than the selected range: say where the data really starts.
@@ -1122,17 +1133,18 @@
     const ts = Object.values(state.txs).map(t => t.ts).filter(Number);
     if (!ts.length) return '';
     const first = Math.min.apply(null, ts), days = (Date.now() / 1000 - first) / 86400;
-    return 'History from ' + fdate(first) + ' (' + (days < 1 ? 'under a day' : Math.round(days) + ' days') + ')' + (ui.range && days < ui.range ? ' · longer ranges show the same numbers' : '');
+    return 'History from ' + fdate(first) + ' (' + (days < 1 ? 'under a day' : Math.round(days) + ' days') + ')' + (typeof ui.range === 'number' && ui.range && days < ui.range ? ' · longer ranges show the same numbers' : '');
   }
   function profitHtml() {
-    const cutoff = ui.range ? Date.now() / 1000 - ui.range * 86400 : 0;
+    const [cutoff, upto] = rangeBounds(), inR = ts => ts >= cutoff && ts < upto;
     const res = computeFlips(state.txs, flipOpts());
-    const flips = res.flips.filter(f => f.tx.ts >= cutoff).sort((a, b) => b.tx.ts - a.tx.ts);
+    const flips = res.flips.filter(f => inR(f.tx.ts)).sort((a, b) => b.tx.ts - a.tx.ts);
     const done = flips.filter(f => f.profit != null);
     const lines = done.reduce((a, f) => a.concat(f.lines.filter(l => l.matched > 0)), []);
     const revenue = lines.reduce((a, l) => a + l.proceeds, 0), cost = lines.reduce((a, l) => a + (l.cost || 0), 0);
     const profit = done.reduce((a, f) => a + f.profit, 0);
     let h = `<div class="tfp-h"><div><div class="tfp-sub" style="margin:0">Profit</div><div class="tfp-big ${pnlCls(profit)}">${fmt(profit)}</div></div><div class="tfp-ctl">${rangeSelect()}<button class="tfp-b" data-act="sync">${ui.busy ? 'Syncing…' : state.resume ? 'Continue' : 'Sync'}</button></div></div>
+      ${rangeDates()}
       <div class="tfp-stats"><div class="tfp-stat"><span>Sold for</span><b>${fmt(revenue)}</b></div><div class="tfp-stat"><span>Cost</span><b>${fmt(cost)}</b></div><div class="tfp-stat"><span>${done.length} flip${done.length === 1 ? '' : 's'}</span><b>${cost > 0 ? (profit / cost * 100).toFixed(1) + '% return' : '–'}</b></div></div>`;
     const skipped = flips.filter(f => f.profit == null);
     if (res.pending.length || skipped.length) {
@@ -1153,9 +1165,9 @@
     const CATS = [['trade', 'Trade'], ['market', 'Market'], ['bazaar', 'Bazaar'], ['send', 'Sent'], ['shop', 'Shop']];
     CATS.forEach(([ch, label]) => {
       const fs = done.filter(f => f.tx.channel === ch); // sales that could not be costed are listed once, under "not counted"
-      const pend = res.pending.filter(tx => tx.channel === ch && tx.dir === 'sell' && tx.ts >= cutoff).sort((a, b) => b.ts - a.ts);
-      const gifts = Object.values(state.txs).filter(t => t.channel === ch && isGift(t) && t.ts >= cutoff).sort((a, b) => b.ts - a.ts);
-      const buys = ['trade', 'bazaar', 'market', 'shop'].includes(ch) ? Object.values(state.txs).filter(t => t.channel === ch && t.dir === 'buy' && !isGift(t) && t.items && t.ts >= cutoff).sort((a, b) => b.ts - a.ts) : [];
+      const pend = res.pending.filter(tx => tx.channel === ch && tx.dir === 'sell' && inR(tx.ts)).sort((a, b) => b.ts - a.ts);
+      const gifts = Object.values(state.txs).filter(t => t.channel === ch && isGift(t) && inR(t.ts)).sort((a, b) => b.ts - a.ts);
+      const buys = ['trade', 'bazaar', 'market', 'shop'].includes(ch) ? Object.values(state.txs).filter(t => t.channel === ch && t.dir === 'buy' && !isGift(t) && t.items && inR(t.ts)).sort((a, b) => b.ts - a.ts) : [];
       if (!fs.length && !pend.length && !gifts.length && !(ch === 'trade' && buys.length)) return;
       const cp = fs.reduce((a, f) => a + (f.profit || 0), 0), key = 'cat_' + ch;
       h += `<div class="tfp-cat"><div class="tfp-top"><a href="#" class="tfp-cat-h" data-act="toggle" data-v="${key}"><span class="tfp-chev">${ui[key] ? '▾' : '▸'}</span><b>${label}</b><div class="tfp-sub">${fs.length + pend.length} sale${fs.length + pend.length === 1 ? '' : 's'}${pend.length ? ' · <span class="tfp-warn">' + pend.length + ' need a value</span>' : ''}${gifts.length ? ' · ' + gifts.length + ' gifted' : ''}${buys.length ? ' · ' + buys.length + ' bought' : ''}</div></a><b class="${pnlCls(cp)}" style="font-size:15px">${fmt(cp)}</b></div>`;
@@ -1256,10 +1268,32 @@
       <div class="tfp-gap"></div><div class="tfp-sub">${link('more', 'Backup &amp; troubleshooting')}</div>
       ${ui.more ? settingsMore() : ''}`;
   }
+  // "Why is my trade not where I expect it?": shows what the tracker holds for one trade number.
+  function tradeLookup(q) {
+    const m = String(q || '').match(/\d{4,}/);
+    if (!m) throw new Error('Type a trade number (the digits after ID= in the trade link).');
+    const id = m[0], tx = Object.values(state.txs).find(t => t.tradeId && String(t.tradeId) === id), out = [];
+    if (tx) {
+      const res = computeFlips(state.txs, flipOpts()), f = res.flips.find(x => x.tx.id === tx.id), pend = res.pending.some(x => x.id === tx.id);
+      out.push('Trade #' + id + ' · ' + (tx.dir === 'buy' ? 'you bought' : tx.dir === 'sell' ? 'you sold' : 'direction unknown') + ' · ' + fdate(tx.ts) + ' · ' + itemSummary(tx) + ' · amount ' + (tx.amount == null ? 'none' : fmt(tx.amount)) + ' (' + (tx.src === 'receipt' ? 'receipt' : tx.src === 'log' ? 'Torn log' : tx.src || 'none') + ')');
+      if (!tx.dir) out.push('Items moved both ways in this trade, so it is not counted as a buy or a sale.');
+      else if (tx.dir === 'buy') out.push('A purchase: listed under Trade → bought. Its cost is used when you sell those items.');
+      else if (pend) out.push('It has no amount: it is under "need a value" (open Trade, find it and set one).');
+      else if (f && f.profit == null) out.push('Not counted: ' + (f.unmatched ? f.unmatched + ' unit(s) have no earlier buy of that item in your data (open the item history under "not counted").' : 'a buy it uses has no value.'));
+      else if (f) out.push('Counted: profit ' + fmt(f.profit) + ' on ' + fmt(netAmt(tx)) + ' received. It shows under Trade for ' + dayStr(tx.ts) + ' (TCT).');
+      else out.push('It is a gift or removed record, so it is not in profit.');
+    } else {
+      const tp = state.tradeParts && state.tradeParts[id], end = state.tradeEnd && state.tradeEnd[id];
+      if (end) out.push('Trade #' + id + ' was ' + end.kind + ' on ' + fdate(end.ts) + ', so there is nothing to count.');
+      else if (tp) out.push('Trade #' + id + ': the log has ' + Object.values(tp.parts || {}).map(p => p.title).join(', ') + ' but no "Trade completed" yet. Sync again in a few minutes.');
+      else out.push('Trade #' + id + ' is not in your data. It is not in the log read so far: tap Sync, then look again.');
+    }
+    return out;
+  }
   function settingsMore() {
     return `<div class="tfp-row"><b>Backup</b><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-bk" placeholder="Export fills this box. Paste a backup here to import."></textarea><div class="tfp-gap"></div>
       <button class="tfp-b" data-act="export">Export</button> <button class="tfp-b" data-act="import">Import</button></div>
-      <div class="tfp-row"><b>Troubleshooting</b><div class="tfp-gap"></div><button class="tfp-b" data-act="debug">Copy debug sample</button> <button class="tfp-b" data-act="resync">Re-sync from start</button></div>`;
+      <div class="tfp-row"><b>Troubleshooting</b><div class="tfp-gap"></div><input class="tfp-in" id="tfp-tq" inputmode="numeric" placeholder="Look up a trade number"><div class="tfp-gap"></div><button class="tfp-b" data-act="tradelookup">Look up trade</button>${ui.tradeInfo ? ui.tradeInfo.map(l => '<div class="tfp-sub" style="color:#ccc">' + esc(l) + '</div>').join('') : ''}<div class="tfp-gap"></div><button class="tfp-b" data-act="debug">Copy debug sample</button> <button class="tfp-b" data-act="resync">Re-sync from start</button></div>`;
   }
 
   const card0 = () => document.getElementById('tfp-card') || {};
@@ -1350,7 +1384,9 @@
       else if (act === 'tab') { if (v !== ui.tab) navPush(); ui.tab = v; ui.editing = null; ui.itemLog = null; card0().scrollTop = 0; }
       else if (act === 'back') { const b = (ui.nav || []).pop(); if (b) { ui.tab = b.tab; ui.itemLog = b.itemLog; ui.editing = null; card0().scrollTop = 0; } }
       else if (act === 'home') { ui.nav = []; ui.tab = 'profit'; ui.itemLog = null; ui.editing = null; card0().scrollTop = 0; }
-      else if (act === 'range') { ui.range = Number(el.value); sset('range', ui.range); }
+      else if (act === 'range') { ui.range = /^\d+$/.test(el.value) ? Number(el.value) : el.value; if (ui.range === 'custom' && !ui.from) { ui.from = ui.to = dayStr(Date.now() / 1000); sset('rangeFrom', ui.from); sset('rangeTo', ui.to); } sset('range', ui.range); }
+      else if (act === 'rangefrom') { ui.from = el.value; if (!ui.to || ui.to < ui.from) ui.to = ui.from; sset('rangeFrom', ui.from); sset('rangeTo', ui.to); }
+      else if (act === 'rangeto') { ui.to = el.value; if (ui.from && ui.to < ui.from) ui.from = ui.to; sset('rangeFrom', ui.from); sset('rangeTo', ui.to); }
       else if (act === 'toggle') ui[v] = !ui[v];
       else if (act === 'itemlog') { navPush(); ui.itemLog = id; card0().scrollTop = 0; }
       else if (act === 'itemlogclose') ui.itemLog = null;
@@ -1367,6 +1403,7 @@
         try { const r = await readPawnHubBalance(); ui.msg = r.valued ? r.valued + ' PawnHub payment' + (r.valued === 1 ? '' : 's') + ' matched. Sync now reads it too.' : 'Read the Balance page: nothing new to match. Sync now reads it too.'; state.lastSyncDetail = Object.assign({}, state.lastSyncDetail, { pawnhub: r.text }); save(); } finally { ui.busy = false; }
       }
       else if (act === 'pawnoff') { sset('pawnhubAuto', false); ui.msg = 'Sync will no longer read the PawnHub Balance page.'; }
+      else if (act === 'tradelookup') { ui.tradeInfo = tradeLookup(val('tfp-tq')); ui.more = true; }
       else if (act === 'w3bcheck') {
         if (ui.busy) return;
         ui.busy = true; ui.w3bReport = null; render();
