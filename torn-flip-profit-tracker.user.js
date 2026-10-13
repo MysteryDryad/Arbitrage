@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.106-beta
+// @version      0.1.107-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.106-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.107-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -583,6 +583,18 @@
   const hasZ = typeof CompressionStream === 'function' && typeof DecompressionStream === 'function' && typeof Response === 'function' && typeof btoa === 'function';
   const gzip = async text => { const cs = new CompressionStream('gzip'), w = cs.writable.getWriter(); w.write(new TextEncoder().encode(text)); w.close(); const u = new Uint8Array(await new Response(cs.readable).arrayBuffer()); let b = ''; for (let i = 0; i < u.length; i += 0x8000) b += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(b); };
   const gunzip = async b64 => { const bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); const ds = new DecompressionStream('gzip'), w = ds.writable.getWriter(); w.write(u); w.close(); return new Response(ds.readable).text(); };
+  // Hand-off through the page address (the part after #), for when two tabs cannot share storage: nothing is sent to any server.
+  const b64url = b => b.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const unb64url = b => { b = b.replace(/-/g, '+').replace(/_/g, '/'); while (b.length % 4) b += '='; return b; };
+  async function packReceipt(rc) {
+    const json = JSON.stringify(rc);
+    if (hasZ) return 'z.' + b64url(await gzip(json));
+    return 'j.' + b64url(btoa(unescape(encodeURIComponent(json))));
+  }
+  async function unpackReceipt(str) {
+    const kind = str.slice(0, 2), body = unb64url(str.slice(2));
+    return JSON.parse(kind === 'z.' ? await gunzip(body) : decodeURIComponent(escape(atob(body))));
+  }
   let backupT = null;
   function scheduleBackup() {
     if (backupT || !hasGM && typeof localStorage === 'undefined') return;
@@ -1176,7 +1188,7 @@
   }
   function receiptsHtml() {
     const rp = hasGM ? sget('rcpage', null) : null, li = state.lastInbox;
-    let h = '<div class="tfp-sub">Open any receipt (Weaver, TornExchange, PawnHub or the PawnHub Balance page) and it saves itself here within a few seconds. With a TornW3B key, Sync also fetches your Weaver receipts.</div>';
+    let h = '<div class="tfp-sub">Open any receipt (Weaver, TornExchange, PawnHub or the PawnHub Balance page): it saves itself here, or tap "Send to Arbitrage" in the green bar on that page. With a TornW3B key, Sync also fetches your Weaver receipts.</div>';
     h += '<div class="tfp-sub">' + (rp ? 'Last receipt page saved ' + fdate(rp.at) + (rp.rows ? ' (' + rp.rows + ' rows)' : '') + (rp.saved === false ? ' ⚠️ not stored' : '') : 'No receipt page has saved anything on this device yet') + (li ? ' · last pickup ' + fdate(li.at) + (li.msg ? ': ' + esc(li.msg) : '') : '') + '</div><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-rc" placeholder="Or paste a receipt link here"></textarea><div class="tfp-gap"></div><button class="tfp-b" data-act="addrc">Add receipt</button>';
     if (ui.failedLinks && ui.failedLinks.length) h += '<div class="tfp-msg">Could not read automatically. Open, and it adds itself (then come back here): ' + ui.failedLinks.map((u, i) => '<a href="' + esc(u.split('#')[0]) + '#tfp-add" target="_blank" rel="noopener">receipt ' + (i + 1) + '</a>').join(' · ') + '</div>';
     h += ' <button class="tfp-b" data-act="pawnhub">' + (ui.busy ? 'Reading…' : 'Read PawnHub Balance now') + '</button>';
@@ -1261,6 +1273,20 @@
     } finally { inboxBusy = false; }
   }
   // Receipts saved from a receipt page are picked up when you come back to Torn.
+  // A receipt page can hand its data over in the address (#tfp=...): add it, run it, tidy the address.
+  async function importFromHash() {
+    const m = location.hash.match(/^#tfp=([A-Za-z0-9_.-]+)$/);
+    if (!m) return;
+    try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { /* keep the hash */ }
+    try {
+      const rc = await unpackReceipt(m[1]);
+      ui.msg = '📥 ' + await handleReceipt(rc);
+      state.lastInbox = { at: Math.floor(Date.now() / 1000), msg: ui.msg.slice(0, 200) }; save();
+    } catch (e) { ui.msg = 'Could not read the receipt that was sent: ' + String(e.message || e); }
+    ui.tab = 'receipts'; ui.open = true;
+    const wrap = document.getElementById('tfp-wrap'); if (wrap) wrap.classList.add('open');
+    render(); toast(ui.msg.slice(0, 160));
+  }
   async function autoInbox() {
     if (!hasGM || inboxBusy || !sget('inbox', []).length) return;
     try { ui.msg = await processInbox(); } catch (e) { ui.msg = String(e.message || e); }
@@ -1479,8 +1505,11 @@
               sset('rcpage', { at: Math.floor(Date.now() / 1000), url: rc.url, rows: n, saved });
               if (!banner) { banner = document.createElement('div'); banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;color:#fff;font:14px Arial,sans-serif;padding:10px;text-align:center'; document.body.appendChild(banner); }
               banner.style.background = saved ? '#1b5e20' : '#8a3b12';
-              banner.textContent = saved ? '✅ Saved for Arbitrage' + (grow ? ' (' + n + ' rows read)' : '') + '. Open Torn and it is picked up within a few seconds.' : '⚠️ Could not save here (script storage unavailable). Copied instead: paste it in Arbitrage → Receipts.';
+              if (!banner.firstChild || banner.firstChild.nodeType !== 3) banner.insertBefore(document.createTextNode(''), banner.firstChild);
+              banner.firstChild.textContent = saved ? '✅ Saved for Arbitrage' + (grow ? ' (' + n + ' rows read)' : '') + '. If Arbitrage does not show it within a few seconds, tap:' : '⚠️ Could not save here. Tap:';
               if (!saved) copyText(JSON.stringify(rc));
+              if (!banner.querySelector('a')) { const go = document.createElement('a'); go.textContent = ' Send to Arbitrage ▸'; go.href = '#'; go.style.cssText = 'color:#fff;font-weight:bold;text-decoration:underline;margin-left:6px'; go.addEventListener('click', async ev => { ev.preventDefault(); try { location.href = 'https://www.torn.com/index.php#tfp=' + await packReceipt(rc); } catch (e) { go.textContent = ' could not prepare it'; } }); banner.appendChild(go); }
+              banner.firstChild.textContent = banner.firstChild.textContent; // keep the text node in place when rows update
             }
             if (!grow || ++stable >= 5) clearInterval(t);
           } else if (++tries > 30 && count < 0) { clearInterval(t); if (/tfp-add/.test(location.hash)) toast("Couldn't read this receipt. Let the page finish loading, then tap the 💰 button."); }
@@ -1490,7 +1519,7 @@
     } else {
       mountTornUI();
       setInterval(mountTornUI, 2500);
-      bootP.then(() => { setTimeout(autoInbox, 2500); });
+      bootP.then(() => { setTimeout(autoInbox, 2500); setTimeout(importFromHash, 1200); });
       document.addEventListener('visibilitychange', () => { if (!document.hidden) bootP.then(() => { // another page may have saved newer data while this one slept
         (hasIDB ? idb.get('state').catch(() => null) : Promise.resolve(sget('state', null))).then(st => { if (st && st.txs && (st.savedAt || 0) > lastWrite && !ui.busy) { const mine = state; state = mergeState(Object.assign(STATE_DEFAULTS(), st), mine); lastWrite = st.savedAt; if (ui.open) render(); } }).catch(() => {});
         autoInbox(); }); });
