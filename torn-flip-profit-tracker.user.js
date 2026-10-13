@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.95-beta
+// @version      0.1.97-beta
 // @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
@@ -36,7 +36,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.95-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.97-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -638,67 +638,6 @@
   }
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
-  // Read-only check of what you really hold (inventory + bazaar + item market listings) against the tracked stock.
-  let invInfo = null;
-  function countHeld(node, out) {
-    if (Array.isArray(node)) { node.forEach(n => countHeld(n, out)); return; }
-    if (!node || typeof node !== 'object') return;
-    const it = node.item && typeof node.item === 'object' ? node.item : null, id = it ? it.id : node.id;
-    const q = [node.amount, node.quantity, node.qty].find(x => x != null);
-    if (id != null && itemNames[id] && (q != null || node.uid != null || it)) { out[id] = (out[id] || 0) + (q != null ? Math.max(0, Number(q) || 0) : 1); return; }
-    Object.keys(node).forEach(k => { if (k !== '_metadata') countHeld(node[k], out); });
-  }
-  async function fetchAllPages(path, params) {
-    let j = await api(path, params); const pages = [j];
-    for (let n = 0; n < 30; n++) {
-      const next = j && j._metadata && j._metadata.links && j._metadata.links.next;
-      if (!next) break;
-      await sleep(700); j = await apiUrl(next); pages.push(j);
-    }
-    return pages;
-  }
-  let invRunning = false;
-  async function checkInventory() {
-    if (invRunning) throw new Error('An inventory check is already running.');
-    invRunning = true;
-    try { return await checkInventoryNow(); } finally { invRunning = false; }
-  }
-  async function checkInventoryNow() {
-    await ensureItems(!Object.keys(itemCat).length);
-    const cats = Array.from(new Set(Object.values(itemCat)));
-    if (!cats.length) throw new Error('Could not load the item list from Torn.');
-    const held = {}, ok = new Set(); invInfo = { accepted: [], rejected: [], samples: [] };
-    // The inventory is read one category at a time (Torn requires a category).
-    for (const cat of cats) {
-      let pages;
-      try { pages = await fetchAllPages('user/inventory', { cat, limit: 100 }); }
-      catch (e) { if (e.code === 21) { invInfo.rejected.push(cat); continue; } throw new Error('inventory (' + cat + '): ' + e.message); }
-      ok.add(cat.toLowerCase()); invInfo.accepted.push(cat);
-      const got = {}; pages.forEach(pg => countHeld(pg, got));
-      Object.entries(got).forEach(([id, q]) => { held[id] = (held[id] || 0) + q; });
-      if (invInfo.samples.length < 2 && Object.keys(got).length) invInfo.samples.push(JSON.stringify(pages[0]).slice(0, 400));
-      await sleep(700);
-    }
-    for (const [name, path] of [['bazaar', 'user/bazaar'], ['itemmarket', 'user/itemmarket']]) {
-      let pages;
-      try { pages = await fetchAllPages(path, { limit: 100 }); } catch (e) { throw new Error(name + ': ' + e.message); }
-      const got = {}; pages.forEach(pg => countHeld(pg, got));
-      Object.entries(got).forEach(([id, q]) => { held[id] = (held[id] || 0) + q; });
-      invInfo[name] = { keys: Object.keys(pages[0] || {}), kinds: Object.keys(got).length, sample: JSON.stringify(pages[0]).slice(0, 300) };
-      await sleep(700);
-    }
-    if (!ok.size || !Object.keys(held).length) throw new Error('Your inventory came back empty or in a format I could not read, so nothing was changed. Use Settings > troubleshooting to copy a debug sample.');
-    const open = computeFlips(state.txs, flipOpts()).open, rows = [], unverified = [];
-    Object.entries(open).forEach(([id, q]) => {
-      const tracked = q.reduce((a, l) => a + l.qty, 0), have = held[id] || 0;
-      if (tracked <= have) return;
-      // Only trust "you don't hold this" when that item's category was read.
-      if (itemCat[id] && ok.has(String(itemCat[id]).toLowerCase())) rows.push({ id, tracked, have, excess: tracked - have });
-      else unverified.push(id);
-    });
-    state.inv = { at: Math.floor(Date.now() / 1000), rows, unverified: unverified.length }; state.invErr = null; save();
-    return rows.length;
-  }
   // Rebuild the per-entry send/receive records from the stored log entries (no network needed).
   function rebuildSendTxs() {
     let added = 0;
@@ -714,55 +653,36 @@
     });
     return added;
   }
-  // Runs on its own at the interval chosen in Settings (default hourly); read-only, and it only reports: removing stock still needs your tap.
-  async function autoCheckInventory() {
-    const every = Number(sget('invEvery', 60));
-    if (!every || invRunning || ui.busy || !getKey()) return;
-    const now = Math.floor(Date.now() / 1000);
-    if (now - (state.invTry || 0) < every * 60) return;
-    if (!Object.values(computeFlips(state.txs, flipOpts()).open).some(q => q.some(l => l.qty > 0))) return;
-    state.invTry = now;
-    try { await checkInventory(); }
-    catch (e) { state.invErr = String(e.message || e).slice(0, 200); save(); }
-    if (ui.open) render();
-  }
-  // One tap does the whole setup: read the whole log (continuing if it was cut short), then Weaver receipts and the inventory check when possible.
+  // One tap does everything: read the log, pick up saved receipts, import Weaver receipts. Shows only "Syncing…" while it runs; the details go to the debug sample.
   async function syncAll() {
-    const step = t => { if (ui.busy) { ui.msg = t; render(); } };
-    let added = 0, note = '';
-    for (let round = 0; round < 12; round++) {
-      try { added += await syncLog(); break; }
-      catch (e) { if (!e.capped || round === 11) throw e; added += e.added || 0; step('Reading your log… (part ' + (round + 2) + ')'); await sleep(1500); }
-    }
-    let out = 'Sync done: ' + added + ' new record(s).';
+    let added = 0, att = 0, last = null, weaverErr = '';
+    const readLog = async () => {
+      for (let round = 0; round < 12; round++) {
+        try { added += await syncLog(); return; }
+        catch (e) { if (!e.capped || round === 11) throw e; added += e.added || 0; await sleep(1500); }
+      }
+    };
+    await readLog();
     try { if (sget('inbox', []).length) await processInbox(); } catch (e) { /* receipts stay queued */ }
     if (sget('w3bkey', '')) {
-      let att = 0, last = null;
       try {
-        for (let round = 0; round < 15; round++) {
-          step('Importing Weaver receipts… ' + att + ' attached');
-          last = await weaverImport(); att += last.attached;
-          if (!last.left) break;
-        }
+        for (let round = 0; round < 15; round++) { last = await weaverImport(); att += last.attached; if (!last.left) break; }
         // A receipt whose trade is not in your data may have been missed (log read cut short, or an older copy of your data saved over it): read the log again from a bit before it, once per receipt.
         if (last && last.reread && last.reread.length) {
           const w = state.w3b; last.reread.forEach(r => { w.re[r.id] = Math.floor(Date.now() / 1000); });
           state.lastSync = Math.min(state.lastSync || 0, Math.min.apply(null, last.reread.map(r => r.ts)) - 86400); state.resume = null; save();
-          for (let round = 0; round < 12; round++) {
-            try { added += await syncLog(); break; }
-            catch (e) { if (!e.capped || round === 11) throw e; added += e.added || 0; step('Re-reading recent log… (part ' + (round + 2) + ')'); await sleep(1500); }
-          }
-          step('Importing Weaver receipts… ' + att + ' attached');
+          await readLog();
           last = await weaverImport(); att += last.attached;
         }
-        out += ' ' + (last ? last.text.replace(/^Weaver: \d+ receipt\(s\) attached/, 'Weaver: ' + att + ' receipt(s) attached').replace(att ? ' (nothing new)' : '\u0000', '') : '');
-      } catch (e) { out += ' Weaver import stopped: ' + String(e.message || e) + ' (tap Import Weaver receipts to retry).'; }
+      } catch (e) { weaverErr = String(e.message || e); }
     }
-    if (Object.values(computeFlips(state.txs, flipOpts()).open).some(q => q.some(l => l.qty > 0))) {
-      try { step('Checking your inventory…'); const n = await checkInventory(); out += n ? ' ' + n + ' stock item type(s) are not in your inventory (see Stock).' : ' Stock matches your inventory.'; }
-      catch (e) { out += ' Inventory check skipped: ' + String(e.message || e).slice(0, 120); }
-    }
-    return out;
+    state.lastSyncDetail = { at: Math.floor(Date.now() / 1000), added, attached: att, weaver: last ? last.text : null, weaverErr: weaverErr || null }; save();
+    const bits = [];
+    if (added) bits.push(added + ' new record' + (added === 1 ? '' : 's'));
+    if (att) bits.push(att + ' receipt' + (att === 1 ? '' : 's') + ' attached');
+    if (last && last.missing) bits.push(last.missing + ' receipt' + (last.missing === 1 ? '' : 's') + ' waiting for their trade');
+    if (weaverErr) bits.push('Weaver: ' + weaverErr.slice(0, 90));
+    return bits.length ? 'Synced · ' + bits.join(' · ') : 'Up to date.';
   }
   async function syncLog() {
     await ensureMe(); await ensureItems();
@@ -784,7 +704,6 @@
     lastSyncInfo = { from, topKeys: Object.keys(j || {}), logType: Array.isArray(j && j.log) ? 'array' : typeof (j && j.log), entries: 0, pages: 0, firstRaw: [], pageInfo: [] };
     try {
     while (j && pages++ < 100) {
-      if (ui.busy) { ui.msg = 'Syncing… page ' + pages; render(); }
       const arr = normalizeLog(j.log);
       lastSyncInfo.pages = pages; lastSyncInfo.entries += arr.length;
       { const ts = arr.map(x => x.timestamp).filter(Number); const md = j._metadata || {};
@@ -1099,7 +1018,7 @@
     }
     if (skipped.length && ui.showSkipped) skipped.forEach(f => {
       const tx = f.tx;
-      const why = f.unmatched ? f.unmatched + ' unit(s) have no matching buy: bought before the sync window, or got another way. A longer look-back (Settings, then Re-sync from start) may find the buy.' : 'The items came from a buy or receive with no value. Find it in Stock or the sends and set a value.';
+      const why = f.unmatched ? f.unmatched + ' unit(s) have no matching buy: bought before the sync window, or got another way. A longer look-back (Settings, then Re-sync from start) may find the buy.' : 'The items came from a buy or receive with no value. Open the matching buy or send and set a value.';
       h += `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}${tradeTag(tx)}</span><span class="tfp-warn">not counted</span></div><div class="tfp-sub">${itemSummary(tx)} · ${gotWord(tx)} ${fmt(netAmt(tx))}</div><div class="tfp-sub tfp-warn">${why}</div>${f.lines.filter(l => l.unmatched > 0).map(l => `<div class="tfp-sub"><a href="#" data-act="itemlog" data-id="${esc(l.itemId)}">${esc(nameOf(l.itemId))} history</a></div>`).join('')}</div>`;
     });
     if (!Object.keys(state.txs).length) return h + '<div class="tfp-msg">Nothing imported yet. Tap Sync to read your Torn log.</div>';
@@ -1142,35 +1061,6 @@
       return `<div class="tfp-sub">${fdate(t.ts)} · ${buy && !gift ? '+' : buy ? '' : '−'}${qty} ${what} (${chanLabel(t.channel)}${tradeTag(t)}) → <b class="${bal < 0 ? 'tfp-warn' : ''}">${bal} in stock</b></div>`;
     });
     return `<div class="tfp-row"><div class="tfp-top"><b>${esc(nameOf(id))} history</b><a href="#" data-act="itemlogclose">close</a></div>${rows.length ? rows.slice(-40).reverse().join('') : '<div class="tfp-sub">Nothing recorded for this item.</div>'}${rows.length > 40 ? '<div class="tfp-sub">(newest 40 of ' + rows.length + ')</div>' : ''}<div class="tfp-sub">A negative number means more was sold or sent than the tracker saw coming in.</div></div>`;
-  }
-  function stockHtml() {
-    const open = computeFlips(state.txs, flipOpts()).open;
-    const rows = []; let total = 0, unknown = false;
-    Object.entries(open).forEach(([id, q]) => {
-      const left = q.filter(l => l.qty > 0); if (!left.length) return;
-      const qty = left.reduce((a, l) => a + l.qty, 0);
-      const unk = left.some(l => l.unit == null);
-      const c = unk ? null : left.reduce((a, l) => a + l.qty * l.unit, 0);
-      if (unk) unknown = true; else total += c;
-      rows.push({ id, qty, c, unk, oldest: Math.min.apply(null, left.map(l => l.ts)) });
-    });
-    rows.sort((a, b) => (b.c || 0) - (a.c || 0));
-    let h = `<div class="tfp-h"><div><b>Unsold stock</b> <b>${fmt(total)}</b><div class="tfp-sub">at cost · FIFO · ${rows.length} item type(s)${unknown ? ' · some cost unknown' : ''}</div></div></div>`;
-    h += `<div class="tfp-sub"><a href="#" data-act="checkinv">${ui.busy ? 'Checking…' : 'Check against my inventory'}</a>${Number(sget('invEvery', 60)) ? ' · also checks automatically' : ''}${state.invErr ? ' · last automatic check failed: ' + esc(state.invErr) : ''}</div>`;
-    if (state.inv) {
-      if (!state.inv.rows.length) h += `<div class="tfp-msg">Matches your inventory, bazaar and market listings (checked ${fdate(state.inv.at)}).</div>`;
-      else h += `<div class="tfp-row"><div class="tfp-top"><b>Not in your inventory (${state.inv.rows.length})</b></div>` + state.inv.rows.map(r => `<div class="tfp-sub">${esc(nameOf(r.id))}: tracked ${r.tracked}, you hold ${r.have} → remove ${r.excess}${r.have ? ', keep ' + r.have : ''}</div>`).join('') + `<div class="tfp-sub"><a href="#" data-act="removeexcess">${ui.armExcess ? 'tap again to remove only the extra amounts' : 'remove only the extra amounts'}</a></div></div>`;
-    }
-    if (state.inv && state.inv.unverified) h += `<div class="tfp-sub">${state.inv.unverified} item type(s) could not be checked (Torn did not accept their category).</div>`;
-    if (!rows.length) h += '<div class="tfp-msg">Nothing in stock. Items you buy show up here until they are sold.</div>';
-    h += rows.map(r => `<div class="tfp-row"><div class="tfp-top"><span>${r.qty}× ${esc(nameOf(r.id))}</span><b class="${r.unk ? 'tfp-warn' : ''}">${fmt(r.c)}</b></div><div class="tfp-sub">${r.unk ? 'cost unknown · ' : fmt(r.c / r.qty) + ' each · '}oldest ${fdate(r.oldest)} · <a href="#" data-act="itemlog" data-id="${esc(r.id)}">history</a> · <a href="#" data-act="removestock" data-id="${esc(r.id)}">${ui.armRemove === r.id ? 'tap again: remove from stock' : 'remove'}</a></div></div>`).join('');
-    const removed = Object.values(state.txs).filter(t => t.channel === 'writeoff' || (t.dir === 'buy' && isGift(t))).sort((a, b) => b.ts - a.ts);
-    if (removed.length) {
-      h += `<div class="tfp-row"><div class="tfp-sub">${link('showRemoved', removed.length + ' removed or received as gifts (not in stock, not in profit)')}</div>`;
-      if (ui.showRemoved) h += removed.map(t => `<div class="tfp-top"><span class="tfp-sub">${t.channel === 'writeoff' ? t.items[0].qty + '× ' + esc(nameOf(t.items[0].id)) + ' removed' : itemSummary(t) + ' received as a gift'} · ${fdate(t.ts)}</span><a href="#" data-act="restorestock" data-id="${esc(t.id)}">restore</a></div>`).join('');
-      h += '</div>';
-    }
-    return h;
   }
   function editBox(tx) {
     const label = tx.dir === 'buy' ? 'Amount paid ($)' : 'Amount received ($)';
@@ -1229,8 +1119,6 @@
       <div class="tfp-gap"></div><div class="tfp-sub">TornW3B key (optional, for importing Weaver receipts automatically). Use the key you registered on TornW3B, not your Torn key. It is stored on this device and sent only to weav3r.dev.</div>
       <input class="tfp-in" id="tfp-w3b" type="password" autocomplete="off" placeholder="${sget('w3bkey', '') ? 'TornW3B key saved (hidden). Paste a new one to replace.' : 'Paste your TornW3B key'}"><div class="tfp-gap"></div>
       <button class="tfp-b" data-act="savew3b">Save TornW3B key</button> ${sget('w3bkey', '') ? '<button class="tfp-b" data-act="clearw3b">Remove</button>' : ''}
-      <div class="tfp-gap"></div><div class="tfp-sub">Check my inventory automatically (reads inventory, bazaar and market listings; only reports, never changes stock by itself)</div>
-      <select class="tfp-in tfp-sel" data-act="invevery">${[[0, 'Off'], [30, 'Every 30 minutes'], [60, 'Every hour'], [180, 'Every 3 hours'], [360, 'Every 6 hours']].map(r => `<option value="${r[0]}"${Number(sget('invEvery', 60)) === r[0] ? ' selected' : ''}>${r[1]}</option>`).join('')}</select>
       <div class="tfp-gap"></div><div class="tfp-sub">${link('more', 'Backup &amp; troubleshooting')}</div>
       ${ui.more ? settingsMore() : ''}`;
   }
@@ -1246,13 +1134,13 @@
     const card = document.getElementById('tfp-card');
     if (!card) return;
     const needs = computeFlips(state.txs, flipOpts()).pending.length;
-    const tabs = [['profit', 'Profit' + (needs ? ' ⚠️' : '')], ['stock', 'Stock' + (state.inv && state.inv.rows.length ? ' ⚠️' : '')], ['receipts', 'Receipts'], ['settings', 'Settings']];
+    const tabs = [['profit', 'Profit' + (needs ? ' ⚠️' : '')], ['receipts', 'Receipts'], ['settings', 'Settings']];
     const away = ui.tab !== 'profit' || ui.itemLog || ui.editing, back = ui.nav && ui.nav.length;
     card.innerHTML = `<div class="tfp-h"><span>${back ? '<button class="tfp-b" data-act="back">‹ Back</button> ' : ''}${away ? '<button class="tfp-b" data-act="home">⌂ Home</button> ' : ''}<b>💰 Arbitrage</b> <span class="tfp-sub">v${VERSION}</span></span><button class="tfp-b" data-act="close">✕</button></div>
       <div class="tfp-tabs">${tabs.map(t => `<button class="tfp-tab ${ui.tab === t[0] ? 'on' : ''}" data-act="tab" data-v="${t[0]}">${t[1]}</button>`).join('')}</div>
       ${lastSaveOk ? '' : '<div class="tfp-msg tfp-warn">⚠️ Could not save your data on this device (storage may be full). Export a backup in Settings.</div>'}
       ${ui.msg ? `<div class="tfp-msg">${esc(ui.msg)}</div>` : ''}
-      ${ui.itemLog && (ui.tab === 'profit' || ui.tab === 'stock') ? ledgerHtml() : ''}${ui.tab === 'profit' ? profitHtml() : ui.tab === 'stock' ? stockHtml() : ui.tab === 'receipts' ? receiptsHtml() : settingsHtml()}`;
+      ${ui.itemLog && ui.tab === 'profit' ? ledgerHtml() : ''}${ui.tab === 'profit' ? profitHtml() : ui.tab === 'receipts' ? receiptsHtml() : settingsHtml()}`;
   }
   function toast(msg) {
     let t = document.getElementById('tfp-toast');
@@ -1287,12 +1175,10 @@
     const el = e.target.closest('[data-act]');
     if (!el) return;
     const act = el.dataset.act, id = el.dataset.id, v = el.dataset.v;
-    if (act === 'edit' || act === 'toggle' || act === 'removestock' || act === 'restorestock' || act === 'checkinv' || act === 'removeexcess' || act === 'itemlog' || act === 'itemlogclose') e.preventDefault();
+    if (act === 'edit' || act === 'toggle' || act === 'itemlog' || act === 'itemlogclose') e.preventDefault();
     ui.msg = '';
     if (act !== 'giftall') ui.armGift = false;
     if (act !== 'giftolder') ui.armOlder = false;
-    if (act !== 'removestock') ui.armRemove = null;
-    if (act !== 'removeexcess') ui.armExcess = false;
     try {
       if (act === 'close') ui.open = false, document.getElementById('tfp-wrap').classList.remove('open');
       else if (act === 'tab') { if (v !== ui.tab) navPush(); ui.tab = v; ui.editing = null; ui.itemLog = null; card0().scrollTop = 0; }
@@ -1300,36 +1186,9 @@
       else if (act === 'home') { ui.nav = []; ui.tab = 'profit'; ui.itemLog = null; ui.editing = null; card0().scrollTop = 0; }
       else if (act === 'range') { ui.range = Number(el.value); sset('range', ui.range); }
       else if (act === 'toggle') ui[v] = !ui[v];
-      else if (act === 'removestock') {
-        if (ui.armRemove !== id) { ui.armRemove = id; render(); return; }
-        ui.armRemove = null;
-        // A write-off: takes the remaining units out of stock (oldest buys first) without counting anything in profit.
-        const left = ((computeFlips(state.txs, flipOpts()).open[id]) || []).reduce((a, l) => a + l.qty, 0);
-        if (left > 0) { const ts = Math.floor(Date.now() / 1000), wid = 'wo:' + id + ':' + ts; state.txs[wid] = { id: wid, ts, dir: 'sell', channel: 'writeoff', gift: true, amount: 0, src: 'manual', locked: true, items: [{ id: Number(id), qty: left, name: nameOf(id), price: null }] }; save(); }
-      }
       else if (act === 'itemlog') { navPush(); ui.itemLog = id; card0().scrollTop = 0; }
       else if (act === 'itemlogclose') ui.itemLog = null;
-      else if (act === 'checkinv') {
-        if (ui.busy) return;
-        ui.busy = true; render();
-        try { const n = await checkInventory(); ui.msg = n ? n + ' item type(s) are tracked as stock but not in your inventory.' : 'Your tracked stock matches what you hold.'; }
-        finally { ui.busy = false; }
-      }
-      else if (act === 'removeexcess') {
-        if (!ui.armExcess) { ui.armExcess = true; render(); return; }
-        ui.armExcess = false;
-        const ts = Math.floor(Date.now() / 1000);
-        const openNow = computeFlips(state.txs, flipOpts()).open;
-        (state.inv ? state.inv.rows : []).forEach(r => { const tracked = (openNow[r.id] || []).reduce((a, l) => a + l.qty, 0), qty = Math.min(r.excess, tracked); if (qty <= 0) return; const wid = 'wo:' + r.id + ':' + ts; state.txs[wid] = { id: wid, ts, dir: 'sell', channel: 'writeoff', gift: true, amount: 0, src: 'manual', locked: true, items: [{ id: Number(r.id), qty, name: nameOf(r.id), price: null }] }; });
-        ui.msg = 'Removed ' + (state.inv ? state.inv.rows.length : 0) + ' item type(s) from stock.'; state.inv = null; save();
-      }
       else if (act === 'clearval') { const tx = state.txs[id]; tx.amount = null; tx.gift = false; tx.src = null; tx.locked = false; ui.editing = null; save(); }
-      else if (act === 'restorestock') {
-        const t = state.txs[id];
-        if (t && t.channel === 'writeoff') delete state.txs[id];
-        else if (t) { t.gift = false; t.amount = null; t.src = null; t.locked = false; } // goes back to "needs a value"
-        save();
-      }
       else if (act === 'savew3b') {
         const k = val('tfp-w3b').trim();
         if (!/^[A-Za-z0-9_-]{8,64}$/.test(k)) throw new Error('That does not look like a TornW3B key.');
@@ -1339,9 +1198,8 @@
       else if (act === 'w3bimport') {
         if (ui.busy) return;
         ui.busy = true; render();
-        try { ui.msg = (await weaverImport()).text; } finally { ui.busy = false; }
+        try { const r = await weaverImport(); state.lastSyncDetail = Object.assign({}, state.lastSyncDetail, { weaver: r.text }); ui.msg = r.attached ? r.attached + ' receipt' + (r.attached === 1 ? '' : 's') + ' attached' + (r.left ? ' · tap again for more' : '') : r.left ? 'More receipts waiting: tap again.' : 'Up to date.'; } finally { ui.busy = false; }
       }
-      else if (act === 'invevery') { sset('invEvery', Number(el.value)); state.invTry = 0; save(); }
       else if (act === 'setting') { const d = document.getElementById('tfp-days'); if (d) sset('startDays', Number(d.value) || 30); }
       else if (act === 'edit') ui.editing = ui.editing === id ? null : id;
       else if (act === 'dir') state.txs[id].dir = v, save();
@@ -1403,7 +1261,7 @@
         const tb = document.querySelector('#topHeaderBanner .toolbar, .header-buttons-wrapper');
         const hdr = tb ? tb.outerHTML.replace(/<svg[\s\S]*?<\/svg>/g, '<svg/>').replace(/<form[\s\S]*?<\/form>/g, '<form/>') : null;
         let cats = null; try { cats = await api('torn/logcategories'); } catch (e) { cats = String(e.message || e); }
-        const sample = { version: VERSION, itemSample: state.itemSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, invInfo, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), header: hdr ? hdr.slice(0, 6000) : null, headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
+        const sample = { version: VERSION, itemSample: state.itemSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, lastSyncDetail: state.lastSyncDetail || null, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), header: hdr ? hdr.slice(0, 6000) : null, headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
         const ok = await copyText(JSON.stringify(sample, null, 1));
         ui.msg = ok ? 'Debug sample copied. Paste it to Claude.' : 'Could not copy. Sync first, then try again.';
       }
@@ -1518,11 +1376,10 @@
     } else {
       mountTornUI();
       setInterval(mountTornUI, 2500);
-      bootP.then(() => { setTimeout(autoInbox, 2500); setTimeout(autoCheckInventory, 20000); });
+      bootP.then(() => { setTimeout(autoInbox, 2500); });
       document.addEventListener('visibilitychange', () => { if (!document.hidden) bootP.then(() => { // another page may have saved newer data while this one slept
         try { const st = sget('state', null); if (st && (st.savedAt || 0) > lastWrite && !ui.busy) { const mine = state; state = mergeState(Object.assign(STATE_DEFAULTS(), st), mine); lastWrite = st.savedAt; if (ui.open) render(); } } catch (e) { /* ignore */ }
         autoInbox(); }); });
-      setInterval(autoCheckInventory, 5 * 60 * 1000);
       // PDA keeps Torn in its own tab, and a tab you left may not report that it came back, so also look at the inbox every few seconds and when the page gets focus.
       setInterval(() => { if (!document.hidden) bootP.then(autoInbox); }, 4000);
       window.addEventListener('focus', () => bootP.then(autoInbox));
