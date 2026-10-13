@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.116-beta
+// @version      0.1.117-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.116-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.117-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1232,9 +1232,7 @@
     if (ui.failedLinks && ui.failedLinks.length) h += '<div class="tfp-msg">Could not read automatically. Open, and it adds itself (then come back here): ' + ui.failedLinks.map((u, i) => '<a href="' + esc(u.split('#')[0]) + '#tfp-add" target="_blank" rel="noopener">receipt ' + (i + 1) + '</a>').join(' · ') + '</div>';
     if (!IS_PDA_ENV) h += ' <button class="tfp-b" data-act="pawnhub">' + (ui.busy ? 'Reading…' : 'Read PawnHub Balance now') + '</button>';
     if (hasGM && sget('pawnhubAuto', false)) h += ' <a href="#" data-act="pawnoff">stop doing this on Sync</a>';
-    if (sget('w3bkey', '')) h += ' <button class="tfp-b" data-act="w3bcheck">' + (ui.busy ? 'Checking…' : 'Check Weaver') + '</button>';
     if (sget('w3bkey', '')) h += ' <button class="tfp-b" data-act="w3bimport">' + (ui.busy ? 'Importing…' : 'Import Weaver receipts') + '</button>';
-    if (ui.w3bReport) h += '<div class="tfp-msg">' + ui.w3bReport.map(l => '<div class="tfp-sub" style="color:#ccc">' + esc(l) + '</div>').join('') + '</div>';
     if (ui.inboxN) h += ` <button class="tfp-b" data-act="inbox">Process ${ui.inboxN} saved receipt(s)</button>`;
     if (ui.pendingReceipt) {
       const rc = ui.pendingReceipt;
@@ -1260,11 +1258,11 @@
       <div class="tfp-sub">Tip: make a separate key just for this script. Deleting it in Torn settings revokes access at once.</div>`;
     return `${keyBox}<div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
       <input class="tfp-in" id="tfp-days" data-act="setting" inputmode="numeric" value="${esc(sget('startDays', 30))}">
-      <div class="tfp-sub">Receipt hand-off between pages: ${nat() ? 'Torn PDA native storage ✓' : IS_PDA_ENV ? 'native storage not available: update the Torn PDA app, or use the Send to Arbitrage link' : 'browser storage'}</div>
       <div class="tfp-sub">Sync from the Profit tab. Last sync: ${state.syncedAt || state.lastSync ? fdate(state.syncedAt || state.lastSync) : 'never'} · ${Object.keys(state.txs).length} records</div>
       <div class="tfp-gap"></div><div class="tfp-sub">TornW3B key (optional, for importing Weaver receipts automatically). Use the key you registered on TornW3B, not your Torn key. It is stored on this device and sent only to weav3r.dev.</div>
       <input class="tfp-in" id="tfp-w3b" type="password" autocomplete="off" placeholder="${sget('w3bkey', '') ? 'TornW3B key saved (hidden). Paste a new one to replace.' : 'Paste your TornW3B key'}"><div class="tfp-gap"></div>
-      <button class="tfp-b" data-act="savew3b">Save TornW3B key</button> ${sget('w3bkey', '') ? '<button class="tfp-b" data-act="clearw3b">Remove</button>' : ''}
+      <button class="tfp-b" data-act="savew3b">Save TornW3B key</button> ${sget('w3bkey', '') ? '<button class="tfp-b" data-act="clearw3b">Remove</button> <button class="tfp-b" data-act="w3bcheck">' + (ui.busy ? 'Checking…' : 'Check Weaver') + '</button>' : ''}
+      ${ui.w3bReport ? '<div class="tfp-msg">' + ui.w3bReport.map(l => '<div class="tfp-sub" style="color:#ccc">' + esc(l) + '</div>').join('') + '</div>' : ''}
       <div class="tfp-gap"></div><div class="tfp-sub">${link('more', 'Backup &amp; troubleshooting')}</div>
       ${ui.more ? settingsMore() : ''}`;
   }
