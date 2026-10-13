@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.113-beta
+// @version      0.1.114-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.113-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.114-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -724,7 +724,7 @@
     let added = 0, att = 0, last = null, weaverErr = '';
     const readLog = async () => { added += await readLogFully(); };
     await readLog();
-    try { if ((await inboxGet()).length) await processInbox(); } catch (e) { /* receipts stay queued */ }
+    try { if ((await inboxGet()).length) await processInbox(true); } catch (e) { /* receipts stay queued */ }
     let pawn = null, pawnErr = '';
     if (hasGM && sget('pawnhubAuto', false)) { try { pawn = await readPawnHubBalance(); } catch (e) { pawnErr = String(e.message || e).slice(0, 120); } }
     if (sget('w3bkey', '')) {
@@ -1285,18 +1285,31 @@
   const val = id => { const el = document.getElementById(id); return el ? el.value : ''; };
 
   let inboxBusy = false;
-  async function processInbox() {
+  // force: also retry receipts that were put on hold (their trade was not in the log yet, or a read failed). Held ones are retried by Sync or every few minutes, and never re-announced.
+  async function processInbox(force) {
     if (inboxBusy) return '';
     inboxBusy = true;
     try {
-      const inbox = await inboxGet(), keep = [];
-      let last = '';
+      const inbox = await inboxGet(), keep = [], now = Math.floor(Date.now() / 1000);
+      let last = '', changed = false;
       for (const rc of inbox) {
-        try { last = await handleReceipt(rc); if (/^No matching trade/.test(last)) { ui.pendingReceipt = null; ui.candidates = []; if (!rc.tries || rc.tries < 50) keep.push(Object.assign(rc, { tries: (rc.tries || 0) + 1 })); last = 'Receipt saved. Its trade is not in your log yet; it will attach by itself after a later sync.'; } }
-        catch (e) { last = String(e.message || e); if (!/match item name/i.test(last)) keep.push(rc); } // unreadable names are a stale parse: drop it and re-add from the page
+        if (!force && rc.nextTry && rc.nextTry > now) { keep.push(rc); continue; }
+        try {
+          const msg = await handleReceipt(rc);
+          if (/^No matching trade/.test(msg)) {
+            ui.pendingReceipt = null; ui.candidates = [];
+            if ((rc.tries || 0) < 50) { keep.push(Object.assign(rc, { tries: (rc.tries || 0) + 1, nextTry: now + 600 })); if (!rc.told) { rc.told = 1; last = 'Receipt saved. Its trade is not in your log yet; it will attach by itself after a later sync.'; } }
+          } else last = msg;
+        } catch (e) {
+          const msg = String(e.message || e);
+          if (!/match item name/i.test(msg)) { keep.push(Object.assign(rc, { nextTry: now + 180 })); if (rc.lastErr !== msg) { rc.lastErr = msg; last = msg; } } // unreadable names are a stale parse: drop it and re-add from the page
+          else last = msg;
+        }
+        changed = true;
       }
-      await inboxSet(keep); ui.inboxN = keep.length;
-      return last || 'Inbox empty.';
+      if (changed || keep.length !== inbox.length) await inboxSet(keep);
+      ui.inboxN = keep.length;
+      return last;
     } finally { inboxBusy = false; }
   }
   // Receipts saved from a receipt page are picked up when you come back to Torn.
@@ -1317,8 +1330,10 @@
   async function autoInbox() {
     if (inboxBusy || !(hasGM || nat())) return;
     const queued = await inboxGet(); ui.inboxN = queued.length;
-    if (!queued.length) return;
+    const nowS = Math.floor(Date.now() / 1000);
+    if (!queued.length || queued.every(r => r.nextTry && r.nextTry > nowS)) return;
     try { ui.msg = await processInbox(); } catch (e) { ui.msg = String(e.message || e); }
+    if (!ui.msg) return;
     state.lastInbox = { at: Math.floor(Date.now() / 1000), msg: String(ui.msg || '').slice(0, 700) }; save();
     if (ui.msg) { ui.msg = '📥 ' + ui.msg; toast(ui.msg.slice(0, 160)); if (ui.open) render(); }
   }
@@ -1411,7 +1426,7 @@
       else if (act === 'addrc') { ui.msg = await addReceiptInput(val('tfp-rc')); }
       else if (act === 'attach') { attachReceipt(ui.pendingReceipt, state.txs[id]); ui.pendingReceipt = null; ui.candidates = []; ui.msg = 'Receipt attached.'; }
       else if (act === 'newtrade') { createFromReceipt(ui.pendingReceipt); ui.pendingReceipt = null; ui.candidates = []; ui.msg = 'Added as a new trade.'; }
-      else if (act === 'inbox') ui.msg = await processInbox();
+      else if (act === 'inbox') ui.msg = (await processInbox(true)) || 'Nothing new to add.';
       else if (act === 'export') { const t = document.getElementById('tfp-bk'); t.value = JSON.stringify(state); await copyText(t.value); ui.msg = 'Exported (also copied).'; render(); document.getElementById('tfp-bk').value = JSON.stringify(state); return; }
       else if (act === 'import') {
         const incoming = JSON.parse(val('tfp-bk'));
