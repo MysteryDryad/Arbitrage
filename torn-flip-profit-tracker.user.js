@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.102-beta
+// @version      0.1.103-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.102-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.103-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -1133,7 +1133,9 @@
     }).join('');
   }
   function receiptsHtml() {
-    let h = '<div class="tfp-sub">Easiest: open a receipt (Weaver, TornExchange or PawnHub), tap "Add to profit tracker" on that page, and repeat for each receipt. Then tap "Process saved receipts" here. On PawnHub\'s Balance page, tap the button once and then Process: it values all your matching sends at once. Pasting links only works for sites that don\'t build the page after it loads.</div><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-rc" placeholder="https://tornexchange.com/receipt/..."></textarea><div class="tfp-gap"></div><button class="tfp-b" data-act="addrc">Add receipt</button>';
+    const rp = hasGM ? sget('rcpage', null) : null, li = state.lastInbox;
+    let h = '<div class="tfp-sub">Open any receipt (Weaver, TornExchange, PawnHub or the PawnHub Balance page) and it saves itself here within a few seconds. With a TornW3B key, Sync also fetches your Weaver receipts.</div>';
+    h += '<div class="tfp-sub">' + (rp ? 'Last receipt page saved ' + fdate(rp.at) + (rp.rows ? ' (' + rp.rows + ' rows)' : '') + (rp.saved === false ? ' ⚠️ not stored' : '') : 'No receipt page has saved anything on this device yet') + (li ? ' · last pickup ' + fdate(li.at) + (li.msg ? ': ' + esc(li.msg) : '') : '') + '</div><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-rc" placeholder="Or paste a receipt link here"></textarea><div class="tfp-gap"></div><button class="tfp-b" data-act="addrc">Add receipt</button>';
     if (ui.failedLinks && ui.failedLinks.length) h += '<div class="tfp-msg">Could not read automatically. Open, and it adds itself (then come back here): ' + ui.failedLinks.map((u, i) => '<a href="' + esc(u.split('#')[0]) + '#tfp-add" target="_blank" rel="noopener">receipt ' + (i + 1) + '</a>').join(' · ') + '</div>';
     if (sget('w3bkey', '')) h += ' <button class="tfp-b" data-act="w3bimport">' + (ui.busy ? 'Importing…' : 'Import Weaver receipts') + '</button>';
     const inbox = hasGM ? sget('inbox', []) : [];
@@ -1215,6 +1217,7 @@
   async function autoInbox() {
     if (!hasGM || inboxBusy || !sget('inbox', []).length) return;
     try { ui.msg = await processInbox(); } catch (e) { ui.msg = String(e.message || e); }
+    state.lastInbox = { at: Math.floor(Date.now() / 1000), msg: String(ui.msg || '').slice(0, 200) }; save();
     if (ui.msg) { ui.msg = '📥 ' + ui.msg; toast(ui.msg.slice(0, 160)); if (ui.open) render(); }
   }
   async function onAction(e) {
@@ -1306,7 +1309,7 @@
       else if (act === 'debug') {
         const tb = document.querySelector('#topHeaderBanner .toolbar, .header-buttons-wrapper');
         let cats = null; try { cats = await api('torn/logcategories'); } catch (e) { cats = String(e.message || e); }
-        const sample = { version: VERSION, itemSample: state.itemSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, lastSyncDetail: state.lastSyncDetail || null, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
+        const sample = { version: VERSION, itemSample: state.itemSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, lastSyncDetail: state.lastSyncDetail || null, inboxWaiting: hasGM ? sget('inbox', []).length : null, rcpage: hasGM ? sget('rcpage', null) : null, lastInbox: state.lastInbox || null, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
         const ok = await copyText(JSON.stringify(sample, null, 1));
         ui.msg = ok ? 'Debug sample copied. Paste it to Claude.' : 'Could not copy. Sync first, then try again.';
       }
@@ -1410,8 +1413,12 @@
             if (n !== count) {
               count = n; stable = 0;
               const inbox = sget('inbox', []).filter(x => x.url !== rc.url); inbox.push(rc); sset('inbox', inbox);
-              if (!banner) { banner = document.createElement('div'); banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#1b5e20;color:#fff;font:14px Arial,sans-serif;padding:10px;text-align:center'; document.body.appendChild(banner); }
-              banner.textContent = '✅ Added to Arbitrage' + (grow ? ' (' + n + ' rows read)' : '') + '. Go back to Torn and it will be picked up.';
+              const saved = sget('inbox', []).some(x => x.url === rc.url); // read it back: was it really stored?
+              sset('rcpage', { at: Math.floor(Date.now() / 1000), url: rc.url, rows: n, saved });
+              if (!banner) { banner = document.createElement('div'); banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;color:#fff;font:14px Arial,sans-serif;padding:10px;text-align:center'; document.body.appendChild(banner); }
+              banner.style.background = saved ? '#1b5e20' : '#8a3b12';
+              banner.textContent = saved ? '✅ Saved for Arbitrage' + (grow ? ' (' + n + ' rows read)' : '') + '. Open Torn and it is picked up within a few seconds.' : '⚠️ Could not save here (script storage unavailable). Copied instead: paste it in Arbitrage → Receipts.';
+              if (!saved) copyText(JSON.stringify(rc));
             }
             if (!grow || ++stable >= 5) clearInterval(t);
           } else if (++tries > 30 && count < 0) { clearInterval(t); if (/tfp-add/.test(location.hash)) toast("Couldn't read this receipt. Let the page finish loading, then tap the 💰 button."); }
