@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.114-beta
+// @version      0.1.115-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.114-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.115-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -743,7 +743,7 @@
     const bits = [];
     if (added) bits.push(added + ' new record' + (added === 1 ? '' : 's'));
     if (att) bits.push(att + ' receipt' + (att === 1 ? '' : 's') + ' attached');
-    if (last && last.missing) bits.push(last.missing + ' receipt' + (last.missing === 1 ? '' : 's') + ' waiting for their trade');
+    if (last && last.missing) bits.push(last.missing + ' Weaver receipt' + (last.missing === 1 ? ' has' : 's have') + ' no matching trade yet (Receipts → Check Weaver)');
     if (pawn && pawn.valued) bits.push(pawn.valued + ' PawnHub payment' + (pawn.valued === 1 ? '' : 's') + ' matched');
     if (weaverErr) bits.push('Weaver: ' + weaverErr.slice(0, 90));
     if (pawnErr) bits.push('PawnHub: ' + pawnErr.slice(0, 70));
