@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.112-beta
+// @version      0.1.113-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.112-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.113-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -712,14 +712,17 @@
     return added;
   }
   // One tap does everything: read the log, pick up saved receipts, import Weaver receipts. Shows only "Syncing…" while it runs; the details go to the debug sample.
+  async function readLogFully() {
+    let added = 0;
+    for (let round = 0; round < 12; round++) {
+      try { added += await syncLog(); return added; }
+      catch (e) { if (!e.capped || round === 11) throw e; added += e.added || 0; await sleep(1500); }
+    }
+    return added;
+  }
   async function syncAll() {
     let added = 0, att = 0, last = null, weaverErr = '';
-    const readLog = async () => {
-      for (let round = 0; round < 12; round++) {
-        try { added += await syncLog(); return; }
-        catch (e) { if (!e.capped || round === 11) throw e; added += e.added || 0; await sleep(1500); }
-      }
-    };
+    const readLog = async () => { added += await readLogFully(); };
     await readLog();
     try { if ((await inboxGet()).length) await processInbox(); } catch (e) { /* receipts stay queued */ }
     let pawn = null, pawnErr = '';
@@ -985,7 +988,16 @@
     return { text, attached, left, ended, missing, reread };
   }
   async function handleReceipt(rc) {
-    if (rc.source === 'pawnhub-balance') return applyPawnHubBalance(rc);
+    if (rc.source === 'pawnhub-balance') {
+      let full = await applyPawnHubBalance(rc), none = Number((full.match(/(\d+) have no send/) || [])[1] || 0);
+      // The newest payments can be for sends your data does not hold yet: read the log first, then match again (once).
+      if (none && getKey() && !ui.busy && Date.now() / 1000 - (state.syncedAt || 0) > 90) {
+        try { await readLogFully(); full = await applyPawnHubBalance(rc); none = Number((full.match(/(\d+) have no send/) || [])[1] || 0); } catch (e) { /* keep the first result */ }
+      }
+      state.lastInboxDetail = full.slice(0, 1500);
+      const g = re => Number((full.match(re) || [])[1] || 0);
+      return 'PawnHub: ' + g(/valued (\d+) of/) + ' payments matched · ' + g(/, (\d+) more already/) + ' already had a value' + (none ? ' · ' + none + ' not matched yet (the send may not be in your log)' : '');
+    }
     await ensureMe();
     if (rc.source === 'pawnhub') await resolvePawnHub(rc);
     if (!roleFor(rc, state.me)) throw new Error("Your name (" + state.me.name + ") isn't the buyer or seller on this receipt.");
@@ -1410,7 +1422,7 @@
       else if (act === 'debug') {
         const tb = document.querySelector('#topHeaderBanner .toolbar, .header-buttons-wrapper');
         let cats = null; try { cats = await api('torn/logcategories'); } catch (e) { cats = String(e.message || e); }
-        const sample = { version: VERSION, itemSample: state.itemSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, lastSyncDetail: state.lastSyncDetail || null, inboxWaiting: ui.inboxN || 0, nativeStorage: !!nat(), lastInbox: state.lastInbox || null, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
+        const sample = { version: VERSION, itemSample: state.itemSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, lastSyncDetail: state.lastSyncDetail || null, inboxWaiting: ui.inboxN || 0, nativeStorage: !!nat(), lastInbox: state.lastInbox || null, lastInboxDetail: state.lastInboxDetail || null, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
         const ok = await copyText(JSON.stringify(sample, null, 1));
         ui.msg = ok ? 'Debug sample copied. Paste it to Claude.' : 'Could not copy. Sync first, then try again.';
       }
