@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.108-beta
+// @version      0.1.109-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.108-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.109-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -1188,11 +1188,12 @@
     }).join('');
   }
   function receiptsHtml() {
-    const rp = hasGM ? sget('rcpage', null) : null, li = state.lastInbox;
-    let h = '<div class="tfp-sub">Open any receipt (Weaver, TornExchange, PawnHub or the PawnHub Balance page): it saves itself here, or tap "Send to Arbitrage" in the green bar on that page. With a TornW3B key, Sync also fetches your Weaver receipts.</div>';
-    h += '<div class="tfp-sub">' + (rp ? 'Last receipt page saved ' + fdate(rp.at) + (rp.rows ? ' (' + rp.rows + ' rows)' : '') + (rp.saved === false ? ' ⚠️ not stored' : '') : 'No receipt page has saved anything on this device yet') + (li ? ' · last pickup ' + fdate(li.at) + (li.msg ? ': ' + esc(li.msg) : '') : '') + '</div><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-rc" placeholder="Or paste a receipt link here"></textarea><div class="tfp-gap"></div><button class="tfp-b" data-act="addrc">Add receipt</button>';
+    const li = state.lastInbox;
+    let h = '<div class="tfp-sub">Open a receipt (Weaver, TornExchange, PawnHub) or the PawnHub Balance page, then tap <b>Send to Arbitrage</b> in the green bar at the top of that page. With a TornW3B key, Sync also fetches your Weaver receipts.</div>';
+    if (li) h += '<div class="tfp-sub">Last receipt added ' + fdate(li.at) + (li.msg ? ': ' + esc(li.msg) : '') + '</div>';
+    h += '<div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-rc" placeholder="Or paste a receipt link here"></textarea><div class="tfp-gap"></div><button class="tfp-b" data-act="addrc">Add receipt</button>';
     if (ui.failedLinks && ui.failedLinks.length) h += '<div class="tfp-msg">Could not read automatically. Open, and it adds itself (then come back here): ' + ui.failedLinks.map((u, i) => '<a href="' + esc(u.split('#')[0]) + '#tfp-add" target="_blank" rel="noopener">receipt ' + (i + 1) + '</a>').join(' · ') + '</div>';
-    h += ' <button class="tfp-b" data-act="pawnhub">' + (ui.busy ? 'Reading…' : 'Read PawnHub Balance now') + '</button>';
+    if (!IS_PDA_ENV) h += ' <button class="tfp-b" data-act="pawnhub">' + (ui.busy ? 'Reading…' : 'Read PawnHub Balance now') + '</button>';
     if (hasGM && sget('pawnhubAuto', false)) h += ' <a href="#" data-act="pawnoff">stop doing this on Sync</a>';
     if (sget('w3bkey', '')) h += ' <button class="tfp-b" data-act="w3bcheck">' + (ui.busy ? 'Checking…' : 'Check Weaver') + '</button>';
     if (sget('w3bkey', '')) h += ' <button class="tfp-b" data-act="w3bimport">' + (ui.busy ? 'Importing…' : 'Import Weaver receipts') + '</button>';
@@ -1282,7 +1283,7 @@
     try {
       const rc = await unpackReceipt(m[1]);
       ui.msg = '📥 ' + await handleReceipt(rc);
-      state.lastInbox = { at: Math.floor(Date.now() / 1000), msg: ui.msg.slice(0, 200) }; save();
+      state.lastInbox = { at: Math.floor(Date.now() / 1000), msg: ui.msg.slice(0, 700) }; save();
     } catch (e) { ui.msg = 'Could not read the receipt that was sent: ' + String(e.message || e); }
     ui.tab = 'receipts'; ui.open = true;
     const wrap = document.getElementById('tfp-wrap'); if (wrap) wrap.classList.add('open');
@@ -1291,7 +1292,7 @@
   async function autoInbox() {
     if (!hasGM || inboxBusy || !sget('inbox', []).length) return;
     try { ui.msg = await processInbox(); } catch (e) { ui.msg = String(e.message || e); }
-    state.lastInbox = { at: Math.floor(Date.now() / 1000), msg: String(ui.msg || '').slice(0, 200) }; save();
+    state.lastInbox = { at: Math.floor(Date.now() / 1000), msg: String(ui.msg || '').slice(0, 700) }; save();
     if (ui.msg) { ui.msg = '📥 ' + ui.msg; toast(ui.msg.slice(0, 160)); if (ui.open) render(); }
   }
   async function onAction(e) {
@@ -1505,11 +1506,10 @@
               const saved = sget('inbox', []).some(x => x.url === rc.url); // read it back: was it really stored?
               sset('rcpage', { at: Math.floor(Date.now() / 1000), url: rc.url, rows: n, saved });
               if (!banner) { banner = document.createElement('div'); banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;color:#fff;font:14px Arial,sans-serif;padding:10px;text-align:center'; document.body.appendChild(banner); }
-              banner.style.background = saved ? '#1b5e20' : '#8a3b12';
+              banner.style.background = '#1b5e20';
               if (!banner.firstChild || banner.firstChild.nodeType !== 3) banner.insertBefore(document.createTextNode(''), banner.firstChild);
-              banner.firstChild.textContent = saved ? '✅ Saved for Arbitrage' + (grow ? ' (' + n + ' rows read)' : '') + '. If Arbitrage does not show it within a few seconds, tap:' : '⚠️ Could not save here. Tap:';
-              if (!saved) copyText(JSON.stringify(rc));
-              if (!banner.querySelector('a')) { const go = document.createElement('a'); go.textContent = ' Send to Arbitrage ▸'; go.href = '#'; go.style.cssText = 'color:#fff;font-weight:bold;text-decoration:underline;margin-left:6px'; go.addEventListener('click', async ev => { ev.preventDefault(); try { location.href = 'https://www.torn.com/index.php#tfp=' + await packReceipt(rc); } catch (e) { go.textContent = ' could not prepare it'; } }); banner.appendChild(go); }
+              banner.firstChild.textContent = '✅ Receipt read' + (grow ? ' (' + n + ' rows)' : '') + '. Tap to add it to Arbitrage:';
+              if (!banner.querySelector('a')) { const go = document.createElement('a'); go.textContent = 'Send to Arbitrage ▸'; go.href = '#'; go.style.cssText = 'color:#fff;font-weight:bold;text-decoration:underline;margin-left:6px'; go.addEventListener('click', async ev => { ev.preventDefault(); try { location.href = 'https://www.torn.com/index.php#tfp=' + await packReceipt(rc); } catch (e) { go.textContent = ' could not prepare it'; } }); banner.appendChild(go); }
               banner.firstChild.textContent = banner.firstChild.textContent; // keep the text node in place when rows update
             }
             if (!grow || ++stable >= 5) clearInterval(t);
