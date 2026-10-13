@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.111-beta
+// @version      0.1.112-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.111-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.112-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -614,7 +614,7 @@
       backupT = null;
       try {
         const copy = Object.assign({}, state, { seenExamples: {} });
-        if (hasZ) { const z = await gzip(JSON.stringify(copy)); if (sset('statez', { at: state.savedAt, z })) sset('state', null); }
+        if (hasZ) { const z = await gzip(JSON.stringify(copy)), n = nat(); let ok = false; if (n) { try { await n.set('statez', { at: state.savedAt, z }); ok = true; } catch (e) { /* quota or bridge error: use script storage */ } } if (sset('statez', { at: state.savedAt, z }) || ok) sset('state', null); }
         else { const t = JSON.stringify(copy); if (t.length < 1000000) sset('state', copy); }
       } catch (e) { /* the backup is optional */ }
     }, 15000);
@@ -639,8 +639,9 @@
       lastWrite = Math.max(lastWrite, state.savedAt || 0);
     }
     if (it && Object.keys(it).length >= Object.keys(itemNames).length) itemNames = it;
-    if (hasZ && (!v || !v.txs || (v.savedAt || 0) < (sget('statez', {}) || {}).at)) { // IndexedDB was cleared or is older than the compressed backup
-      const z = sget('statez', null);
+    let z = hasZ ? sget('statez', null) : null;
+    if (hasZ && nat()) { try { const nz = await nat().get('statez', null); if (nz && nz.z && (!z || (nz.at || 0) > (z.at || 0))) z = nz; } catch (e) { /* ignore */ } } // the app's own storage survives a browser cache clear
+    if (hasZ && (!v || !v.txs || (v.savedAt || 0) < ((z || {}).at || 0))) { // IndexedDB was cleared or is older than the compressed backup
       if (z && z.z && (z.at || 0) > (state.savedAt || 0)) { try { const back = JSON.parse(await gunzip(z.z)); if (back && back.txs) { state = mergeState(Object.assign(STATE_DEFAULTS(), back), state); lastWrite = Math.max(lastWrite, state.savedAt || 0); } } catch (e) { /* backup unreadable */ } }
     }
   }).catch(() => {});
