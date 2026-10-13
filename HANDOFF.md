@@ -1,16 +1,17 @@
-# Torn Flip Profit Tracker: handoff
+# Arbitrage (Torn flip profit tracker): handoff
 
-Script: `torn-flip-profit-tracker.user.js` (v0.1.4-beta). Tests: `node test.js` (needs `npm i jsdom`).
+Script: `torn-flip-profit-tracker.user.js` (see `@version`; `VERSION` must match, `test.js` checks it). Tests: `node test.js` (needs `npm i --no-save jsdom fake-indexeddb`).
+Runs in Torn PDA (iOS) and Tampermonkey. Read-only: reads the Torn API, never acts in the game. Data stays on the device.
 
-## Next steps
-1. Get the Settings > "Copy debug sample" output from a real sync; fix `LOG_RULES`, `pickItems`, `pickMoney`.
-2. Check the Weaver parser against the real receipt DOM.
-3. Dock the button in the header row using the header HTML from the debug sample.
-4. Decide how to handle item-market fees.
-5. Pick a name (shortlist: Deltamancer, Deltasigil, Gildwyrm, Orrery, Ouroboros).
-6. For sharing: settings screen, key removal, @updateURL/@downloadURL, friendlier errors, review Torn script/API rules.
+## How it works
+- `user/log` (v2, newest first) is paged into `state.txs`: item market, bazaar, trade, item send/receive, abroad and NPC shop buys/sells. Trade direction comes from the log (`Trade items incoming` = buy).
+- `computeFlips` does FIFO per item; sales without a matching buy are "not counted", buys/sends without an amount "need a value".
+- Receipts override log amounts: Weaver/TornW3B (API, own key, matched by trade ID), TornExchange and PawnHub pages (auto-added when opened, picked up from the GM `inbox` by the Torn page), PawnHub Balance page (matched to sends by item, quantity and time).
+- One Sync button does everything (log, inbox, Weaver import, one re-read of the log for receipts whose trade is missing). Details of the last sync are in the debug sample (`lastSyncDetail`).
+- Storage: full state in IndexedDB (shared by Torn pages); compressed backup in script storage (`statez`); `mergeState` folds in values from a newer copy so a stale page cannot overwrite receipt values.
 
-## PDA notes
-- PDA replaces the API-key placeholder string in the source; never repeat it elsewhere.
-- PDA draws a bottom toolbar (~50px reserved); keyboard shrinks the webview (use % heights).
-- Button must stay `position:absolute` at page top; don't use fixed or insert it into Torn's header row.
+## Known gaps / ideas
+- RW weapons/armor (unique `uid` in log items), museum set exchanges and cache opening are not modelled: need log examples of each (use Settings > Backup & troubleshooting > Copy debug sample; entries with museum/cache/ranked/item use/points titles are kept).
+- PawnHub Balance page lists only the newest ~100 payments; older sends need a value or can be left out of profit. A PawnHub API was requested from its owner.
+- Stock tab and inventory check were removed on purpose.
+- For sharing: pick a licence, check name on Greasy Fork, add the receipt sites to the disclosure if their rules require it.

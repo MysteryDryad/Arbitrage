@@ -1,8 +1,11 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.97-beta
-// @description  Tracks bazaar, market and trade flip profit (FIFO) from the Torn API, with Weaver and TornExchange receipts.
+// @version      0.1.100-beta
+// @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
+// @author       MysteryDryad
+// @homepageURL  https://github.com/MysteryDryad/Arbitrage
+// @supportURL   https://github.com/MysteryDryad/Arbitrage/issues
 // @match        https://www.torn.com/*
 // @match        https://tornexchange.com/receipt/*
 // @match        https://weav3r.dev/receipt/*
@@ -20,13 +23,20 @@
 // ==/UserScript==
 
 /*
- * BETA NOTES
- * - Works in Torn PDA and in Tampermonkey/Violentmonkey.
- * - Read-only: it only reads the Torn API and never performs game actions.
- * - The log parsing (LOG_RULES, pickItems, pickMoney) is written from the documented
- *   structure of the v2 log and has NOT been tested against live data yet.
- *   Use Settings > "Copy debug sample" and send the result back so the parser can be fixed.
- * - Item-market sale amounts are used exactly as the log records them (fees not adjusted).
+ * ARBITRAGE: flip profit for Torn City (Torn PDA and Tampermonkey/Violentmonkey)
+ *
+ * What it does
+ * - Reads YOUR item market, bazaar, trade and item-send entries from the Torn log and works out profit per sale (first in, first out).
+ * - Optional receipts (Weaver / TornW3B, TornExchange, PawnHub) replace the log amount when they have an exact price.
+ *
+ * Privacy and safety
+ * - Read-only: it never performs game actions, clicks or purchases for you.
+ * - Your data (trade history, settings, keys) is stored only on this device (script storage / browser storage).
+ * - Your Torn API key (Limited Access is enough) is sent only to api.torn.com. A TornW3B key, if you add one, is sent only to weav3r.dev.
+ * - Receipt pages (tornexchange.com, weav3r.dev, z0cl.eu) are read only in your own browser when you open them; nothing is uploaded anywhere.
+ * - Backup/restore is in Settings > Backup & troubleshooting. Deleting the key in Torn settings revokes access at once.
+ *
+ * Troubleshooting: Settings > Backup & troubleshooting > "Copy debug sample" (contains no API keys).
  */
 (function () {
   'use strict';
@@ -36,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.97-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.100-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -569,16 +579,35 @@
     return mine;
   }
   let lastWrite = state.savedAt || 0;
+  // The full copy lives in IndexedDB (shared by all Torn pages). Script storage only gets a small compressed backup, because the plain data outgrew it.
+  const hasZ = typeof CompressionStream === 'function' && typeof DecompressionStream === 'function' && typeof Response === 'function' && typeof btoa === 'function';
+  const gzip = async text => { const cs = new CompressionStream('gzip'), w = cs.writable.getWriter(); w.write(new TextEncoder().encode(text)); w.close(); const u = new Uint8Array(await new Response(cs.readable).arrayBuffer()); let b = ''; for (let i = 0; i < u.length; i += 0x8000) b += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(b); };
+  const gunzip = async b64 => { const bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); const ds = new DecompressionStream('gzip'), w = ds.writable.getWriter(); w.write(u); w.close(); return new Response(ds.readable).text(); };
+  let backupT = null;
+  function scheduleBackup() {
+    if (backupT || !hasGM && typeof localStorage === 'undefined') return;
+    backupT = setTimeout(async () => {
+      backupT = null;
+      try {
+        const copy = Object.assign({}, state, { seenExamples: {} });
+        if (hasZ) { const z = await gzip(JSON.stringify(copy)); if (sset('statez', { at: state.savedAt, z })) sset('state', null); }
+        else { const t = JSON.stringify(copy); if (t.length < 1000000) sset('state', copy); }
+      } catch (e) { /* the backup is optional */ }
+    }, 15000);
+  }
   const save = () => {
-    try { const stored = sget('state', null); if (stored && (stored.savedAt || 0) > lastWrite) mergeState(state, stored); } catch (e) { /* storage unreadable: save as is */ }
-    state.savedAt = Date.now(); lastWrite = state.savedAt;
-    const smallOk = sset('state', state);
-    if (!hasIDB) { lastSaveOk = smallOk; return; }
-    idb.set('state', state).then(() => { lastSaveOk = true; idbErr = null; }).catch(e => { idbErr = String(e && e.message || e); lastSaveOk = smallOk; });
+    const prev = lastWrite; state.savedAt = Date.now(); lastWrite = state.savedAt;
+    if (!hasIDB) { lastSaveOk = sset('state', state); return; }
+    const mine = state.savedAt;
+    idb.get('state').catch(() => null)
+      .then(v => { if (v && v.txs && (v.savedAt || 0) > prev && v.savedAt !== mine) mergeState(state, v); return idb.set('state', state); }) // another page saved newer data meanwhile: keep both
+      .then(() => { lastSaveOk = true; idbErr = null; })
+      .catch(e => { idbErr = String(e && e.message || e); lastSaveOk = sset('state', state); });
+    scheduleBackup();
   };
   const STATE_DEFAULTS = () => ({ v: 1, me: null, lastSync: 0, txs: {}, receipts: {}, seenTitles: {}, seenExamples: {}, tradeParts: {}, sendParts: {}, moneyEvents: {} });
   // Load the saved state from IndexedDB when it is newer than what script storage gave us.
-  const bootP = !hasIDB ? Promise.resolve() : Promise.all([idb.get('state').catch(() => null), idb.get('items').catch(() => null), idb.get('itemvals').catch(() => null)]).then(([v, it, iv]) => {
+  const bootP = !hasIDB ? Promise.resolve() : Promise.all([idb.get('state').catch(() => null), idb.get('items').catch(() => null), idb.get('itemvals').catch(() => null)]).then(async ([v, it, iv]) => {
     if (iv && Object.keys(iv).length >= Object.keys(itemValues).length) itemValues = iv;
     if (v && v.txs) {
       if ((v.savedAt || 0) >= (state.savedAt || 0)) { const old = state; state = mergeState(Object.assign(STATE_DEFAULTS(), v), old); }
@@ -586,6 +615,10 @@
       lastWrite = Math.max(lastWrite, state.savedAt || 0);
     }
     if (it && Object.keys(it).length >= Object.keys(itemNames).length) itemNames = it;
+    if (hasZ && (!v || !v.txs || (v.savedAt || 0) < (sget('statez', {}) || {}).at)) { // IndexedDB was cleared or is older than the compressed backup
+      const z = sget('statez', null);
+      if (z && z.z && (z.at || 0) > (state.savedAt || 0)) { try { const back = JSON.parse(await gunzip(z.z)); if (back && back.txs) { state = mergeState(Object.assign(STATE_DEFAULTS(), back), state); lastWrite = Math.max(lastWrite, state.savedAt || 0); } } catch (e) { /* backup unreadable */ } }
+    }
   }).catch(() => {});
   // Read the saved copy back and compare, so a silently failing save shows up as a warning.
   function verifySaved() {
@@ -716,7 +749,7 @@
         if (title) state.seenTitles[title] = (state.seenTitles[title] || 0) + 1;
         if (e.timestamp > newest) newest = e.timestamp;
         state.seenExamples = state.seenExamples || {};
-        if (title && !state.seenExamples[title] && (Object.keys(state.seenExamples).length < 80 || /abroad|shop|museum|cache|ranked|item use|points/i.test(title)) && !/^(Crime|Forums|Message|Faction newsletter)/i.test(title)) state.seenExamples[title] = e;
+        if (title && !state.seenExamples[title] && (Object.keys(state.seenExamples).length < 40 || /abroad|shop|museum|cache|ranked|item use|points/i.test(title)) && !/^(Crime|Forums|Message|Faction newsletter)/i.test(title)) state.seenExamples[title] = e;
         if (/^Money (receive|send)/i.test(title) && e.data && typeof e.data.money === 'number') {
           state.moneyEvents = state.moneyEvents || {};
           state.moneyEvents[e.id] = { ts: e.timestamp, dir: /receive/i.test(title) ? 'in' : 'out', cp: e.data.sender != null ? e.data.sender : (e.data.receiver != null ? e.data.receiver : (e.data.user != null ? e.data.user : null)), amount: e.data.money };
@@ -1259,9 +1292,8 @@
       }
       else if (act === 'debug') {
         const tb = document.querySelector('#topHeaderBanner .toolbar, .header-buttons-wrapper');
-        const hdr = tb ? tb.outerHTML.replace(/<svg[\s\S]*?<\/svg>/g, '<svg/>').replace(/<form[\s\S]*?<\/form>/g, '<form/>') : null;
         let cats = null; try { cats = await api('torn/logcategories'); } catch (e) { cats = String(e.message || e); }
-        const sample = { version: VERSION, itemSample: state.itemSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, lastSyncDetail: state.lastSyncDetail || null, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), header: hdr ? hdr.slice(0, 6000) : null, headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
+        const sample = { version: VERSION, itemSample: state.itemSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, lastSyncDetail: state.lastSyncDetail || null, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
         const ok = await copyText(JSON.stringify(sample, null, 1));
         ui.msg = ok ? 'Debug sample copied. Paste it to Claude.' : 'Could not copy. Sync first, then try again.';
       }
@@ -1378,7 +1410,7 @@
       setInterval(mountTornUI, 2500);
       bootP.then(() => { setTimeout(autoInbox, 2500); });
       document.addEventListener('visibilitychange', () => { if (!document.hidden) bootP.then(() => { // another page may have saved newer data while this one slept
-        try { const st = sget('state', null); if (st && (st.savedAt || 0) > lastWrite && !ui.busy) { const mine = state; state = mergeState(Object.assign(STATE_DEFAULTS(), st), mine); lastWrite = st.savedAt; if (ui.open) render(); } } catch (e) { /* ignore */ }
+        (hasIDB ? idb.get('state').catch(() => null) : Promise.resolve(sget('state', null))).then(st => { if (st && st.txs && (st.savedAt || 0) > lastWrite && !ui.busy) { const mine = state; state = mergeState(Object.assign(STATE_DEFAULTS(), st), mine); lastWrite = st.savedAt; if (ui.open) render(); } }).catch(() => {});
         autoInbox(); }); });
       // PDA keeps Torn in its own tab, and a tab you left may not report that it came back, so also look at the inbox every few seconds and when the page gets focus.
       setInterval(() => { if (!document.hidden) bootP.then(autoInbox); }, 4000);
