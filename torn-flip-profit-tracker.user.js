@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.107-beta
+// @version      0.1.108-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.107-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.108-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -917,6 +917,7 @@
         lines.push('Newest receipt (compare with the website): trade #' + r.trade_id + ' with ' + (r.buyer_name || '?') + ', ' + (r.items || []).map(i => i.quantity + '× ' + i.item_name + ' @ ' + fmt(i.price_used)).join(', ') + ', total ' + fmt(r.total_value) + (r.created_at ? ', ' + fdate(r.created_at) : '') + '.');
       } catch (e) { lines.push('Could not read the newest receipt: ' + String(e.message || e)); }
     }
+    { const d = state.lastSyncDetail && state.lastSyncDetail.weaver, m = d && d.match(/not found in your log \((.*)\)\. TornW3B lists/); if (m) lines.push('Waiting for their trade (from the last sync): ' + m[1].slice(0, 600)); }
     const since = Math.floor(Date.now() / 1000) - 14 * 86400;
     const trades = Object.values(state.txs).filter(t => t.channel === 'trade' && t.tradeId && t.ts >= since && !t.id.startsWith('rc:'));
     const withW = trades.filter(t => t.receiptUrl && /weav3r\.dev/.test(t.receiptUrl)), without = trades.filter(t => !t.receiptUrl).sort((a, b) => b.ts - a.ts);
