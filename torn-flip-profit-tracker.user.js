@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.104-beta
+// @version      0.1.105-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.104-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.105-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -818,6 +818,7 @@
     const role = roleFor(rc, state.me);
     if (!role) throw new Error("Your name isn't the buyer or seller on this receipt.");
     tx.dir = role; tx.items = rc.items.map(i => ({ id: i.id, name: i.name, qty: i.qty, price: i.price }));
+    if (tx.src === 'log' && tx.amount != null && tx.logAmount == null) tx.logAmount = tx.amount; // kept so the Weaver check can compare
     tx.amount = rc.total; tx.src = 'receipt'; tx.locked = true; tx.receiptUrl = rc.url;
     if (rc.tradeId) tx.tradeId = rc.tradeId;
     state.receipts[rc.url] = rc; save();
@@ -881,18 +882,44 @@
     return { source: 'weaver', url: 'https://weav3r.dev/receipt/' + r.id, tradeId: Number(tm[0]), buyer: r.buyer_name, seller: state.me.name, sellerId: state.me.id,
       items, total: Number(r.total_value) || items.reduce((a, i) => a + i.price * i.qty, 0), ts: r.created_at || null };
   }
+  async function w3bCall(url) {
+    const r = await httpRetry(url, { 'X-API-Key': sget('w3bkey', ''), Accept: 'application/json' });
+    if (r && r.status === 401) throw new Error('TornW3B did not accept your key (HTTP 401). Check it in Settings.');
+    if (r && r.status === 429) throw new Error('TornW3B is limiting requests. Wait a minute and tap again.');
+    if (!r || r.status >= 400) throw new Error('TornW3B answered HTTP ' + (r && r.status) + (r && r.status === 403 ? ' (access denied: the trades endpoint may need Premium)' : ''));
+    try { return JSON.parse(r.text); } catch (e) { throw new Error('TornW3B sent something I could not read.'); }
+  }
+  // A read-only health check of the Weaver import: is the API answering, does what it lists match your trades, do the amounts agree with your log.
+  async function weaverAudit() {
+    if (!sget('w3bkey', '')) throw new Error('Add your TornW3B key in Settings first.');
+    await ensureMe();
+    const base = 'https://weav3r.dev/api/trades/' + state.me.id, w = state.w3b || { done: {} };
+    const lines = [];
+    const list = await w3bCall(base), rows = (list.trades || []).filter(t => t && t.id);
+    lines.push('API: answering, key accepted · ' + rows.length + ' receipts in the newest page' + (rows.length >= 100 ? ' (there are more)' : '') + '.');
+    const attached = rows.filter(t => w.done && w.done[t.id]).length;
+    lines.push('Of those, ' + attached + ' are already in your data.' + (rows.length - attached ? ' ' + (rows.length - attached) + ' are not: they were cancelled/expired trades, have no Torn trade number, or are waiting for their trade to reach your log.' : ''));
+    if (rows[0]) {
+      try {
+        await sleep(900); const r = await w3bCall(base + '/' + encodeURIComponent(rows[0].id));
+        lines.push('Newest receipt (compare with the website): trade #' + r.trade_id + ' with ' + (r.buyer_name || '?') + ', ' + (r.items || []).map(i => i.quantity + '× ' + i.item_name + ' @ ' + fmt(i.price_used)).join(', ') + ', total ' + fmt(r.total_value) + (r.created_at ? ', ' + fdate(r.created_at) : '') + '.');
+      } catch (e) { lines.push('Could not read the newest receipt: ' + String(e.message || e)); }
+    }
+    const since = Math.floor(Date.now() / 1000) - 14 * 86400;
+    const trades = Object.values(state.txs).filter(t => t.channel === 'trade' && t.tradeId && t.ts >= since && !t.id.startsWith('rc:'));
+    const withW = trades.filter(t => t.receiptUrl && /weav3r\.dev/.test(t.receiptUrl)), without = trades.filter(t => !t.receiptUrl).sort((a, b) => b.ts - a.ts);
+    lines.push('Your trades in the last 14 days: ' + trades.length + ' · ' + withW.length + ' with a Weaver receipt · ' + without.length + ' with no receipt' + (without.length ? ' (newest: ' + without.slice(0, 3).map(t => '#' + t.tradeId + ' ' + fdate(t.ts)).join(', ') + '). Those may not have been made through Weaver, or the receipt is not on TornW3B yet' : '') + '.');
+    const cmp = withW.filter(t => t.logAmount != null);
+    const off = cmp.filter(t => Math.abs(t.amount - t.logAmount) > Math.max(1, t.logAmount * 0.01));
+    lines.push(cmp.length ? 'Amounts: ' + cmp.length + ' receipts checked against your Torn log, ' + (off.length ? off.length + ' differ by more than 1% (' + off.slice(0, 3).map(t => '#' + t.tradeId + ': log ' + fmt(t.logAmount) + ' vs receipt ' + fmt(t.amount)).join('; ') + '). The receipt amount is the one used.' : 'all agree within 1%.') : 'Amounts: no cross-check yet. Receipts attached from now on keep your log amount for comparison.');
+    return lines;
+  }
   async function weaverImport() {
     const key = sget('w3bkey', '');
     if (!key) throw new Error('Add your TornW3B key in Settings first.');
     await ensureMe();
     const base = 'https://weav3r.dev/api/trades/' + state.me.id;
-    const call = async url => {
-      const r = await httpRetry(url, { 'X-API-Key': key, Accept: 'application/json' });
-      if (r && r.status === 401) throw new Error('TornW3B did not accept your key (HTTP 401). Check it in Settings.');
-      if (r && r.status === 429) throw new Error('TornW3B is limiting requests. Wait a minute and tap again.');
-      if (!r || r.status >= 400) throw new Error('TornW3B answered HTTP ' + (r && r.status) + (r && r.status === 403 ? ' (access denied: the trades endpoint may need Premium)' : ''));
-      try { return JSON.parse(r.text); } catch (e) { throw new Error('TornW3B sent something I could not read.'); }
-    };
+    const call = w3bCall;
     const w = state.w3b = state.w3b || { done: {}, miss: {}, at: {} };
     w.at = w.at || {}; w.re = w.re || {};
     const now = Math.floor(Date.now() / 1000);
@@ -1152,7 +1179,9 @@
     if (ui.failedLinks && ui.failedLinks.length) h += '<div class="tfp-msg">Could not read automatically. Open, and it adds itself (then come back here): ' + ui.failedLinks.map((u, i) => '<a href="' + esc(u.split('#')[0]) + '#tfp-add" target="_blank" rel="noopener">receipt ' + (i + 1) + '</a>').join(' · ') + '</div>';
     h += ' <button class="tfp-b" data-act="pawnhub">' + (ui.busy ? 'Reading…' : 'Read PawnHub Balance now') + '</button>';
     if (hasGM && sget('pawnhubAuto', false)) h += ' <a href="#" data-act="pawnoff">stop doing this on Sync</a>';
+    if (sget('w3bkey', '')) h += ' <button class="tfp-b" data-act="w3bcheck">' + (ui.busy ? 'Checking…' : 'Check Weaver') + '</button>';
     if (sget('w3bkey', '')) h += ' <button class="tfp-b" data-act="w3bimport">' + (ui.busy ? 'Importing…' : 'Import Weaver receipts') + '</button>';
+    if (ui.w3bReport) h += '<div class="tfp-msg">' + ui.w3bReport.map(l => '<div class="tfp-sub" style="color:#ccc">' + esc(l) + '</div>').join('') + '</div>';
     const inbox = hasGM ? sget('inbox', []) : [];
     if (inbox.length) h += ` <button class="tfp-b" data-act="inbox">Process ${inbox.length} saved receipt(s)</button>`;
     if (ui.pendingReceipt) {
@@ -1266,6 +1295,11 @@
         try { const r = await readPawnHubBalance(); ui.msg = r.valued ? r.valued + ' PawnHub payment' + (r.valued === 1 ? '' : 's') + ' matched. Sync now reads it too.' : 'Read the Balance page: nothing new to match. Sync now reads it too.'; state.lastSyncDetail = Object.assign({}, state.lastSyncDetail, { pawnhub: r.text }); save(); } finally { ui.busy = false; }
       }
       else if (act === 'pawnoff') { sset('pawnhubAuto', false); ui.msg = 'Sync will no longer read the PawnHub Balance page.'; }
+      else if (act === 'w3bcheck') {
+        if (ui.busy) return;
+        ui.busy = true; ui.w3bReport = null; render();
+        try { ui.w3bReport = await weaverAudit(); } finally { ui.busy = false; }
+      }
       else if (act === 'w3bimport') {
         if (ui.busy) return;
         ui.busy = true; render();
