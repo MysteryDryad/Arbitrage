@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.100-beta
+// @version      0.1.102-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.100-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.102-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -934,7 +934,9 @@
     if (!roleFor(rc, state.me)) throw new Error("Your name (" + state.me.name + ") isn't the buyer or seller on this receipt.");
     const cands = rankCandidates(rc, state.txs);
     const best = cands[0], second = cands[1];
-    if (best && best.score >= 6 && (!second || best.score - second.score >= 2)) {
+    // Same items and quantities, close in time and nothing else comparable: that is the trade (TornExchange receipts carry no trade number).
+    const sure = best && (best.score >= 6 || (best.score >= 5 && itemKey(best.tx.items) === itemKey(rc.items)));
+    if (sure && (!second || best.score - second.score >= 2)) {
       attachReceipt(rc, best.tx); ui.pendingReceipt = null; ui.candidates = [];
       return 'Receipt attached to a matching trade.';
     }
@@ -947,9 +949,19 @@
     if (text[0] === '{') return handleReceipt(JSON.parse(text));
     const links = text.split(/\s+/).filter(t => /^https?:\/\//i.test(t));
     if (!links.length) throw new Error('Paste a receipt link or copied receipt data.');
-    let attached = 0, review = 0, failed = [], notes = [];
+    let attached = 0, review = 0, failed = [], notes = [], rest = links;
     ui.failedLinks = [];
-    for (const url of links) {
+    // With a TornW3B key, Weaver links need no page load (which Cloudflare often blocks): the API gives every receipt, this one included.
+    const wl = links.filter(u => /weav3r\.dev\/receipt\//i.test(u));
+    if (wl.length && sget('w3bkey', '')) {
+      try {
+        const r = await weaverImport();
+        notes.push(r.attached ? r.attached + ' Weaver receipt' + (r.attached === 1 ? '' : 's') + ' attached.' : r.missing ? 'Weaver receipt found, but its trade is not in your log yet. Sync, then try again.' : 'Weaver receipts are up to date.');
+        rest = links.filter(u => !wl.includes(u));
+        if (!rest.length) return notes.join(' ');
+      } catch (e) { /* fall back to loading the links themselves */ }
+    }
+    for (const url of rest) {
       try {
         const rc = await fetchReceipt(url);
         const msg = await handleReceipt(rc);
@@ -957,10 +969,11 @@
         if (/attached/i.test(msg)) attached++; else review++;
       } catch (e) { failed.push(url + ' (' + (e.message || e) + ')'); ui.failedLinks.push(url); }
     }
+    const pre = notes.length ? notes.join(' ') + ' ' : '';
     if (notes.length && !failed.length && !attached && !review) return notes.join(' ');
-    if (links.length === 1 && !failed.length) return review ? 'Pick which trade this receipt belongs to.' : 'Receipt attached to a matching trade.';
-    if (links.length === 1) throw new Error(failed[0].replace(/^\S+ \(/, '').replace(/\)$/, '') + ' Open it, tap "Add to profit tracker" on the page, then tap "Process saved receipt".');
-    return attached + ' attached' + (review ? ', ' + review + ' need you to pick a trade (shown below)' : '') + (failed.length ? ', ' + failed.length + ' could not be read' : '') + '.';
+    if (rest.length === 1 && !failed.length) return pre + (review ? 'Pick which trade this receipt belongs to.' : 'Receipt attached to a matching trade.');
+    if (rest.length === 1) throw new Error(pre + failed[0].replace(/^\S+ \(/, '').replace(/\)$/, '') + ' Open it, tap "Add to profit tracker" on the page, then tap "Process saved receipt".');
+    return pre + attached + ' attached' + (review ? ', ' + review + ' need you to pick a trade (shown below)' : '') + (failed.length ? ', ' + failed.length + ' could not be read' : '') + '.';
   }
 
   /* ===================== UI ===================== */
