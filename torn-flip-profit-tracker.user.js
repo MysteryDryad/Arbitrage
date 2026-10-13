@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.105-beta
+// @version      0.1.106-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.105-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.106-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -309,7 +309,7 @@
   async function fetchReceipt(url) {
     try { return await fetchReceiptDirect(url); }
     catch (e) {
-      try { return await viaFrame(url); } catch (e2) { throw new Error((e.message || e) + ' (background load also failed: ' + (e2.message || e2) + ')'); }
+      try { return await viaFrame(url); } catch (e2) { const er = new Error('Could not read this page in the background (' + (/HTTP (\\d+)/.test(e.message) ? 'the site answered ' + e.message.match(/HTTP (\\d+)/)[0] : 'it builds its content after loading') + '). Open it in a tab instead and it saves itself.'); er.detail = (e.message || e) + ' | frame: ' + (e2.message || e2); throw er; }
     }
   }
   async function fetchReceiptDirect(url) {
@@ -317,7 +317,7 @@
     if (!r || r.status >= 400) throw new Error('The site refused the link (HTTP ' + (r && r.status) + ')');
     const doc = new DOMParser().parseFromString(r.text, 'text/html');
     const rc = parseReceiptDoc(doc, url);
-    if (!rc) { const e = new Error('The page loaded (' + String(r.text || '').length + ' characters) but has no receipt data in it. Sites that build the receipt after the page loads can only be read with the button on the page.'); e.unreadable = true; throw e; }
+    if (!rc) { const e = new Error('The page loaded (' + String(r.text || '').length + ' characters) but has no receipt data in it. This site builds its page after it loads.'); e.unreadable = true; throw e; }
     return rc;
   }
 
@@ -976,7 +976,9 @@
   }
   // Reads the PawnHub Balance page without you visiting it: directly if the site allows, else in a hidden frame (your own browser session, same as opening it).
   async function readPawnHubBalance() {
-    const rc = await fetchReceipt('https://z0cl.eu/PawnHub/balance.php');
+    let rc;
+    try { rc = await fetchReceipt('https://z0cl.eu/PawnHub/balance.php'); }
+    catch (e) { state.lastSyncDetail = Object.assign({}, state.lastSyncDetail, { pawnhubErr: e.detail || e.message }); throw new Error('Could not read the PawnHub Balance page in the background. Open it in a tab: it saves itself, and the Receipts tab shows whether that worked.'); }
     if (!rc || rc.source !== 'pawnhub-balance') throw new Error('That did not look like the Balance page (are you logged in to PawnHub?).');
     const msg = await applyPawnHubBalance(rc);
     sset('pawnhubAuto', true);
@@ -1012,7 +1014,7 @@
     const pre = notes.length ? notes.join(' ') + ' ' : '';
     if (notes.length && !failed.length && !attached && !review) return notes.join(' ');
     if (rest.length === 1 && !failed.length) return pre + (review ? 'Pick which trade this receipt belongs to.' : 'Receipt attached to a matching trade.');
-    if (rest.length === 1) throw new Error(pre + failed[0].replace(/^\S+ \(/, '').replace(/\)$/, '') + ' Open it, tap "Add to profit tracker" on the page, then tap "Process saved receipt".');
+    if (rest.length === 1) throw new Error(pre + failed[0].replace(/^\S+ \(/, '').replace(/\)$/, '') + ' Open it in a tab: it saves itself, then come back here.');
     return pre + attached + ' attached' + (review ? ', ' + review + ' need you to pick a trade (shown below)' : '') + (failed.length ? ', ' + failed.length + ' could not be read' : '') + '.';
   }
 
