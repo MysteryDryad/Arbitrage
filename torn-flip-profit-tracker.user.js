@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.103-beta
+// @version      0.1.104-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.103-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.104-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
@@ -300,7 +300,7 @@
       let done = false, timer;
       const finish = (fn, v) => { if (done) return; done = true; window.removeEventListener('message', onMsg); clearTimeout(timer); f.remove(); fn(v); };
       const onMsg = ev => { if (ev.origin === origin && ev.data && ev.data.tfpReceipt) finish(resolve, ev.data.tfpReceipt); };
-      timer = setTimeout(() => finish(reject, new Error('The receipt did not load in the background either')), 25000);
+      timer = setTimeout(() => finish(reject, new Error('The receipt did not load in the background either')), 30000);
       window.addEventListener('message', onMsg);
       f.src = url.split('#')[0] + '#tfp-frame';
       document.body.appendChild(f);
@@ -697,6 +697,8 @@
     };
     await readLog();
     try { if (sget('inbox', []).length) await processInbox(); } catch (e) { /* receipts stay queued */ }
+    let pawn = null, pawnErr = '';
+    if (hasGM && sget('pawnhubAuto', false)) { try { pawn = await readPawnHubBalance(); } catch (e) { pawnErr = String(e.message || e).slice(0, 120); } }
     if (sget('w3bkey', '')) {
       try {
         for (let round = 0; round < 15; round++) { last = await weaverImport(); att += last.attached; if (!last.left) break; }
@@ -709,12 +711,14 @@
         }
       } catch (e) { weaverErr = String(e.message || e); }
     }
-    state.lastSyncDetail = { at: Math.floor(Date.now() / 1000), added, attached: att, weaver: last ? last.text : null, weaverErr: weaverErr || null }; save();
+    state.lastSyncDetail = { at: Math.floor(Date.now() / 1000), added, attached: att, weaver: last ? last.text : null, weaverErr: weaverErr || null, pawnhub: pawn ? pawn.text : null, pawnhubErr: pawnErr || null }; save();
     const bits = [];
     if (added) bits.push(added + ' new record' + (added === 1 ? '' : 's'));
     if (att) bits.push(att + ' receipt' + (att === 1 ? '' : 's') + ' attached');
     if (last && last.missing) bits.push(last.missing + ' receipt' + (last.missing === 1 ? '' : 's') + ' waiting for their trade');
+    if (pawn && pawn.valued) bits.push(pawn.valued + ' PawnHub payment' + (pawn.valued === 1 ? '' : 's') + ' matched');
     if (weaverErr) bits.push('Weaver: ' + weaverErr.slice(0, 90));
+    if (pawnErr) bits.push('PawnHub: ' + pawnErr.slice(0, 70));
     return bits.length ? 'Synced · ' + bits.join(' · ') : 'Up to date.';
   }
   async function syncLog() {
@@ -943,6 +947,15 @@
     ui.pendingReceipt = rc; ui.candidates = cands;
     return cands.length ? 'Pick which trade this receipt belongs to.' : 'No matching trade found in your log.';
   }
+  // Reads the PawnHub Balance page without you visiting it: directly if the site allows, else in a hidden frame (your own browser session, same as opening it).
+  async function readPawnHubBalance() {
+    const rc = await fetchReceipt('https://z0cl.eu/PawnHub/balance.php');
+    if (!rc || rc.source !== 'pawnhub-balance') throw new Error('That did not look like the Balance page (are you logged in to PawnHub?).');
+    const msg = await applyPawnHubBalance(rc);
+    sset('pawnhubAuto', true);
+    const m = msg.match(/valued (\d+)/);
+    return { text: msg, valued: m ? Number(m[1]) : 0 };
+  }
   async function addReceiptInput(text) {
     text = (text || '').trim();
     if (!text) throw new Error('Paste a receipt link first.');
@@ -1137,6 +1150,8 @@
     let h = '<div class="tfp-sub">Open any receipt (Weaver, TornExchange, PawnHub or the PawnHub Balance page) and it saves itself here within a few seconds. With a TornW3B key, Sync also fetches your Weaver receipts.</div>';
     h += '<div class="tfp-sub">' + (rp ? 'Last receipt page saved ' + fdate(rp.at) + (rp.rows ? ' (' + rp.rows + ' rows)' : '') + (rp.saved === false ? ' ⚠️ not stored' : '') : 'No receipt page has saved anything on this device yet') + (li ? ' · last pickup ' + fdate(li.at) + (li.msg ? ': ' + esc(li.msg) : '') : '') + '</div><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-rc" placeholder="Or paste a receipt link here"></textarea><div class="tfp-gap"></div><button class="tfp-b" data-act="addrc">Add receipt</button>';
     if (ui.failedLinks && ui.failedLinks.length) h += '<div class="tfp-msg">Could not read automatically. Open, and it adds itself (then come back here): ' + ui.failedLinks.map((u, i) => '<a href="' + esc(u.split('#')[0]) + '#tfp-add" target="_blank" rel="noopener">receipt ' + (i + 1) + '</a>').join(' · ') + '</div>';
+    h += ' <button class="tfp-b" data-act="pawnhub">' + (ui.busy ? 'Reading…' : 'Read PawnHub Balance now') + '</button>';
+    if (hasGM && sget('pawnhubAuto', false)) h += ' <a href="#" data-act="pawnoff">stop doing this on Sync</a>';
     if (sget('w3bkey', '')) h += ' <button class="tfp-b" data-act="w3bimport">' + (ui.busy ? 'Importing…' : 'Import Weaver receipts') + '</button>';
     const inbox = hasGM ? sget('inbox', []) : [];
     if (inbox.length) h += ` <button class="tfp-b" data-act="inbox">Process ${inbox.length} saved receipt(s)</button>`;
@@ -1159,6 +1174,7 @@
       <tr><td>Key storage</td><td>Only in this script's local storage on this device.</td></tr>
       <tr><td>Key sharing</td><td>Sent only to api.torn.com. Never shared with anyone else.</td></tr>
       <tr><td>TornW3B key</td><td>Optional. Only if you add one for Weaver receipts: stored on this device, sent only to weav3r.dev. Your Torn key never goes there.</td></tr>
+      <tr><td>PawnHub</td><td>Optional. If you tap "Read PawnHub Balance now", Sync also loads your own Balance page (z0cl.eu) in a hidden frame, like opening it yourself. Nothing is sent to PawnHub.</td></tr>
       <tr><td>Key access level</td><td>Limited Access (needed for the log).</td></tr></table>
       <div class="tfp-sub">Tip: make a separate key just for this script. Deleting it in Torn settings revokes access at once.</div>`;
     return `${keyBox}<div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
@@ -1224,7 +1240,7 @@
     const el = e.target.closest('[data-act]');
     if (!el) return;
     const act = el.dataset.act, id = el.dataset.id, v = el.dataset.v;
-    if (act === 'edit' || act === 'toggle' || act === 'itemlog' || act === 'itemlogclose') e.preventDefault();
+    if (act === 'edit' || act === 'toggle' || act === 'pawnoff' || act === 'itemlog' || act === 'itemlogclose') e.preventDefault();
     ui.msg = '';
     if (act !== 'giftall') ui.armGift = false;
     if (act !== 'giftolder') ui.armOlder = false;
@@ -1244,6 +1260,12 @@
         sset('w3bkey', k); ui.msg = 'TornW3B key saved on this device.';
       }
       else if (act === 'clearw3b') { sset('w3bkey', ''); ui.msg = 'TornW3B key removed from this device.'; }
+      else if (act === 'pawnhub') {
+        if (ui.busy) return;
+        ui.busy = true; render();
+        try { const r = await readPawnHubBalance(); ui.msg = r.valued ? r.valued + ' PawnHub payment' + (r.valued === 1 ? '' : 's') + ' matched. Sync now reads it too.' : 'Read the Balance page: nothing new to match. Sync now reads it too.'; state.lastSyncDetail = Object.assign({}, state.lastSyncDetail, { pawnhub: r.text }); save(); } finally { ui.busy = false; }
+      }
+      else if (act === 'pawnoff') { sset('pawnhubAuto', false); ui.msg = 'Sync will no longer read the PawnHub Balance page.'; }
       else if (act === 'w3bimport') {
         if (ui.busy) return;
         ui.busy = true; render();
@@ -1394,10 +1416,14 @@
   function init() {
     if (/tornexchange\.com|weav3r\.dev|z0cl\.eu/.test(location.hostname)) {
       if (window.top !== window && /tfp-frame/.test(location.hash)) { // loaded by the tracker in a hidden frame: read the receipt and send it back
-        let tries = 0; const t = setInterval(() => {
+        let tries = 0, count = -1, stable = 0; const t = setInterval(() => {
           const rc = parseReceiptDoc(document, location.href.split('#')[0]);
-          if (rc) { clearInterval(t); try { window.parent.postMessage({ tfpReceipt: rc }, '*'); } catch (e) { /* parent gone */ } }
-          else if (++tries > 20) clearInterval(t);
+          if (rc) {
+            const n = rc.events ? rc.events.length : 0;
+            if (n !== count) { count = n; stable = 0; } else stable++;
+            if (!rc.events || stable >= 3) { clearInterval(t); try { window.parent.postMessage({ tfpReceipt: rc }, '*'); } catch (e) { /* parent gone */ } } // the Balance page fills in as it loads
+          }
+          if (++tries > 22) clearInterval(t);
         }, 1000);
         return;
       }
