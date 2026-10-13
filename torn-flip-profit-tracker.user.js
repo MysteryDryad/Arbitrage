@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.109-beta
+// @version      0.1.110-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,8 +46,20 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.109-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.110-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
+  // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
+  const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
+  async function inboxGet() {
+    const n = nat();
+    if (n) { try { const v = await n.get('inbox', []); return Array.isArray(v) ? v : []; } catch (e) { /* fall back */ } }
+    return hasGM ? sget('inbox', []) : [];
+  }
+  async function inboxSet(v) {
+    const n = nat();
+    if (n) { try { await n.set('inbox', v); return true; } catch (e) { /* fall back */ } }
+    return hasGM ? sset('inbox', v) : false;
+  }
 
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
   // to localStorage when GM has nothing usable (PDA may return odd placeholders after an update).
@@ -708,7 +720,7 @@
       }
     };
     await readLog();
-    try { if (sget('inbox', []).length) await processInbox(); } catch (e) { /* receipts stay queued */ }
+    try { if ((await inboxGet()).length) await processInbox(); } catch (e) { /* receipts stay queued */ }
     let pawn = null, pawnErr = '';
     if (hasGM && sget('pawnhubAuto', false)) { try { pawn = await readPawnHubBalance(); } catch (e) { pawnErr = String(e.message || e).slice(0, 120); } }
     if (sget('w3bkey', '')) {
@@ -1198,8 +1210,7 @@
     if (sget('w3bkey', '')) h += ' <button class="tfp-b" data-act="w3bcheck">' + (ui.busy ? 'Checking…' : 'Check Weaver') + '</button>';
     if (sget('w3bkey', '')) h += ' <button class="tfp-b" data-act="w3bimport">' + (ui.busy ? 'Importing…' : 'Import Weaver receipts') + '</button>';
     if (ui.w3bReport) h += '<div class="tfp-msg">' + ui.w3bReport.map(l => '<div class="tfp-sub" style="color:#ccc">' + esc(l) + '</div>').join('') + '</div>';
-    const inbox = hasGM ? sget('inbox', []) : [];
-    if (inbox.length) h += ` <button class="tfp-b" data-act="inbox">Process ${inbox.length} saved receipt(s)</button>`;
+    if (ui.inboxN) h += ` <button class="tfp-b" data-act="inbox">Process ${ui.inboxN} saved receipt(s)</button>`;
     if (ui.pendingReceipt) {
       const rc = ui.pendingReceipt;
       h += `<div class="tfp-msg"><b>${rc.source === 'weaver' ? 'Weaver' : rc.source === 'pawnhub' ? 'PawnHub' : 'TornExchange'} receipt</b> · ${fmt(rc.total)}<br>${rc.items.map(i => i.qty + '× ' + esc(i.name)).join(', ')}</div>`;
@@ -1264,13 +1275,13 @@
     if (inboxBusy) return '';
     inboxBusy = true;
     try {
-      const inbox = sget('inbox', []), keep = [];
+      const inbox = await inboxGet(), keep = [];
       let last = '';
       for (const rc of inbox) {
         try { last = await handleReceipt(rc); if (/^No matching trade/.test(last)) { ui.pendingReceipt = null; ui.candidates = []; if (!rc.tries || rc.tries < 50) keep.push(Object.assign(rc, { tries: (rc.tries || 0) + 1 })); last = 'Receipt saved. Its trade is not in your log yet; it will attach by itself after a later sync.'; } }
         catch (e) { last = String(e.message || e); if (!/match item name/i.test(last)) keep.push(rc); } // unreadable names are a stale parse: drop it and re-add from the page
       }
-      sset('inbox', keep);
+      await inboxSet(keep); ui.inboxN = keep.length;
       return last || 'Inbox empty.';
     } finally { inboxBusy = false; }
   }
@@ -1290,7 +1301,9 @@
     render(); toast(ui.msg.slice(0, 160));
   }
   async function autoInbox() {
-    if (!hasGM || inboxBusy || !sget('inbox', []).length) return;
+    if (inboxBusy || !(hasGM || nat())) return;
+    const queued = await inboxGet(); ui.inboxN = queued.length;
+    if (!queued.length) return;
     try { ui.msg = await processInbox(); } catch (e) { ui.msg = String(e.message || e); }
     state.lastInbox = { at: Math.floor(Date.now() / 1000), msg: String(ui.msg || '').slice(0, 700) }; save();
     if (ui.msg) { ui.msg = '📥 ' + ui.msg; toast(ui.msg.slice(0, 160)); if (ui.open) render(); }
@@ -1395,7 +1408,7 @@
       else if (act === 'debug') {
         const tb = document.querySelector('#topHeaderBanner .toolbar, .header-buttons-wrapper');
         let cats = null; try { cats = await api('torn/logcategories'); } catch (e) { cats = String(e.message || e); }
-        const sample = { version: VERSION, itemSample: state.itemSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, lastSyncDetail: state.lastSyncDetail || null, inboxWaiting: hasGM ? sget('inbox', []).length : null, rcpage: hasGM ? sget('rcpage', null) : null, lastInbox: state.lastInbox || null, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
+        const sample = { version: VERSION, itemSample: state.itemSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, lastSyncDetail: state.lastSyncDetail || null, inboxWaiting: ui.inboxN || 0, nativeStorage: !!nat(), lastInbox: state.lastInbox || null, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
         const ok = await copyText(JSON.stringify(sample, null, 1));
         ui.msg = ok ? 'Debug sample copied. Paste it to Claude.' : 'Could not copy. Sync first, then try again.';
       }
@@ -1469,7 +1482,7 @@
       }
       const json = JSON.stringify(rc);
       let msg = '';
-      if (hasGM) { const inbox = sget('inbox', []); inbox.push(rc); sset('inbox', inbox); msg = 'Saved. Open Torn > Receipts tab to attach. '; }
+      if (hasGM || nat()) { const inbox = (await inboxGet()).filter(x => x.url !== rc.url); inbox.push(rc); await inboxSet(inbox); msg = 'Saved. '; }
       const ok = await copyText(json);
       toast(msg + (ok ? 'Copied to clipboard too.' : 'Could not copy automatically.'));
     });
@@ -1496,15 +1509,16 @@
       { // any receipt page you open is added by itself once it has loaded (nothing is sent anywhere; it is saved on this device)
         // The Balance page fills in as it loads, so keep re-reading it until the number of rows stops growing.
         let tries = 0, count = -1, stable = 0, banner = null;
-        const t = setInterval(() => {
+        let busy = false;
+        const t = setInterval(async () => {
+          if (busy) return; busy = true;
+          try {
           const rc = parseReceiptDoc(document, location.href.split('#')[0]);
-          if (rc && hasGM) {
+          if (rc && (hasGM || nat())) {
             const n = rc.events ? rc.events.length : 0, grow = rc.source === 'pawnhub-balance';
             if (n !== count) {
               count = n; stable = 0;
-              const inbox = sget('inbox', []).filter(x => x.url !== rc.url); inbox.push(rc); sset('inbox', inbox);
-              const saved = sget('inbox', []).some(x => x.url === rc.url); // read it back: was it really stored?
-              sset('rcpage', { at: Math.floor(Date.now() / 1000), url: rc.url, rows: n, saved });
+              const inbox = (await inboxGet()).filter(x => x.url !== rc.url); inbox.push(rc); await inboxSet(inbox);
               if (!banner) { banner = document.createElement('div'); banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;color:#fff;font:14px Arial,sans-serif;padding:10px;text-align:center'; document.body.appendChild(banner); }
               banner.style.background = '#1b5e20';
               if (!banner.firstChild || banner.firstChild.nodeType !== 3) banner.insertBefore(document.createTextNode(''), banner.firstChild);
@@ -1515,6 +1529,7 @@
             if (!grow || ++stable >= 5) clearInterval(t);
           } else if (++tries > 30 && count < 0) { clearInterval(t); if (/tfp-add/.test(location.hash)) toast("Couldn't read this receipt. Let the page finish loading, then tap the 💰 button."); }
           if (tries++ > 90) clearInterval(t);
+          } catch (e) { /* try again on the next tick */ } finally { busy = false; }
         }, 1000);
       }
     } else {
