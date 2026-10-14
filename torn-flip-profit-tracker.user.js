@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.119-beta
+// @version      0.1.120-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.119-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.120-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -712,6 +712,15 @@
     return added;
   }
   // One tap does everything: read the log, pick up saved receipts, import Weaver receipts. Shows only "Syncing…" while it runs; the details go to the debug sample.
+  // Receipts attached before the $0-line fix: redo them from the stored receipt when the log amount is higher.
+  function reapplyZeroPriced() {
+    let n = 0;
+    Object.values(state.txs).forEach(t => {
+      const rc = t.src === 'receipt' && t.logAmount != null && t.receiptUrl && state.receipts[t.receiptUrl];
+      if (rc && !t.zeroFixed && t.amount < t.logAmount && rc.items && rc.items.some(i => !(i.price > 0))) { try { attachReceipt(rc, t); n++; } catch (e) { /* leave it */ } }
+    });
+    return n;
+  }
   async function readLogFully() {
     let added = 0;
     for (let round = 0; round < 12; round++) {
@@ -739,6 +748,7 @@
         }
       } catch (e) { weaverErr = String(e.message || e); }
     }
+    try { reapplyZeroPriced(); } catch (e) { /* ignore */ }
     state.lastSyncDetail = { at: Math.floor(Date.now() / 1000), added, attached: att, weaver: last ? last.text : null, weaverErr: weaverErr || null, pawnhub: pawn ? pawn.text : null, pawnhubErr: pawnErr || null }; save();
     const bits = [];
     if (added) bits.push(added + ' new record' + (added === 1 ? '' : 's'));
@@ -847,7 +857,15 @@
     if (!role) throw new Error("Your name isn't the buyer or seller on this receipt.");
     tx.dir = role; tx.items = rc.items.map(i => ({ id: i.id, name: i.name, qty: i.qty, price: i.price }));
     if (tx.src === 'log' && tx.amount != null && tx.logAmount == null) tx.logAmount = tx.amount; // kept so the Weaver check can compare
-    tx.amount = rc.total; tx.src = 'receipt'; tx.locked = true; tx.receiptUrl = rc.url;
+    let total = rc.total;
+    // A receipt line priced at $0 (no price known) makes the receipt total too low. The trade's real money is in the Torn log: keep that total and spread what the priced lines do not cover over the $0 lines.
+    const zero = tx.items.filter(i => !(i.price > 0));
+    if (zero.length && tx.logAmount != null && tx.logAmount > rc.total) {
+      const known = tx.items.filter(i => i.price > 0).reduce((a, i) => a + i.price * i.qty, 0), rest = tx.logAmount - known;
+      const mv = zero.map(i => i.qty * (itemValues[i.id] || 0)), useMv = mv.every(x => x > 0), wt = zero.map((i, k) => useMv ? mv[k] : i.qty), ws = wt.reduce((a, x) => a + x, 0);
+      if (rest > 0 && ws > 0) { zero.forEach((i, k) => { i.price = Math.round(rest * (wt[k] / ws) / i.qty); }); total = tx.logAmount; tx.zeroFixed = true; }
+    }
+    tx.amount = total; tx.src = 'receipt'; tx.locked = true; tx.receiptUrl = rc.url;
     if (rc.tradeId) tx.tradeId = rc.tradeId;
     state.receipts[rc.url] = rc; save();
   }
@@ -904,7 +922,7 @@
   // Weaver receipts through TornW3B's API (its own key, sent only to weav3r.dev): matched to your Torn trades by trade ID.
   function rcFromWeaverApi(r) {
     const tm = r && r.trade_id != null ? String(r.trade_id).match(/\d+/) : null; // some receipts have no usable Torn trade number
-    if (!r || !tm || !Array.isArray(r.items) || !r.items.length) return null;
+    if (!r || !tm || Number(tm[0]) < 10000000 || !Array.isArray(r.items) || !r.items.length) return null; // Torn trade numbers are 8 digits now; smaller numbers on old receipts are not trades
     const items = r.items.map(i => ({ id: Number(i.item_id), name: i.item_name, qty: Number(i.quantity), price: Number(i.price_used) }));
     if (items.some(i => !i.id || !i.qty || !(i.price >= 0))) return null;
     return { source: 'weaver', url: 'https://weav3r.dev/receipt/' + r.id, tradeId: Number(tm[0]), buyer: r.buyer_name, seller: state.me.name, sellerId: state.me.id,
