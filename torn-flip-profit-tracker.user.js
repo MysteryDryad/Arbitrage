@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.118-beta
+// @version      0.1.119-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.118-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.119-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -309,10 +309,10 @@
       let origin; try { origin = new URL(url).origin; } catch (e) { reject(new Error('Bad link')); return; }
       const f = document.createElement('iframe');
       f.style.cssText = 'position:fixed;left:-20px;top:-20px;width:2px;height:2px;border:0;opacity:0;pointer-events:none';
-      let done = false, timer;
+      let done = false, timer, hello = false;
       const finish = (fn, v) => { if (done) return; done = true; window.removeEventListener('message', onMsg); clearTimeout(timer); f.remove(); fn(v); };
-      const onMsg = ev => { if (ev.origin === origin && ev.data && ev.data.tfpReceipt) finish(resolve, ev.data.tfpReceipt); };
-      timer = setTimeout(() => finish(reject, new Error('The receipt did not load in the background either')), 30000);
+      const onMsg = ev => { if (ev.origin !== origin || !ev.data) return; if (ev.data.tfpHello) hello = true; if (ev.data.tfpReceipt) finish(resolve, ev.data.tfpReceipt); };
+      timer = setTimeout(() => finish(reject, new Error(hello ? 'the page loaded but showed no receipt (login needed?)' : 'the script did not run inside the page (framing blocked, or the app does not run scripts in frames)')), 30000);
       window.addEventListener('message', onMsg);
       f.src = url.split('#')[0] + '#tfp-frame';
       document.body.appendChild(f);
@@ -1016,7 +1016,7 @@
   async function readPawnHubBalance() {
     let rc;
     try { rc = await fetchReceipt('https://z0cl.eu/PawnHub/balance.php'); }
-    catch (e) { state.lastSyncDetail = Object.assign({}, state.lastSyncDetail, { pawnhubErr: e.detail || e.message }); throw new Error('Could not read the PawnHub Balance page in the background. Open it in a tab: it saves itself, and the Receipts tab shows whether that worked.'); }
+    catch (e) { state.lastSyncDetail = Object.assign({}, state.lastSyncDetail, { pawnhubErr: e.detail || e.message }); { const why = String(e.detail || '').split('frame: ')[1] || ''; throw new Error('Could not read the PawnHub Balance page in the background' + (why ? ': ' + why : '') + '. Open it in a tab instead.'); } }
     if (!rc || rc.source !== 'pawnhub-balance') throw new Error('That did not look like the Balance page (are you logged in to PawnHub?).');
     const msg = await applyPawnHubBalance(rc);
     sset('pawnhubAuto', true);
@@ -1230,7 +1230,7 @@
     if (li) h += '<div class="tfp-sub">Last receipt added ' + fdate(li.at) + (li.msg ? ': ' + esc(li.msg) : '') + '</div>';
     h += '<div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-rc" placeholder="Or paste a receipt link here"></textarea><div class="tfp-gap"></div><button class="tfp-b" data-act="addrc">Add receipt</button>';
     if (ui.failedLinks && ui.failedLinks.length) h += '<div class="tfp-msg">Could not read automatically. Open, and it adds itself (then come back here): ' + ui.failedLinks.map((u, i) => '<a href="' + esc(u.split('#')[0]) + '#tfp-add" target="_blank" rel="noopener">receipt ' + (i + 1) + '</a>').join(' · ') + '</div>';
-    if (!IS_PDA_ENV) h += ' <button class="tfp-b" data-act="pawnhub">' + (ui.busy ? 'Reading…' : 'Read PawnHub Balance now') + '</button>';
+    h += ' <button class="tfp-b" data-act="pawnhub">' + (ui.busy ? 'Reading…' : 'Read PawnHub Balance now') + '</button>';
     if (hasGM && sget('pawnhubAuto', false)) h += ' <a href="#" data-act="pawnoff">stop doing this on Sync</a>';
     if (sget('w3bkey', '')) h += ' <button class="tfp-b" data-act="w3bimport">' + (ui.busy ? 'Importing…' : 'Import Weaver receipts') + '</button>';
     if (ui.inboxN) h += ` <button class="tfp-b" data-act="inbox">Process ${ui.inboxN} saved receipt(s)</button>`;
@@ -1358,6 +1358,17 @@
     ui.tab = 'receipts'; ui.open = true;
     const wrap = document.getElementById('tfp-wrap'); if (wrap) wrap.classList.add('open');
     render(); toast(ui.msg.slice(0, 160));
+  }
+  // Once reading the Balance page in the background has worked (Receipts → Read PawnHub Balance now), repeat it quietly while Torn is open.
+  let pawnRunning = false;
+  async function autoPawnhub() {
+    if (pawnRunning || ui.busy || document.hidden || !sget('pawnhubAuto', false)) return;
+    const now = Math.floor(Date.now() / 1000);
+    if (now - (state.pawnAt || 0) < 30 * 60) return;
+    state.pawnAt = now; pawnRunning = true;
+    try { const r = await readPawnHubBalance(); if (r.valued) { toast('PawnHub: ' + r.valued + ' payment' + (r.valued === 1 ? '' : 's') + ' matched'); if (ui.open) render(); } }
+    catch (e) { /* quiet: the next try is in 30 minutes */ }
+    finally { pawnRunning = false; save(); }
   }
   async function autoInbox() {
     if (inboxBusy || !(hasGM || nat())) return;
@@ -1557,6 +1568,7 @@
   function init() {
     if (/tornexchange\.com|weav3r\.dev|z0cl\.eu/.test(location.hostname)) {
       if (window.top !== window && /tfp-frame/.test(location.hash)) { // loaded by the tracker in a hidden frame: read the receipt and send it back
+        try { window.parent.postMessage({ tfpHello: 1 }, '*'); } catch (e) { /* parent gone */ }
         let tries = 0, count = -1, stable = 0; const t = setInterval(() => {
           const rc = parseReceiptDoc(document, location.href.split('#')[0]);
           if (rc) {
@@ -1605,6 +1617,7 @@
         autoInbox(); }); });
       // PDA keeps Torn in its own tab, and a tab you left may not report that it came back, so also look at the inbox every few seconds and when the page gets focus.
       setInterval(() => { if (!document.hidden) bootP.then(autoInbox); }, 4000);
+      setTimeout(() => bootP.then(autoPawnhub), 60000); setInterval(() => bootP.then(autoPawnhub), 5 * 60 * 1000);
       window.addEventListener('focus', () => bootP.then(autoInbox));
       window.addEventListener('pageshow', () => bootP.then(autoInbox));
     }
