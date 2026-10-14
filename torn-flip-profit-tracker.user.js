@@ -985,7 +985,7 @@
     if (zf.length) { const eff = zf.reduce((a, t) => a + (t.dir === 'sell' ? 1 : -1) * (t.amount - state.receipts[t.receiptUrl].total), 0); out.push(zf.length + ' receipt(s) had $0-priced lines and use your Torn log money instead (net effect on profit about ' + fmt(eff) + ', mostly raising buy costs).'); }
     const pl = state.profitLog || [];
     if (pl.length) out.push('Earlier readings (30 days): ' + pl.slice(-4).map(r => fdate(r.at) + ' v' + r.v.replace('-beta', '') + ' ' + fmt(r.d30)).join(' · ') + '. A jump between versions points at a calculation change, not your trading.');
-    out.push('To verify one sale: open its category row and tap ✎ (sold for and cost), or use an item's "history" link under "not counted" to see every buy and sale of it.');
+    out.push('To verify one sale: open its category row and tap ✎ (sold for and cost), or use the "history" link of an item under "not counted" to see every buy and sale of it.');
     return out;
   }
   async function weaverImport() {
