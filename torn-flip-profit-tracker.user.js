@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.120-beta
+// @version      0.1.121-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.120-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.121-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -748,7 +748,7 @@
         }
       } catch (e) { weaverErr = String(e.message || e); }
     }
-    try { reapplyZeroPriced(); } catch (e) { /* ignore */ }
+    try { reapplyZeroPriced(); snapshotProfit(); } catch (e) { /* ignore */ }
     state.lastSyncDetail = { at: Math.floor(Date.now() / 1000), added, attached: att, weaver: last ? last.text : null, weaverErr: weaverErr || null, pawnhub: pawn ? pawn.text : null, pawnhubErr: pawnErr || null }; save();
     const bits = [];
     if (added) bits.push(added + ' new record' + (added === 1 ? '' : 's'));
@@ -960,6 +960,33 @@
     const off = cmp.filter(t => Math.abs(t.amount - t.logAmount) > Math.max(1, t.logAmount * 0.01));
     lines.push(cmp.length ? 'Amounts: ' + cmp.length + ' receipts checked against your Torn log, ' + (off.length ? off.length + ' differ by more than 1% (' + off.slice(0, 3).map(t => '#' + t.tradeId + ': log ' + fmt(t.logAmount) + ' vs receipt ' + fmt(t.amount)).join('; ') + '). The receipt amount is the one used.' : 'all agree within 1%.') : 'Amounts: no cross-check yet. Receipts attached from now on keep your log amount for comparison.');
     return lines;
+  }
+  // A plain-language reconciliation of the profit number for the range on the Profit tab, so it can be checked by hand.
+  function snapshotProfit() {
+    const res = computeFlips(state.txs, flipOpts()), now = Math.floor(Date.now() / 1000), sum = since => res.flips.filter(f => f.profit != null && f.tx.ts >= since).reduce((a, f) => a + f.profit, 0);
+    state.profitLog = (state.profitLog || []).concat([{ at: now, v: VERSION, d7: Math.round(sum(now - 7 * 86400)), d30: Math.round(sum(now - 30 * 86400)), all: Math.round(sum(0)), n: Object.keys(state.txs).length }]).slice(-40);
+  }
+  function profitAudit() {
+    const [lo, hi] = rangeBounds(), res = computeFlips(state.txs, flipOpts()), inR = ts => ts >= lo && ts < hi;
+    const flips = res.flips.filter(f => inR(f.tx.ts)), done = flips.filter(f => f.profit != null), skipped = flips.filter(f => f.profit == null);
+    const lines = done.reduce((a, f) => a.concat(f.lines.filter(l => l.matched > 0)), []);
+    const rev = lines.reduce((a, l) => a + l.proceeds, 0), cost = lines.reduce((a, l) => a + (l.cost || 0), 0), profit = done.reduce((a, f) => a + f.profit, 0);
+    const label = { today: 'Today', yesterday: 'Yesterday', custom: (ui.from || '?') + ' to ' + (ui.to || ui.from || '?'), 0: 'All time' }[ui.range] || 'Last ' + ui.range + ' day(s)';
+    const out = [label + ': profit ' + fmt(profit) + ' = sold for ' + fmt(rev) + ' − cost ' + fmt(cost) + ' over ' + done.length + ' sales' + (cost > 0 ? ' (' + (profit / cost * 100).toFixed(2) + '% on cost)' : '') + '. Check: ' + fmt(rev) + ' − ' + fmt(cost) + ' = ' + fmt(rev - cost) + '.'];
+    const src = { receipt: 0, log: 0, manual: 0 }; done.forEach(f => { src[f.tx.src] = (src[f.tx.src] || 0) + 1; });
+    out.push('Sale amounts come from: receipts ' + (src.receipt || 0) + ', Torn log ' + (src.log || 0) + ', entered by hand ' + (src.manual || 0) + '.');
+    const pend = res.pending.filter(t => t.dir === 'sell' && inR(t.ts));
+    out.push('Left out of the total: ' + skipped.length + ' sale(s) with no earlier buy (' + fmt(skipped.reduce((a, f) => a + (netAmt(f.tx) || 0), 0)) + ' received) and ' + pend.length + ' send(s)/sale(s) with no amount yet.');
+    const byP = done.slice().sort((a, b) => b.profit - a.profit), show = f => fmt(f.profit) + ' · ' + fdate(f.tx.ts) + (f.tx.tradeId ? ' #' + f.tx.tradeId : '') + ' · ' + f.tx.items.slice(0, 2).map(i => i.qty + '× ' + (i.name || nameOf(i.id))).join(', ');
+    if (byP.length) out.push('Biggest gains: ' + byP.slice(0, 3).map(show).join(' | '));
+    const neg = byP.filter(f => f.profit < 0).slice(-3).reverse();
+    if (neg.length) out.push('Losses to look at: ' + neg.map(show).join(' | '));
+    const zf = Object.values(state.txs).filter(t => t.zeroFixed && state.receipts[t.receiptUrl]);
+    if (zf.length) { const eff = zf.reduce((a, t) => a + (t.dir === 'sell' ? 1 : -1) * (t.amount - state.receipts[t.receiptUrl].total), 0); out.push(zf.length + ' receipt(s) had $0-priced lines and use your Torn log money instead (net effect on profit about ' + fmt(eff) + ', mostly raising buy costs).'); }
+    const pl = state.profitLog || [];
+    if (pl.length) out.push('Earlier readings (30 days): ' + pl.slice(-4).map(r => fdate(r.at) + ' v' + r.v.replace('-beta', '') + ' ' + fmt(r.d30)).join(' · ') + '. A jump between versions points at a calculation change, not your trading.');
+    out.push('To verify one sale: open its category row and tap ✎ (sold for and cost), or use an item's "history" link under "not counted" to see every buy and sale of it.');
+    return out;
   }
   async function weaverImport() {
     const key = sget('w3bkey', '');
@@ -1309,7 +1336,7 @@
   function settingsMore() {
     return `<div class="tfp-row"><b>Backup</b><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-bk" placeholder="Export fills this box. Paste a backup here to import."></textarea><div class="tfp-gap"></div>
       <button class="tfp-b" data-act="export">Export</button> <button class="tfp-b" data-act="import">Import</button></div>
-      <div class="tfp-row"><b>Troubleshooting</b><div class="tfp-gap"></div><input class="tfp-in" id="tfp-tq" inputmode="numeric" placeholder="Look up a trade number"><div class="tfp-gap"></div><button class="tfp-b" data-act="tradelookup">Look up trade</button>${ui.tradeInfo ? ui.tradeInfo.map(l => '<div class="tfp-sub" style="color:#ccc">' + esc(l) + '</div>').join('') : ''}<div class="tfp-gap"></div><button class="tfp-b" data-act="debug">Copy debug sample</button> <button class="tfp-b" data-act="resync">Re-sync from start</button></div>`;
+      <div class="tfp-row"><b>Troubleshooting</b><div class="tfp-gap"></div><input class="tfp-in" id="tfp-tq" inputmode="numeric" placeholder="Look up a trade number"><div class="tfp-gap"></div><button class="tfp-b" data-act="tradelookup">Look up trade</button> <button class="tfp-b" data-act="profitaudit">Check profit</button>${ui.audit ? ui.audit.map(l => '<div class="tfp-sub" style="color:#ccc">' + esc(l) + '</div>').join('') : ''}${ui.tradeInfo ? ui.tradeInfo.map(l => '<div class="tfp-sub" style="color:#ccc">' + esc(l) + '</div>').join('') : ''}<div class="tfp-gap"></div><button class="tfp-b" data-act="debug">Copy debug sample</button> <button class="tfp-b" data-act="resync">Re-sync from start</button></div>`;
   }
 
   const card0 = () => document.getElementById('tfp-card') || {};
@@ -1430,6 +1457,7 @@
         try { const r = await readPawnHubBalance(); ui.msg = r.valued ? r.valued + ' PawnHub payment' + (r.valued === 1 ? '' : 's') + ' matched. Sync now reads it too.' : 'Read the Balance page: nothing new to match. Sync now reads it too.'; state.lastSyncDetail = Object.assign({}, state.lastSyncDetail, { pawnhub: r.text }); save(); } finally { ui.busy = false; }
       }
       else if (act === 'pawnoff') { sset('pawnhubAuto', false); ui.msg = 'Sync will no longer read the PawnHub Balance page.'; }
+      else if (act === 'profitaudit') { ui.audit = profitAudit(); ui.more = true; }
       else if (act === 'tradelookup') { ui.tradeInfo = tradeLookup(val('tfp-tq')); ui.more = true; }
       else if (act === 'w3bcheck') {
         if (ui.busy) return;
