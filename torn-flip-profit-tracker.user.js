@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.122-beta
+// @version      0.1.123-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.122-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.123-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -735,7 +735,7 @@
     await readLog();
     try { if ((await inboxGet()).length) await processInbox(true); } catch (e) { /* receipts stay queued */ }
     let pawn = null, pawnErr = '';
-    if (hasGM && sget('pawnhubAuto', false)) { try { pawn = await readPawnHubBalance(); } catch (e) { pawnErr = String(e.message || e).slice(0, 120); } }
+    if (!IS_PDA_ENV && hasGM && sget('pawnhubAuto', false)) { try { pawn = await readPawnHubBalance(); } catch (e) { pawnErr = String(e.message || e).slice(0, 120); } }
     if (sget('w3bkey', '')) {
       try {
         for (let round = 0; round < 15; round++) { last = await weaverImport(); att += last.attached; if (!last.left) break; }
@@ -1275,7 +1275,7 @@
     if (li) h += '<div class="tfp-sub">Last receipt added ' + fdate(li.at) + (li.msg ? ': ' + esc(li.msg) : '') + '</div>';
     h += '<div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-rc" placeholder="Or paste a receipt link here"></textarea><div class="tfp-gap"></div><button class="tfp-b" data-act="addrc">Add receipt</button>';
     if (ui.failedLinks && ui.failedLinks.length) h += '<div class="tfp-msg">Could not read automatically. Open, and it adds itself (then come back here): ' + ui.failedLinks.map((u, i) => '<a href="' + esc(u.split('#')[0]) + '#tfp-add" target="_blank" rel="noopener">receipt ' + (i + 1) + '</a>').join(' · ') + '</div>';
-    h += ' <button class="tfp-b" data-act="pawnhub">' + (ui.busy ? 'Reading…' : 'Read PawnHub Balance now') + '</button>';
+    if (!IS_PDA_ENV) h += ' <button class="tfp-b" data-act="pawnhub">' + (ui.busy ? 'Reading…' : 'Read PawnHub Balance now') + '</button>';
     if (hasGM && sget('pawnhubAuto', false)) h += ' <a href="#" data-act="pawnoff">stop doing this on Sync</a>';
     if (sget('w3bkey', '')) h += ' <button class="tfp-b" data-act="w3bimport">' + (ui.busy ? 'Importing…' : 'Import Weaver receipts') + '</button>';
     if (ui.inboxN) h += ` <button class="tfp-b" data-act="inbox">Process ${ui.inboxN} saved receipt(s)</button>`;
@@ -1298,7 +1298,7 @@
       <tr><td>Key storage</td><td>Only in this script's local storage on this device.</td></tr>
       <tr><td>Key sharing</td><td>Sent only to api.torn.com. Never shared with anyone else.</td></tr>
       <tr><td>TornW3B key</td><td>Optional. Only if you add one for Weaver receipts: stored on this device, sent only to weav3r.dev. Your Torn key never goes there.</td></tr>
-      <tr><td>PawnHub</td><td>Optional. If you tap "Read PawnHub Balance now", Sync also loads your own Balance page (z0cl.eu) in a hidden frame, like opening it yourself. Nothing is sent to PawnHub.</td></tr>
+      <tr><td>PawnHub</td><td>Optional. In desktop browsers, "Read PawnHub Balance now" lets Sync load your own Balance page (z0cl.eu) in a hidden frame, like opening it yourself. In Torn PDA, open the Balance page yourself and it hands itself over. Nothing is sent to PawnHub.</td></tr>
       <tr><td>Key access level</td><td>Limited Access (needed for the log).</td></tr></table>
       <div class="tfp-sub">Tip: make a separate key just for this script. Deleting it in Torn settings revokes access at once.</div>`;
     return `${keyBox}<div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
@@ -1404,10 +1404,10 @@
     const wrap = document.getElementById('tfp-wrap'); if (wrap) wrap.classList.add('open');
     render(); toast(ui.msg.slice(0, 160));
   }
-  // Once reading the Balance page in the background has worked (Receipts → Read PawnHub Balance now), repeat it quietly while Torn is open.
+  // Once reading the Balance page in the background has worked (Receipts → Read PawnHub Balance now, desktop browsers only), repeat it quietly while Torn is open.
   let pawnRunning = false;
   async function autoPawnhub() {
-    if (pawnRunning || ui.busy || document.hidden || !sget('pawnhubAuto', false)) return;
+    if (IS_PDA_ENV || pawnRunning || ui.busy || document.hidden || !sget('pawnhubAuto', false)) return;
     const now = Math.floor(Date.now() / 1000);
     if (now - (state.pawnAt || 0) < 30 * 60) return;
     state.pawnAt = now; pawnRunning = true;
