@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.123-beta
+// @version      0.1.124-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.123-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.124-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1180,6 +1180,24 @@
     const first = Math.min.apply(null, ts), days = (Date.now() / 1000 - first) / 86400;
     return 'History from ' + fdate(first) + ' (' + (days < 1 ? 'under a day' : Math.round(days) + ' days') + ')' + (typeof ui.range === 'number' && ui.range && days < ui.range ? ' · longer ranges show the same numbers' : '');
   }
+  // For a sale with units that found no earlier buy: what the data holds for that item, so the gap can be explained.
+  function itemTrail(f, l) {
+    const id = String(l.itemId), ts = f.tx.ts;
+    let bought = 0, last = null, gifts = 0, usedBefore = 0; const both = [];
+    Object.values(state.txs).forEach(t => {
+      if (!t.items || t.id === f.tx.id) return;
+      const q = t.items.filter(i => String(i.id) === id).reduce((a, i) => a + i.qty, 0);
+      if (!q) return;
+      if (t.dir === 'buy' && t.ts <= ts) { if (isGift(t)) gifts += q; else { bought += q; if (!last || t.ts > last.ts) last = t; } }
+      else if (t.dir === 'sell' && t.ts <= ts) usedBefore += q;
+      else if (!t.dir && t.channel === 'trade') both.push(t);
+    });
+    let out = nameOf(l.itemId) + ': ' + bought + ' bought in your data' + (last ? ' (latest: ' + chanLabel(last.channel) + tradeTag(last) + ', ' + fdate(last.ts) + ')' : '') + (gifts ? ', ' + gifts + ' received as gifts (not counted as stock)' : '') + '; ' + usedBefore + ' sold, sent or removed before this sale; this sale takes ' + l.qty + ', ' + l.unmatched + ' short.';
+    if (both.length) out += ' Trade' + (both.length > 1 ? 's ' : ' ') + both.slice(0, 3).map(t => '#' + t.tradeId).join(', ') + ' moved items both ways, so ' + (both.length > 1 ? 'they are' : 'it is') + ' not used as a buy.';
+    if (!bought) out += ' No earlier purchase of this item is in your data. If you bought it in a trade, look the trade up in Settings.';
+    else if (bought <= usedBefore) out += ' Everything you bought was already used by earlier sales.';
+    return out;
+  }
   function profitHtml() {
     const [cutoff, upto] = rangeBounds(), inR = ts => ts >= cutoff && ts < upto;
     const res = computeFlips(state.txs, flipOpts());
@@ -1202,7 +1220,7 @@
     if (skipped.length && ui.showSkipped) skipped.forEach(f => {
       const tx = f.tx;
       const why = f.unmatched ? f.unmatched + ' unit(s) have no matching buy: bought before the sync window, or got another way. A longer look-back (Settings, then Re-sync from start) may find the buy.' : 'The items came from a buy or receive with no value. Open the matching buy or send and set a value.';
-      h += `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}${tradeTag(tx)}</span><span class="tfp-warn">not counted</span></div><div class="tfp-sub">${itemSummary(tx)} · ${gotWord(tx)} ${fmt(netAmt(tx))}</div><div class="tfp-sub tfp-warn">${why}</div>${f.lines.filter(l => l.unmatched > 0).map(l => `<div class="tfp-sub"><a href="#" data-act="itemlog" data-id="${esc(l.itemId)}">${esc(nameOf(l.itemId))} history</a></div>`).join('')}</div>`;
+      h += `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}${tradeTag(tx)}</span><span class="tfp-warn">not counted</span></div><div class="tfp-sub">${itemSummary(tx)} · ${gotWord(tx)} ${fmt(netAmt(tx))}</div><div class="tfp-sub tfp-warn">${why}</div>${f.lines.filter(l => l.unmatched > 0).map(l => `<div class="tfp-sub">${esc(itemTrail(f, l))} <a href="#" data-act="itemlog" data-id="${esc(l.itemId)}">history</a></div>`).join('')}</div>`;
     });
     if (!Object.keys(state.txs).length) return h + '<div class="tfp-msg">Nothing imported yet. Tap Sync to read your Torn log.</div>';
     if (!flips.length) return h + '<div class="tfp-msg">No flips in this time range. Flips appear once you sell items you bought.</div>';
