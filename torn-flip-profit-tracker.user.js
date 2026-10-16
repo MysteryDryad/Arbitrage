@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.125-beta
+// @version      0.1.126-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.125-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.126-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -583,7 +583,7 @@
       if (!m) mine.txs[id] = t; // a record only the other copy has (a page with stale data must not drop it)
       else if (valued(t) && !valued(m)) mine.txs[id] = Object.assign({}, m, { amount: t.amount, src: t.src, gift: t.gift, locked: t.locked, receiptUrl: t.receiptUrl, items: t.items && m.items && t.items.length === m.items.length ? t.items : m.items });
     });
-    ['receipts', 'tradeEnd', 'tradeParts', 'sendParts', 'moneyEvents'].forEach(k => { if (other[k]) mine[k] = Object.assign({}, other[k], mine[k] || {}); });
+    ['receipts', 'tradeEnd', 'tradeParts', 'sendParts', 'moneyEvents', 'listEvents'].forEach(k => { if (other[k]) mine[k] = Object.assign({}, other[k], mine[k] || {}); });
     if (other.w3b) { const w = mine.w3b = mine.w3b || { done: {}, miss: {}, at: {} }; ['done', 'at'].forEach(k => { w[k] = Object.assign({}, other.w3b[k] || {}, w[k] || {}); }); w.miss = w.miss || {}; }
     if ((other.lastSync || 0) > (mine.lastSync || 0) && !mine.resume) mine.lastSync = other.lastSync;
     if (other.pawnhubSince && (!mine.pawnhubSince || other.pawnhubSince < mine.pawnhubSince)) mine.pawnhubSince = other.pawnhubSince;
@@ -805,6 +805,12 @@
           }
           const end = title.match(/^Trade (cancel|expire|decline)/i), eid = end && tradeIdOf(e);
           if (eid) { state.tradeEnd = state.tradeEnd || {}; state.tradeEnd[eid] = { kind: end[1].toLowerCase() === 'cancel' ? 'cancelled' : end[1].toLowerCase() === 'expire' ? 'expired' : 'declined', ts: e.timestamp }; }
+          return;
+        }
+        if (/^Item market (add|remove)$/i.test(title) && e.data) {
+          state.listEvents = state.listEvents || {};
+          const li = pickItems(e.data).map(i => ({ id: i.id, qty: i.qty }));
+          if (li.length) state.listEvents[e.id] = { ts: e.timestamp, kind: /add/i.test(title) ? 'add' : 'remove', items: li };
           return;
         }
         if (/^Item (send|receive)$/i.test(title) && e.data) {
@@ -1276,6 +1282,16 @@
     });
     return h + '<div class="tfp-foot">' + historyNote() + (state.oldestLog ? ' · oldest log entry read ' + fdate(state.oldestLog) : '') + ' · times in TCT</div>';
   }
+  // Units of one item still listed on the item market: listed minus sold minus taken down (an estimate; older listings are not in the log window).
+  function listedNow(id) {
+    const ev = Object.values(state.listEvents || {}).filter(x => x.items.some(i => String(i.id) === String(id)));
+    if (!ev.length) return null;
+    const q = x => x.items.filter(i => String(i.id) === String(id)).reduce((a, i) => a + i.qty, 0);
+    let n = 0;
+    ev.forEach(x => { n += x.kind === 'add' ? q(x) : -q(x); });
+    Object.values(state.txs).forEach(t => { if (t.channel === 'market' && t.dir === 'sell' && t.items && t.ts >= Math.min.apply(null, ev.map(x => x.ts))) n -= t.items.filter(i => String(i.id) === String(id)).reduce((a, i) => a + i.qty, 0); });
+    return Math.max(0, n);
+  }
   // Every buy, sale, send and removal of one item in time order with the running amount in stock, so a shortage can be traced.
   function ledgerHtml() {
     const id = ui.itemLog; if (!id) return '';
@@ -1287,7 +1303,9 @@
       const what = t.channel === 'writeoff' ? 'removed from stock' : buy ? (gift ? 'received as a gift (not stock)' : 'bought') : (gift ? 'given away' : 'sold');
       return `<div class="tfp-sub">${fdate(t.ts)} · ${buy && !gift ? '+' : buy ? '' : '−'}${qty} ${what} (${chanLabel(t.channel)}${tradeTag(t)}) → <b class="${bal < 0 ? 'tfp-warn' : ''}">${bal} in stock</b></div>`;
     });
-    return `<div class="tfp-row"><div class="tfp-top"><b>${esc(nameOf(id))} history</b><a href="#" data-act="itemlogclose">close</a></div>${rows.length ? rows.slice(-40).reverse().join('') : '<div class="tfp-sub">Nothing recorded for this item.</div>'}${rows.length > 40 ? '<div class="tfp-sub">(newest 40 of ' + rows.length + ')</div>' : ''}<div class="tfp-sub">A negative number means more was sold or sent than the tracker saw coming in.</div></div>`;
+    const listed = listedNow(id);
+    const listNote = listed != null ? `<div class="tfp-sub">Still listed on the item market: about ${listed}. Listing does not count as a sale; only units that sell are counted.</div>` : '';
+    return `<div class="tfp-row"><div class="tfp-top"><b>${esc(nameOf(id))} history</b><a href="#" data-act="itemlogclose">close</a></div>${rows.length ? rows.slice(-40).reverse().join('') : '<div class="tfp-sub">Nothing recorded for this item.</div>'}${rows.length > 40 ? '<div class="tfp-sub">(newest 40 of ' + rows.length + ')</div>' : ''}${listNote}<div class="tfp-sub">A negative number means more was sold or sent than the tracker saw coming in.</div></div>`;
   }
   function editBox(tx) {
     const label = tx.dir === 'buy' ? 'Amount paid ($)' : 'Amount received ($)';
@@ -1552,7 +1570,7 @@
       }
       else if (act === 'clearkey') { sset('apikey', ''); state.me = null; save(); ui.msg = 'Key removed from this device.'; }
       else if (act === 'sync' || act === 'resync') {
-        if (act === 'resync') { state.lastSync = 0; state.seenTitles = {}; state.tradeParts = {}; state.sendParts = {}; state.moneyEvents = {}; state.resume = null; save(); }
+        if (act === 'resync') { state.lastSync = 0; state.seenTitles = {}; state.tradeParts = {}; state.sendParts = {}; state.moneyEvents = {}; state.listEvents = {}; state.resume = null; save(); }
         if (ui.busy) return;
         { const d = document.getElementById('tfp-days'); if (d) sset('startDays', Number(d.value) || 30); }
         ui.busy = true; render();
