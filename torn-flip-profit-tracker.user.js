@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.124-beta
+// @version      0.1.125-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.124-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.125-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1143,6 +1143,7 @@
   .tfp-cat .tfp-sub{padding-left:14px}
   .tfp-note{font-size:11px;color:#8a7a4a;margin:6px 0}
   #tfp-card .tfp-note a{color:#a8935a}
+  a.tfp-trow{display:block;color:inherit!important;text-decoration:none;padding:8px 0;border-top:1px solid #333}
   .tfp-foot{color:#777;font-size:11px;margin-top:10px}
   .tfp-sel{width:auto;padding:4px}
   .tfp-ctl{display:flex;gap:6px;align-items:center}
@@ -1198,6 +1199,24 @@
     else if (bought <= usedBefore) out += ' Everything you bought was already used by earlier sales.';
     return out;
   }
+  // A trade row shows only the trade number, how many items and the money. Tap it for the items with quantity and price.
+  function tradeRowHtml(e) {
+    const tx = e.tx, k = 'tx_' + tx.id, open = !!ui[k], n = (tx.items || []).length;
+    const word = { sale: 'Sold', buy: 'Bought', pend: 'Sold', gift: 'Gift', both: 'Items both ways' }[e.kind];
+    const money = e.kind === 'pend' ? '<span class="tfp-warn">needs value</span>' : e.kind === 'both' ? '<span class="tfp-warn">not counted</span>' : e.kind === 'gift' ? '<span class="tfp-sub">gift</span>' : tx.amount == null ? '<span class="tfp-warn">no value</span>' : e.kind === 'buy' ? '<span class="tfp-sub" style="font-size:13px">−' + fmt(tx.amount) + '</span>' : '<b>' + fmt(netAmt(tx)) + '</b>';
+    const profit = e.kind === 'sale' ? ' · <span class="' + pnlCls(e.f.profit) + '">' + (e.f.profit >= 0 ? '+' : '') + fmt(e.f.profit) + '</span>' : '';
+    let h = `<a href="#" class="tfp-trow" data-act="toggle" data-v="${esc(k)}"><div class="tfp-top"><span><span class="tfp-chev">${open ? '▾' : '▸'}</span>${fdate(tx.ts)}${tx.tradeId ? ' · #' + tx.tradeId : ''}${tx.src === 'receipt' ? ' 🧾' : ''}</span>${money}</div><div class="tfp-sub" style="padding-left:14px">${word} · ${n} item${n === 1 ? '' : 's'}${profit}</div></a>`;
+    if (!open) return h;
+    const vals = flipOpts().values || {}, mv = (tx.items || []).map(i => i.qty * (vals[i.id] || 0)), w = mv.every(x => x > 0) ? mv : (tx.items || []).map(i => i.qty), ws = w.reduce((a, x) => a + x, 0) || 1;
+    h += '<div style="padding:2px 0 8px 14px">' + (tx.items || []).map((i, idx) => {
+      const unit = i.price != null ? fmt(i.price) : tx.amount != null && i.qty ? '~' + fmt(Math.round(tx.amount * w[idx] / ws / i.qty)) : '?';
+      return `<div class="tfp-line" style="padding-left:0"><span>${i.qty}× ${esc(i.name || nameOf(i.id))}</span><span>${unit}</span></div>`;
+    }).join('') + '</div>';
+    if (e.kind === 'sale') h += `<div class="tfp-sub" style="padding-left:14px">cost ${costOf(e.f) == null ? '?' : fmt(costOf(e.f))}${e.f.unmatched ? ' · <span class="tfp-warn">' + e.f.unmatched + ' unit(s) had no matching buy</span>' : ''} <a href="#" data-act="edit" data-id="${esc(tx.id)}">✎</a></div>`;
+    if (e.kind === 'pend' || e.kind === 'gift') h += `<div class="tfp-sub" style="padding-left:14px"><a href="#" data-act="edit" data-id="${esc(tx.id)}">✎ set value</a></div>`;
+    if (e.kind === 'pend' || ui.editing === tx.id) h += editBox(tx);
+    return h;
+  }
   function profitHtml() {
     const [cutoff, upto] = rangeBounds(), inR = ts => ts >= cutoff && ts < upto;
     const res = computeFlips(state.txs, flipOpts());
@@ -1234,10 +1253,10 @@
       if (!fs.length && !pend.length && !gifts.length && !(ch === 'trade' && buys.length)) return;
       const cp = fs.reduce((a, f) => a + (f.profit || 0), 0), key = 'cat_' + ch;
       h += `<div class="tfp-cat"><div class="tfp-top"><a href="#" class="tfp-cat-h" data-act="toggle" data-v="${key}"><span class="tfp-chev">${ui[key] ? '▾' : '▸'}</span><b>${label}</b><div class="tfp-sub">${fs.length + pend.length} sale${fs.length + pend.length === 1 ? '' : 's'}${pend.length ? ' · <span class="tfp-warn">' + pend.length + ' need a value</span>' : ''}${gifts.length ? ' · ' + gifts.length + ' gifted' : ''}${buys.length ? ' · ' + buys.length + ' bought' : ''}</div></a><b class="${pnlCls(cp)}" style="font-size:15px">${fmt(cp)}</b></div>`;
-      if (ui[key]) pend.forEach(tx => { h += `<div class="tfp-gap"></div><div class="tfp-top"><span>${fdate(tx.ts)} ⚠️</span><span class="tfp-warn">needs value</span></div><div class="tfp-sub">${itemSummary(tx)}${tx.cp ? ' · player ' + esc(tx.cp) : ''}${tx.title ? ' · ' + esc(tx.title) : ''}</div>` + editBox(tx); });
-      if (ui[key]) gifts.forEach(tx => { h += `<div class="tfp-gap"></div><div class="tfp-top"><span>${fdate(tx.ts)} 🎁</span><span class="tfp-sub">gift · not counted</span></div><div class="tfp-sub">${itemSummary(tx)}${tx.cp ? ' · player ' + esc(tx.cp) : ''} <a href="#" data-act="edit" data-id="${esc(tx.id)}">✎</a></div>` + (ui.editing === tx.id ? editBox(tx) : ''); });
-      if (ui[key] && buys.length) { h += '<div class="tfp-gap"></div><div class="tfp-sub"><b>Bought</b> (cost goes against later sales)</div>'; buys.slice(0, 60).forEach(t => { h += `<div class="tfp-top"><span>${fdate(t.ts)}${tradeTag(t)}${t.src === 'receipt' ? ' 🧾' : ''}</span><span>${t.amount == null ? '<span class="tfp-warn">no value</span>' : fmt(t.amount)}</span></div><div class="tfp-sub">${itemSummary(t)}${t.cp ? ' · ' + (ch === 'trade' ? 'trade with' : ch === 'bazaar' ? 'bazaar seller' : ch === 'market' ? 'market seller' : 'from') + ' player ' + esc(t.cp) : (ch === 'market' ? ' · market (seller hidden)' : '')}</div>`; }); if (buys.length > 60) h += '<div class="tfp-sub">(newest 60 of ' + buys.length + ')</div>'; h += '<div class="tfp-gap"></div>'; }
-      if (ui[key]) fs.forEach(f => {
+      if (ui[key] && ch !== 'trade') pend.forEach(tx => { h += `<div class="tfp-gap"></div><div class="tfp-top"><span>${fdate(tx.ts)} ⚠️</span><span class="tfp-warn">needs value</span></div><div class="tfp-sub">${itemSummary(tx)}${tx.cp ? ' · player ' + esc(tx.cp) : ''}${tx.title ? ' · ' + esc(tx.title) : ''}</div>` + editBox(tx); });
+      if (ui[key] && ch !== 'trade') gifts.forEach(tx => { h += `<div class="tfp-gap"></div><div class="tfp-top"><span>${fdate(tx.ts)} 🎁</span><span class="tfp-sub">gift · not counted</span></div><div class="tfp-sub">${itemSummary(tx)}${tx.cp ? ' · player ' + esc(tx.cp) : ''} <a href="#" data-act="edit" data-id="${esc(tx.id)}">✎</a></div>` + (ui.editing === tx.id ? editBox(tx) : ''); });
+      if (ui[key] && ch !== 'trade' && buys.length) { h += '<div class="tfp-gap"></div><div class="tfp-sub"><b>Bought</b> (cost goes against later sales)</div>'; buys.slice(0, 60).forEach(t => { h += `<div class="tfp-top"><span>${fdate(t.ts)}${tradeTag(t)}${t.src === 'receipt' ? ' 🧾' : ''}</span><span>${t.amount == null ? '<span class="tfp-warn">no value</span>' : fmt(t.amount)}</span></div><div class="tfp-sub">${itemSummary(t)}${t.cp ? ' · ' + (ch === 'trade' ? 'trade with' : ch === 'bazaar' ? 'bazaar seller' : ch === 'market' ? 'market seller' : 'from') + ' player ' + esc(t.cp) : (ch === 'market' ? ' · market (seller hidden)' : '')}</div>`; }); if (buys.length > 60) h += '<div class="tfp-sub">(newest 60 of ' + buys.length + ')</div>'; h += '<div class="tfp-gap"></div>'; }
+      if (ui[key] && ch !== 'trade') fs.forEach(f => {
         const tx = f.tx;
         let flag = '';
         if (f.unmatched) flag += ` <span class="tfp-warn">⚠️ ${f.unmatched} unit(s) had no matching buy</span>`;
@@ -1246,6 +1265,13 @@
           <div class="tfp-sub">${itemSummary(tx)} · ${gotWord(tx)} ${fmt(netAmt(tx))} · cost ${costOf(f) == null ? '?' : fmt(costOf(f))} <a href="#" data-act="edit" data-id="${esc(tx.id)}">✎</a>${flag}</div>`;
         if (ui.editing === tx.id) h += editBox(tx);
       });
+      if (ui[key] && ch === 'trade') {
+        // One newest-first list: purchases, sales and anything that needs a look, each a single row (tap to see the items).
+        const both = res.pending.filter(t => t.channel === 'trade' && !t.dir && inR(t.ts));
+        const entries = [].concat(fs.map(f => ({ tx: f.tx, kind: 'sale', f })), pend.map(tx => ({ tx, kind: 'pend' })), gifts.map(tx => ({ tx, kind: 'gift' })), buys.map(tx => ({ tx, kind: 'buy' })), both.map(tx => ({ tx, kind: 'both' }))).sort((a, b) => b.tx.ts - a.tx.ts);
+        entries.slice(0, 80).forEach(e => { h += tradeRowHtml(e); });
+        if (entries.length > 80) h += '<div class="tfp-sub">(newest 80 of ' + entries.length + ' in this range)</div>';
+      }
       h += '</div>';
     });
     return h + '<div class="tfp-foot">' + historyNote() + (state.oldestLog ? ' · oldest log entry read ' + fdate(state.oldestLog) : '') + ' · times in TCT</div>';
