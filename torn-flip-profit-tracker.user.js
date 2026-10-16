@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.126-beta
+// @version      0.1.127-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.126-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.127-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -573,7 +573,7 @@
   let itemValues = sget('itemvals', null) || {};
   let lastRaw = [];
   let lastSyncInfo = null;
-  const ui = { open: false, tab: 'profit', items: false, breakdown: false, more: false, showPending: false, range: (r => ['today', 'yesterday', 'custom'].includes(r) ? r : [1, 7, 30, 90, 0].includes(Number(r)) ? Number(r) : 30)(sget('range', 30)), from: sget('rangeFrom', ''), to: sget('rangeTo', ''), editing: null, msg: '', pendingReceipt: null, candidates: [], busy: false };
+  const ui = { open: false, tab: 'profit', items: false, breakdown: false, more: false, showPending: false, range: (r => ['today', 'yesterday', 'custom'].includes(r) ? r : [1, 7, 30, 90, 0].includes(Number(r)) ? Number(r) : 30)(sget('range', 30)), from: sget('rangeFrom', ''), to: sget('rangeTo', ''), editing: null, msg: '', pendingReceipt: null, candidates: [], busy: false, hideWarn: !!sget('hideWarn', false) };
   // Several Torn pages (and your phone's page cache) can hold their own copy of the data. Before one overwrites the other, fold in what the other copy has that this one lacks, so a value from a receipt or Balance import can never be lost to a stale copy.
   const valued = t => t && (t.locked || t.src === 'receipt' || t.src === 'manual') && t.amount != null;
   function mergeState(mine, other) {
@@ -1235,11 +1235,11 @@
       ${rangeDates()}
       <div class="tfp-stats"><div class="tfp-stat"><span>Sold for</span><b>${fmt(revenue)}</b></div><div class="tfp-stat"><span>Cost</span><b>${fmt(cost)}</b></div><div class="tfp-stat"><span>${done.length} flip${done.length === 1 ? '' : 's'}</span><b>${cost > 0 ? (profit / cost * 100).toFixed(1) + '% return' : '–'}</b></div></div>`;
     const skipped = flips.filter(f => f.profit == null);
-    if (res.pending.length || skipped.length) {
+    if ((res.pending.length || skipped.length) && !ui.hideWarn) {
       const bits = [];
       if (res.pending.length) bits.push(`<a href="#" data-act="toggle" data-v="showPending">${res.pending.length} need a value ${ui.showPending ? '▾' : '▸'}</a>`);
       if (skipped.length) bits.push(`<a href="#" data-act="toggle" data-v="showSkipped">${skipped.length} not counted ${ui.showSkipped ? '▾' : '▸'}</a>`);
-      h += '<div class="tfp-note">⚠️ ' + bits.join(' · ') + '</div>';
+      h += '<div class="tfp-note">⚠️ ' + bits.join(' · ') + ' · <a href="#" data-act="hidewarn">hide</a></div>';
       if (res.pending.length && ui.showPending) h += pendingHtml();
     }
     if (skipped.length && ui.showSkipped) skipped.forEach(f => {
@@ -1396,7 +1396,7 @@
     return out;
   }
   function settingsMore() {
-    return `<div class="tfp-row"><b>Backup</b><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-bk" placeholder="Export fills this box. Paste a backup here to import."></textarea><div class="tfp-gap"></div>
+    return `<div class="tfp-row"><b>Warnings</b><div class="tfp-sub">The "need a value / not counted" notice on the Profit tab.</div><div class="tfp-gap"></div><button class="tfp-b" data-act="hidewarn">${ui.hideWarn ? 'Show the warning' : 'Hide the warning'}</button>${ui.hideWarn ? (() => { const r = computeFlips(state.txs, flipOpts()); const n = r.flips.filter(f => f.profit == null).length; return '<div class="tfp-sub">Hidden now: ' + r.pending.length + ' need a value, ' + n + ' not counted.</div>'; })() : ''}</div><div class="tfp-row"><b>Backup</b><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-bk" placeholder="Export fills this box. Paste a backup here to import."></textarea><div class="tfp-gap"></div>
       <button class="tfp-b" data-act="export">Export</button> <button class="tfp-b" data-act="import">Import</button></div>
       <div class="tfp-row"><b>Troubleshooting</b><div class="tfp-gap"></div><input class="tfp-in" id="tfp-tq" inputmode="numeric" placeholder="Look up a trade number"><div class="tfp-gap"></div><button class="tfp-b" data-act="tradelookup">Look up trade</button> <button class="tfp-b" data-act="profitaudit">Check profit</button>${ui.audit ? ui.audit.map(l => '<div class="tfp-sub" style="color:#ccc">' + esc(l) + '</div>').join('') : ''}${ui.tradeInfo ? ui.tradeInfo.map(l => '<div class="tfp-sub" style="color:#ccc">' + esc(l) + '</div>').join('') : ''}<div class="tfp-gap"></div><button class="tfp-b" data-act="debug">Copy debug sample</button> <button class="tfp-b" data-act="resync">Re-sync from start</button></div>`;
   }
@@ -1407,7 +1407,7 @@
     const card = document.getElementById('tfp-card');
     if (!card) return;
     const needs = computeFlips(state.txs, flipOpts()).pending.length;
-    const tabs = [['profit', 'Profit' + (needs ? ' ⚠️' : '')], ['receipts', 'Receipts'], ['settings', 'Settings']];
+    const tabs = [['profit', 'Profit' + (needs && !ui.hideWarn ? ' ⚠️' : '')], ['receipts', 'Receipts'], ['settings', 'Settings']];
     const away = ui.tab !== 'profit' || ui.itemLog || ui.editing, back = ui.nav && ui.nav.length;
     card.innerHTML = `<div class="tfp-h"><span>${back ? '<button class="tfp-b" data-act="back">‹ Back</button> ' : ''}${away ? '<button class="tfp-b" data-act="home">⌂ Home</button> ' : ''}<b>💰 Arbitrage</b> <span class="tfp-sub">v${VERSION}</span></span><button class="tfp-b" data-act="close">✕</button></div>
       <div class="tfp-tabs">${tabs.map(t => `<button class="tfp-tab ${ui.tab === t[0] ? 'on' : ''}" data-act="tab" data-v="${t[0]}">${t[1]}</button>`).join('')}</div>
@@ -1491,7 +1491,7 @@
     const el = e.target.closest('[data-act]');
     if (!el) return;
     const act = el.dataset.act, id = el.dataset.id, v = el.dataset.v;
-    if (act === 'edit' || act === 'toggle' || act === 'pawnoff' || act === 'itemlog' || act === 'itemlogclose') e.preventDefault();
+    if (act === 'edit' || act === 'toggle' || act === 'hidewarn' || act === 'pawnoff' || act === 'itemlog' || act === 'itemlogclose') e.preventDefault();
     ui.msg = '';
     if (act !== 'giftall') ui.armGift = false;
     if (act !== 'giftolder') ui.armOlder = false;
@@ -1504,6 +1504,7 @@
       else if (act === 'rangefrom') { ui.from = el.value; if (!ui.to || ui.to < ui.from) ui.to = ui.from; sset('rangeFrom', ui.from); sset('rangeTo', ui.to); }
       else if (act === 'rangeto') { ui.to = el.value; if (ui.from && ui.to < ui.from) ui.from = ui.to; sset('rangeFrom', ui.from); sset('rangeTo', ui.to); }
       else if (act === 'toggle') ui[v] = !ui[v];
+      else if (act === 'hidewarn') { ui.hideWarn = !ui.hideWarn; sset('hideWarn', ui.hideWarn); ui.msg = ui.hideWarn ? 'Warning hidden. Bring it back in Settings > Warnings.' : ''; }
       else if (act === 'itemlog') { navPush(); ui.itemLog = id; card0().scrollTop = 0; }
       else if (act === 'itemlogclose') ui.itemLog = null;
       else if (act === 'clearval') { const tx = state.txs[id]; tx.amount = null; tx.gift = false; tx.src = null; tx.locked = false; ui.editing = null; save(); }
