@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.140-beta
+// @version      0.1.141-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.140-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.141-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -282,7 +282,7 @@
     const sends = Object.values(txsObj).filter(t => t.channel === 'send' && t.dir === 'sell' && t.src !== 'receipt' && t.items && t.items.length === 1);
     const used = new Set(), out = [];
     events.slice().sort((a, b) => a.ts - b.ts).forEach(ev => {
-      const id = byName[String(ev.item).toLowerCase()];
+      const id = ev.itemId || byName[String(ev.item).toLowerCase()];
       if (!id) return;
       let best = null;
       sends.forEach(t => {
@@ -739,6 +739,7 @@
     try { if ((await inboxGet()).length) await processInbox(true); } catch (e) { /* receipts stay queued */ }
     let pawn = null, pawnErr = '';
     if (!IS_PDA_ENV && hasGM && sget('pawnhubAuto', false)) { try { pawn = await readPawnHubBalance(); } catch (e) { pawnErr = String(e.message || e).slice(0, 120); } }
+    if (usesPH() && sget('phkey', '')) { try { pawn = await readPawnHubApi(); } catch (e) { pawnErr = String(e.message || e).slice(0, 120); } }
     if (sget('w3bkey', '')) {
       try {
         for (let round = 0; round < 15; round++) { last = await weaverImport(); att += last.attached; if (!last.left) break; }
@@ -900,12 +901,13 @@
     await ensureItems();
     rebuildSendTxs();
     const byName = {}; Object.entries(itemNames).forEach(([id, n]) => { byName[String(n).toLowerCase()] = Number(id); });
+    const idFor = e => e.itemId || byName[String(e.item).toLowerCase()];
     const hits = matchPawnHubEvents(rc.events, state.txs, byName);
     hits.forEach(({ txId, event }) => {
       const t = state.txs[txId];
       t.items[0].price = event.unit; t.amount = event.total; t.gift = false; t.src = 'receipt'; t.locked = true; t.receiptUrl = rc.url;
     });
-    const itemEv = rc.events.filter(e => byName[String(e.item).toLowerCase()]);
+    const itemEv = rc.events.filter(e => idFor(e));
     const earliest = itemEv.length ? Math.min.apply(null, itemEv.map(e => e.ts)) : null;
     if (earliest && (!state.pawnhubSince || earliest < state.pawnhubSince)) state.pawnhubSince = earliest;
     save();
@@ -913,7 +915,7 @@
     const itemEvents = itemEv.length;
     const matched = new Set(hits.map(h => h.event));
     const sends1 = Object.values(state.txs).filter(t => t.channel === 'send' && t.dir === 'sell' && t.items && t.items.length === 1);
-    const near = e => sends1.filter(t => t.items[0].id === byName[String(e.item).toLowerCase()] && t.items[0].qty === e.qty).sort((a, b) => Math.abs(a.ts - e.ts) - Math.abs(b.ts - e.ts))[0];
+    const near = e => sends1.filter(t => t.items[0].id === idFor(e) && t.items[0].qty === e.qty).sort((a, b) => Math.abs(a.ts - e.ts) - Math.abs(b.ts - e.ts))[0];
     // An event whose send already carries the same value was applied earlier (or the page lists it twice): not a failure.
     const done = e => { const t = near(e); return !!t && t.src === 'receipt' && t.amount === e.total && Math.abs(t.ts - e.ts) <= 600; };
     const rest = itemEv.filter(e => !matched.has(e) && !done(e));
@@ -1077,6 +1079,25 @@
     sset('pawnhubAuto', true);
     const m = msg.match(/valued (\d+)/);
     return { text: msg, valued: m ? Number(m[1]) : 0 };
+  }
+  // PawnHub's own API (key = the Torn key you log in to PawnHub with; sent only to z0cl.eu): the same payments as the Balance page, with item ids and exact times.
+  async function readPawnHubApi() {
+    const key = sget('phkey', ''); if (!key) throw new Error('Add your PawnHub key in Settings first.');
+    const clean = t => String(t == null ? '' : t).split(key).join('***');
+    let r;
+    try { r = await httpRetry('https://z0cl.eu/PawnHub/api.php?selections=balance_events&key=' + encodeURIComponent(key), { Accept: 'application/json' }); }
+    catch (e) { throw new Error('Could not reach PawnHub: ' + clean(e && e.message).slice(0, 100)); }
+    let j; try { j = JSON.parse(r.text); } catch (e) { throw new Error('PawnHub did not return data (HTTP ' + (r && r.status) + '). Check the key in Settings.'); }
+    if (j && j.error) throw new Error('PawnHub: ' + clean(typeof j.error === 'string' ? j.error : (j.error.message || JSON.stringify(j.error))).slice(0, 100));
+    const evs = j && j.balance_events && j.balance_events.events;
+    if (!Array.isArray(evs)) throw new Error('PawnHub answered, but without payment rows. Check the key in Settings.');
+    state.phApiSample = { keys: Object.keys(j || {}), eventKeys: Object.keys(j.balance_events || {}), rows: evs.length, eventCount: j.balance && j.balance.event_count != null ? j.balance.event_count : null };
+    const events = evs.filter(e => Number(e.item_id) > 0 && /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(String(e.created_at || ''))).map(e => ({ id: e.id, ts: Date.parse(String(e.created_at).replace(' ', 'T').replace(/Z?$/, 'Z')) / 1000, itemId: Number(e.item_id), item: e.item_name, role: e.member_role, qty: Number(e.quantity), unit: Number(e.unit_price), total: Number(e.total_value) })).filter(e => e.qty > 0 && isFinite(e.unit) && isFinite(e.total) && isFinite(e.ts));
+    if (!events.length) return { text: 'PawnHub: no item payments in the reply.', valued: 0 };
+    const msg = await applyPawnHubBalance({ source: 'pawnhub-balance', url: 'https://z0cl.eu/PawnHub/balance.php', events, total: events.reduce((a, e) => a + e.total, 0) });
+    state.phAt = Math.floor(Date.now() / 1000); save();
+    const m = msg.match(/valued (\d+)/);
+    return { text: msg.replace('The Balance page starts', "PawnHub's list starts"), valued: m ? Number(m[1]) : 0 };
   }
   async function addReceiptInput(text) {
     text = (text || '').trim();
@@ -1476,7 +1497,7 @@
   function receiptsHtml() {
     const li = state.lastInbox, hasW = !!sget('w3bkey', '');
     let h = `<div class="tfp-cat"><div class="tfp-dl"><span>Weaver (TornW3B)</span><span class="${hasW ? 'tfp-pos' : 'tfp-warn'}">${hasW ? 'connected ✓' : 'not connected (add a key in Settings)'}</span></div>
-      ${usesPH() ? '<div class="tfp-dl"><span>PawnHub Balance</span><span>' + (state.pawnhubSince ? '<span class="tfp-pos">read</span> · from ' + fdate(state.pawnhubSince) : 'open the Balance page in Torn to read it') + '</span></div>' : ''}
+      ${usesPH() ? '<div class="tfp-dl"><span>PawnHub</span><span>' + (sget('phkey', '') ? (state.phAt ? '<span class="tfp-pos">key connected</span> · read ' + fdate(state.phAt) : 'key saved, not read yet') : state.pawnhubSince ? '<span class="tfp-pos">read</span> · from ' + fdate(state.pawnhubSince) : 'open the Balance page in Torn to read it') + '</span></div>' : ''}
       <div class="tfp-dl"><span>TornExchange</span><span>by link</span></div>${li ? '<div class="tfp-sub">Last receipt added ' + fdate(li.at) + (li.msg ? ': ' + esc(li.msg) : '') + '</div>' : ''}</div>`;
     { const wl = ui.inboxList || [], dd = state.lastSyncDetail && state.lastSyncDetail.weaver, wm = dd && dd.match(/not found in your log \((.*)\)\. TornW3B lists/), cnt = wl.length + (wm ? 1 : 0);
       if (cnt) {
@@ -1518,9 +1539,11 @@
       <tr><td>Key needs</td><td>Custom key: user basic, user log, torn items.</td></tr>
       <tr><td>Player names</td><td>Looked up once with your key when you open a row, then kept here.</td></tr>
       <tr><td>TornW3B key</td><td>Optional, for Weaver receipts. Stored here, sent only to weav3r.dev.</td></tr>
-      <tr><td>PawnHub</td><td>Optional. Read only when you open a receipt or the Balance page. Nothing is sent to PawnHub.</td></tr></table>
+      <tr><td>PawnHub</td><td>Optional. Read when you open a receipt or the Balance page. If you add a PawnHub key (the Torn key you log in to PawnHub with), it is stored here and sent only to z0cl.eu. Without it, nothing is sent to PawnHub.</td></tr></table>
 `;
-    const phBox = `<div class="tfp-row"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-act="useph" ${usesPH() ? 'checked' : ''}> <b>I use PawnHub</b></label><div class="tfp-sub">${usesPH() ? 'Item sends are valued from PawnHub (Balance page, or your PawnHub key). Sends it can\'t value show under Needs attention.' : 'Item sends are left empty: they leave your stock but are not counted in profit and never show under Needs attention.'}</div></div>`;
+    const hasPH = !!sget('phkey', '');
+    const phKey = usesPH() ? `<div class="tfp-sub" style="margin-top:8px">PawnHub key (optional). Paste the Torn API key you use to log in to PawnHub. It is stored only on this device and sent only to PawnHub (z0cl.eu), like logging in there. Leave it empty and nothing is sent to PawnHub. A key with just "user basic" ticked is enough.</div><input class="tfp-in" id="tfp-phkey" type="password" autocomplete="off" placeholder="${hasPH ? 'PawnHub key saved (hidden). Paste a new one to replace.' : 'Paste your PawnHub key'}"><div class="tfp-gap"></div><button class="tfp-b" data-act="savephkey">Save PawnHub key</button> ${hasPH ? '<button class="tfp-b" data-act="clearphkey">Remove</button> <button class="tfp-b" data-act="phapi">' + (ui.busy ? 'Reading…' : 'Read PawnHub now') + '</button>' : ''}` : '';
+    const phBox = `<div class="tfp-row"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-act="useph" ${usesPH() ? 'checked' : ''}> <b>I use PawnHub</b></label><div class="tfp-sub">${usesPH() ? 'Item sends are valued from PawnHub (Balance page, or your PawnHub key). Sends it can\'t value show under Needs attention.' : 'Item sends are left empty: they leave your stock but are not counted in profit and never show under Needs attention.'}</div>${phKey}</div>`;
     return `${inboxHtml()}${keyBox}${phBox}<div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
       <input class="tfp-in" id="tfp-days" data-act="setting" inputmode="numeric" value="${esc(sget('startDays', 30))}">
       <div class="tfp-sub">Sync from the Profit tab. Last sync: ${state.syncedAt || state.lastSync ? fdate(state.syncedAt || state.lastSync) : 'never'} · ${Object.keys(state.txs).length} records</div>
@@ -1682,6 +1705,18 @@
       else if (act === 'itemlogclose') ui.itemLog = null;
       else if (act === 'clearval') { const tx = state.txs[id]; tx.amount = null; tx.gift = false; tx.src = null; tx.locked = false; ui.editing = null; save(); }
       else if (act === 'useph') { sset('usePH', !!el.checked); ui.msg = el.checked ? 'PawnHub on: sends are valued from PawnHub.' : 'PawnHub off: item sends are left empty.'; }
+      else if (act === 'savephkey') {
+        const k = val('tfp-phkey').trim();
+        if (!/^[A-Za-z0-9_-]{8,64}$/.test(k)) throw new Error('That does not look like a Torn API key.');
+        sset('phkey', k); ui.msg = 'PawnHub key saved on this device. Tap Read PawnHub now, or Sync.';
+      }
+      else if (act === 'clearphkey') { sset('phkey', ''); ui.msg = 'PawnHub key removed from this device.'; }
+      else if (act === 'phapi') {
+        if (ui.busy) return;
+        ui.busy = true; render();
+        try { const r = await readPawnHubApi(); ui.msg = r.text; if (r.valued) toast(r.valued + ' PawnHub payment' + (r.valued === 1 ? '' : 's') + ' matched'); }
+        finally { ui.busy = false; }
+      }
       else if (act === 'savew3b') {
         const k = val('tfp-w3b').trim();
         if (!/^[A-Za-z0-9_-]{8,64}$/.test(k)) throw new Error('That does not look like a TornW3B key.');
@@ -1766,7 +1801,7 @@
       else if (act === 'debug') {
         const tb = document.querySelector('#topHeaderBanner .toolbar, .header-buttons-wrapper');
         let cats = null; try { cats = await api('torn/logcategories'); } catch (e) { cats = String(e.message || e); }
-        const sample = { version: VERSION, itemSample: state.itemSample || null, nameSample: state.nameSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, lastSyncDetail: state.lastSyncDetail || null, inboxWaiting: ui.inboxN || 0, nativeStorage: !!nat(), lastInbox: state.lastInbox || null, lastInboxDetail: state.lastInboxDetail || null, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
+        const sample = { version: VERSION, itemSample: state.itemSample || null, nameSample: state.nameSample || null, phApiSample: state.phApiSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, lastSyncDetail: state.lastSyncDetail || null, inboxWaiting: ui.inboxN || 0, nativeStorage: !!nat(), lastInbox: state.lastInbox || null, lastInboxDetail: state.lastInboxDetail || null, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
         const ok = await copyText(JSON.stringify(sample, null, 1));
         ui.msg = ok ? 'Debug sample copied. Paste it to Claude.' : 'Could not copy. Sync first, then try again.';
       }
