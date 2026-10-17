@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.136-beta
+// @version      0.1.137-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -32,7 +32,7 @@
  * Privacy and safety
  * - Read-only: it never performs game actions, clicks or purchases for you.
  * - Your data (trade history, settings, keys) is stored only on this device (script storage / browser storage).
- * - Your Torn API key (it needs access to your log: a Full Access key, or a Custom key with the log ticked) is sent only to api.torn.com. A TornW3B key, if you add one, is sent only to weav3r.dev.
+ * - Your Torn API key (a Custom key with just the selections this script reads: user basic and log, torn items; Full Access also works but is not needed) is sent only to api.torn.com. A TornW3B key, if you add one, is sent only to weav3r.dev.
  * - Receipt pages (tornexchange.com, weav3r.dev, z0cl.eu) are read only in your own browser when you open them; nothing is uploaded anywhere.
  * - Backup/restore is in Settings > Backup & troubleshooting. Deleting the key in Torn settings revokes access at once.
  *
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.136-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.137-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -659,13 +659,14 @@
 
   /* ===================== Torn API ===================== */
   function getKey() { return (sget('apikey', '') || '') || (IN_PDA ? PDA_KEY : ''); }
+  const KEYURL = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Arbitrage&user=basic,log&torn=items,logcategories';
   async function apiUrl(url) {
     const key = getKey();
     if (!key) throw new Error('No API key set (Settings tab).');
     const u = url + (url.includes('?') ? '&' : '?') + (/[?&]key=/.test(url) ? '' : 'key=' + encodeURIComponent(key));
     const r = await httpRetry(u);
     let j; try { j = JSON.parse(r.text); } catch (e) { throw new Error('Bad API response (HTTP ' + (r && r.status) + ')'); }
-    if (j && j.error && j.error.code === 16) throw new Error('Your API key does not have enough access. Reading your log needs a Full Access key, or a Custom key with the log selection ticked; a Limited Access key is refused (Torn > Settings > API Key). Add your own key in Settings.');
+    if (j && j.error && j.error.code === 16) throw new Error('Your API key does not have enough access. Reading your log needs a Custom key with the user log ticked (Settings > Create the key for me), or a Full Access key; a Limited Access key is refused.');
     if (j && j.error && j.error.code === 2) throw new Error('Torn rejected the API key as incorrect. Check it in Settings.');
     if (j && j.error && j.error.code === 5) { const er = new Error('Torn is limiting requests (too many in one minute). Progress is saved and will continue on the next sync.'); er.rate = true; throw er; }
     if (j && j.error) { const er = new Error('Torn API: ' + (j.error.error || j.error.code) + ' (code ' + j.error.code + ')'); er.code = j.error.code; throw er; }
@@ -1506,7 +1507,7 @@
   }
   function settingsHtml() {
     const own = !!sget('apikey', '');
-    const keyBox = `<div class="tfp-sub">Torn API key${IN_PDA && !own ? ' (currently using the Torn PDA key; add your own if it lacks log access)' : ''}. Needs a Full Access key, or a Custom key that includes your log (Limited Access is not enough).</div>
+    const keyBox = `<div class="tfp-sub">Torn API key${IN_PDA && !own ? ' (currently using the Torn PDA key; add your own if it lacks log access)' : ''}. Use a Custom key with only what this script reads (your basic info, your log, the item list). <a href="${esc(KEYURL)}">Create that key for me ↗</a> opens Torn's key page already filled in: just tap Create there, copy the key and paste it below. Full Access also works but is not needed; Limited is not enough.</div>
       <input class="tfp-in" id="tfp-key" type="password" autocomplete="off" placeholder="${own ? 'Key saved (hidden). Paste a new one to replace.' : 'Paste your key'}"><div class="tfp-gap"></div>
       <button class="tfp-b" data-act="savekey">Save key</button> ${own ? '<button class="tfp-b" data-act="clearkey">Remove key</button>' : ''}
       <table class="tfp-disc"><tr><td>Data storage</td><td>Your trade history and settings are kept only on this device.</td></tr>
@@ -1517,7 +1518,7 @@
       <tr><td>TornW3B key</td><td>Optional. Only if you add one for Weaver receipts: stored on this device, sent only to weav3r.dev. Your Torn key never goes there.</td></tr>
       <tr><td>PawnHub</td><td>Optional. In desktop browsers, "Read PawnHub Balance now" lets Sync load your own Balance page (z0cl.eu) in a hidden frame, like opening it yourself. In Torn PDA, open the Balance page yourself and it hands itself over. Nothing is sent to PawnHub.</td></tr>
       <tr><td>Player names</td><td>When you open a trade or market row, the name of that player is looked up once with your Torn key (api.torn.com only) and kept on this device.</td></tr>
-      <tr><td>Key access level</td><td>Full Access, or a Custom key with the log ticked. Torn does not give the log to a Limited key. The script only reads; it never acts.</td></tr></table>
+      <tr><td>Key access level</td><td>A Custom key with only: user basic, user log, torn items (and torn log categories for the debug sample). Torn does not give the log to a Limited key. The script only reads; it never acts.</td></tr></table>
       <div class="tfp-sub">Tip: make a separate key just for this script. Deleting it in Torn settings revokes access at once.</div>`;
     return `${inboxHtml()}${keyBox}<div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
       <input class="tfp-in" id="tfp-days" data-act="setting" inputmode="numeric" value="${esc(sget('startDays', 30))}">
