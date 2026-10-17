@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.133-beta
+// @version      0.1.135-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.133-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.135-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1127,6 +1127,7 @@
   .tfp-rng{display:flex;gap:6px;overflow-x:auto;padding:4px 0 8px}
   .tfp-rc{white-space:nowrap;border:1px solid #444;background:#2a2a2a;color:#aaa;border-radius:999px;padding:5px 11px;font-size:12.5px;cursor:pointer}
   .tfp-rc.on{background:#3b6fd1;border-color:#3b6fd1;color:#fff}
+  .tfp-hsync{display:none}
   .tfp-prow{display:flex;justify-content:space-between;align-items:flex-end}
   .tfp-day{display:flex;justify-content:space-between;padding:12px 0 4px;font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:#999}
   .tfp-day b{font-size:12px}
@@ -1140,7 +1141,23 @@
   .tfp-dl.sep{border-top:1px solid #2e2e2e;margin-top:4px;padding-top:5px}
   .tfp-hdr{font-size:11px;color:#999;text-transform:uppercase;letter-spacing:.04em;margin:6px 0 2px}
   a.tfp-more{display:block;text-align:center;padding:12px;border-top:1px solid #333}
-  .tfp-graph{margin:6px 0 2px;display:block;touch-action:pan-y}.tfp-axis{display:flex;justify-content:space-between;color:#999;font-size:11px}
+  .tfp-graph{margin:6px 0 2px;display:block;touch-action:pan-y}
+  @media (min-width:820px){
+    #tfp-wrap{background:rgba(0,0,0,.62);align-items:center}
+    #tfp-card{max-width:1040px;height:min(92vh,900px);border-radius:14px;border:1px solid #3a3a3a;font-size:14px;box-shadow:0 12px 40px rgba(0,0,0,.6)}
+    .tfp-nav{order:1;border-top:0;border-bottom:1px solid #333;padding:0 16px;gap:4px}
+    .tfp-nav button{flex:none;display:flex;gap:7px;align-items:center;padding:10px 16px;font-size:13.5px;border-bottom:2px solid transparent}
+    .tfp-nav button.on{border-bottom-color:#6fa3ff}
+    .tfp-nav i{display:inline;font-size:16px}.tfp-bdg{position:static;margin-left:6px}
+    .tfp-body{order:2;padding:14px 24px 80px}
+    .tfp-hd{padding:12px 24px 6px}
+    .tfp-fab{display:none}.tfp-hsync{display:inline-block!important;background:#3b6fd1!important;border-color:#3b6fd1!important}
+    .tfp-two{display:grid;grid-template-columns:minmax(320px,380px) 1fr;gap:28px;align-items:start}
+    .tfp-colL{position:sticky;top:0}
+    .tfp-big{font-size:34px}
+    a.tfp-tl:hover,a.tfp-ir:hover,a.tfp-more:hover{background:#262626}.tfp-rc:not(.on):hover{background:#333}.tfp-b:not(.tfp-hsync):hover{background:#383838}
+    .tfp-det{margin-left:52px}
+  }.tfp-axis{display:flex;justify-content:space-between;color:#999;font-size:11px}
   .tfp-seg{display:flex;background:#262626;border-radius:10px;padding:3px;margin:8px 0}.tfp-seg span{flex:1;text-align:center;padding:6px 0;border-radius:8px;color:#999;font-size:12.5px;cursor:pointer}.tfp-seg span.on{background:#3a4152;color:#eee}
   a.tfp-ir,div.tfp-ir{display:block;padding:9px 0;border-top:1px solid #333;color:inherit!important;text-decoration:none}
   .tfp-bar{height:8px;background:#2b303b;border-radius:6px;margin-top:6px;overflow:hidden}.tfp-bar i{display:block;height:100%;border-radius:6px}
@@ -1149,7 +1166,7 @@
   .tfp-tabs{display:flex;gap:6px;margin-bottom:10px;overflow-x:auto}
   .tfp-tabs .tfp-tab{flex:1;white-space:nowrap;padding:8px 6px;text-align:center}
   .tfp-tab,.tfp-b{background:#2d2d2d;color:#eee;border:1px solid #444;border-radius:10px;padding:8px 12px;cursor:pointer;font-size:13px}
-  .tfp-tab.on{background:#3b6fd1;border-color:#3b6fd1}
+  .tfp-tab.on{background:#3b6fd1!important;border-color:#3b6fd1!important}
   .tfp-row{border-top:1px solid #333;padding:8px 0}
   .tfp-top{display:flex;justify-content:space-between;gap:8px}
   .tfp-sub{color:#999;font-size:12px;margin-top:2px}
@@ -1328,7 +1345,8 @@
     let h = `${rangeChips()}${rangeDates()}<div class="tfp-sub" style="margin:0">Profit · ${esc(rangeCaption())}</div><div class="tfp-prow"><div class="tfp-big ${pnlCls(profit)}">${fmt(profit)}</div><div class="tfp-sub" style="margin:0">${cost > 0 ? (profit >= 0 ? '▲ ' : '▼ ') + (profit / cost * 100).toFixed(1) + '% on cost' : ''}</div></div>
       ${graphHtml(done.map(f => ({ ts: f.tx.ts, profit: f.profit })), cutoff)}
       <div class="tfp-stats"><div class="tfp-stat"><span>Sold for</span><b>${fmt(revenue)}</b></div><div class="tfp-stat"><span>Cost</span><b>${fmt(cost)}</b></div><div class="tfp-stat"><span>Sales</span><b>${done.length}</b></div></div>`;
-    if (!Object.keys(state.txs).length) return h + '<div class="tfp-msg">Nothing imported yet. Tap Sync to read your Torn log.</div>';
+    const left = h; h = ''; const wrap2 = r => '<div class="tfp-two"><div class="tfp-colL">' + left + '</div><div class="tfp-colR">' + r + '</div></div>';
+    if (!Object.keys(state.txs).length) return wrap2('<div class="tfp-msg">Nothing imported yet. Tap Sync to read your Torn log.</div>');
     const entries = [];
     flips.forEach(f => { if (f.profit != null) entries.push({ tx: f.tx, kind: 'sale', f }); else if (!ack[f.tx.id]) entries.push({ tx: f.tx, kind: 'skip', f }); });
     res.pending.filter(t => inR(t.ts) && !ack[t.id]).forEach(tx => entries.push({ tx, kind: 'pend' }));
@@ -1338,7 +1356,7 @@
       else if (t.channel === 'trade' && t.dir === 'buy' && t.amount != null) entries.push({ tx: t, kind: 'buy' });
     });
     entries.sort((a, b) => b.tx.ts - a.tx.ts);
-    if (!entries.length) return h + '<div class="tfp-msg">No activity in this time range. Sales appear once you sell items you bought.</div>';
+    if (!entries.length) return wrap2('<div class="tfp-msg">No activity in this time range. Sales appear once you sell items you bought.</div>');
     const dayTot = {}; entries.forEach(e => { if (e.kind === 'sale') dayTot[dayLabel(e.tx.ts)] = (dayTot[dayLabel(e.tx.ts)] || 0) + e.f.profit; });
     const lim = ui.limit || 10; let last = '';
     ui.visTx = entries.slice(0, lim).map(e => e.tx.id);
@@ -1348,7 +1366,7 @@
       h += entryHtml(e);
     });
     if (entries.length > lim) h += `<a href="#" class="tfp-more" data-act="more">Show ${Math.min(10, entries.length - lim)} more · ${lim} of ${entries.length}</a>`;
-    return h + '<div class="tfp-foot">' + historyNote() + (state.oldestLog ? ' · oldest log entry read ' + fdate(state.oldestLog) : '') + ' · times in TCT</div>';
+    return wrap2(h + '<div class="tfp-foot">' + historyNote() + (state.oldestLog ? ' · oldest log entry read ' + fdate(state.oldestLog) : '') + ' · times in TCT</div>');
   }
   /* ----- Items tab: where the profit comes from ----- */
   function itemsHtml() {
@@ -1356,6 +1374,7 @@
     const done = getRes().flips.filter(f => f.profit != null && inR(f.tx.ts)), profit = done.reduce((a, f) => a + f.profit, 0), by = ui.itemsBy || 'item';
     let h = `${rangeChips()}${rangeDates()}<div class="tfp-sub" style="margin:0">Profit · ${esc(rangeCaption())}</div><div class="tfp-big ${pnlCls(profit)}">${fmt(profit)}</div>
       <div class="tfp-seg">${[['item', 'By item'], ['day', 'By day'], ['channel', 'By channel']].map(x => `<span class="${by === x[0] ? 'on' : ''}" data-act="itemsby" data-v="${x[0]}">${x[1]}</span>`).join('')}</div>`;
+    const left = h; h = ''; const wrap2 = r => '<div class="tfp-two"><div class="tfp-colL">' + left + '</div><div class="tfp-colR">' + r + '</div></div>';
     const rows = [];
     if (by === 'item') {
       const m = {};
@@ -1368,13 +1387,13 @@
       const m = {}; done.forEach(f => { const k = f.tx.channel; (m[k] = m[k] || { p: 0, n: 0 }); m[k].p += f.profit; m[k].n++; });
       Object.keys(m).sort((a, b) => m[b].p - m[a].p).forEach(k => rows.push({ t: esc(chanLabel(k)), p: m[k].p, sub: m[k].n + ' sale' + (m[k].n === 1 ? '' : 's') }));
     }
-    if (!rows.length) return h + '<div class="tfp-msg">No sales in this range yet.</div>';
+    if (!rows.length) return wrap2('<div class="tfp-msg">No sales in this range yet.</div>');
     const mx = Math.max.apply(null, rows.map(r => Math.abs(r.p))) || 1, lim = ui.ilimit || 25;
     rows.slice(0, lim).forEach(r => {
       h += `<${r.id ? 'a href="#" data-act="itemlog" data-id="' + esc(r.id) + '"' : 'div'} class="tfp-ir"><div class="tfp-top"><b>${r.t}</b><b class="${pnlCls(r.p)}">${sgn(r.p)}</b></div><div class="tfp-sub">${r.sub}</div><div class="tfp-bar"><i style="width:${Math.max(2, Math.abs(r.p) / mx * 100).toFixed(0)}%;background:${r.p >= 0 ? '#3fae72' : '#d65a5a'}"></i></div></${r.id ? 'a' : 'div'}>${r.id && String(ui.itemLog) === String(r.id) ? ledgerHtml(r.id) : ''}`;
     });
     if (rows.length > lim) h += `<a href="#" class="tfp-more" data-act="imore">Show 25 more · ${lim} of ${rows.length}</a>`;
-    return h + (by === 'item' ? '<div class="tfp-sub" style="margin-top:8px">Tap an item for its buy and sell history.</div>' : '');
+    return wrap2(h + (by === 'item' ? '<div class="tfp-sub" style="margin-top:8px">Tap an item for its buy and sell history.</div>' : ''));
   }
   // Units of one item still listed on the item market: listed minus sold minus taken down (an estimate; older listings are not in the log window).
   function listedNow(id) {
@@ -1548,7 +1567,7 @@
     const tabs = [['profit', '💰', 'Profit'], ['receipts', '🧾', 'Receipts'], ['items', '📊', 'Items'], ['settings', '⚙️', 'Settings']];
     const back = ui.nav && ui.nav.length, old = card.querySelector('.tfp-body'), keep = old ? old.scrollTop : 0;
     const fab = ui.tab === 'profit' || ui.tab === 'receipts' || ui.tab === 'items' ? `<button class="tfp-fab" data-act="sync">${ui.busy ? 'Syncing…' : state.resume ? 'Continue' : '⟳ Sync'}</button>` : '';
-    card.innerHTML = `<div class="tfp-hd"><span>${back ? '<button class="tfp-b" data-act="back">‹ Back</button> ' : ''}<b>💰 Arbitrage</b> <span class="tfp-sub">v${VERSION}</span></span><button class="tfp-b" data-act="close">– minimise</button></div>
+    card.innerHTML = `<div class="tfp-hd"><span>${back ? '<button class="tfp-b" data-act="back">‹ Back</button> ' : ''}<b>💰 Arbitrage</b> <span class="tfp-sub">v${VERSION}</span></span><span><button class="tfp-b tfp-hsync" data-act="sync">${ui.busy ? 'Syncing…' : state.resume ? 'Continue' : '⟳ Sync'}</button> <button class="tfp-b" data-act="close">– minimise</button></span></div>
       <div class="tfp-body">${lastSaveOk ? '' : '<div class="tfp-msg tfp-warn">⚠️ Could not save your data on this device (storage may be full). Export a backup in Settings.</div>'}
       ${ui.msg ? `<div class="tfp-msg">${esc(ui.msg)}</div>` : ''}
       ${ui.itemLog && ui.tab === 'profit' ? ledgerHtml() : ''}${ui.tab === 'profit' ? profitHtml() : ui.tab === 'items' ? itemsHtml() : ui.tab === 'receipts' ? receiptsHtml() : settingsHtml()}</div>${fab}
