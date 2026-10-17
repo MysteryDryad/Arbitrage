@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.139-beta
+// @version      0.1.140-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.139-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.140-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -378,7 +378,7 @@
 
       const consumed = tx.items.map(it => Object.assign({ it }, consume(it.id, it.qty)));
       if (isGift(tx)) continue; // given away: leaves stock, not counted in profit
-      if (tx.amount == null) { pending.push(tx); continue; }
+      if (tx.amount == null) { if (opts && opts.skipUnvaluedSends && tx.channel === 'send') continue; /* sends the user does not track: leave empty, not counted */ pending.push(tx); continue; }
 
       const allPriced = tx.items.every(i => i.price != null);
       const mvW = tx.items.map(i => i.qty * (vals[i.id] || 0));
@@ -654,7 +654,9 @@
   const netAmt = tx => tx.amount;
   const gotWord = tx => tx.channel === 'send' ? 'received' : 'sold for';
   const costOf = f => f.lines.some(l => l.matched > 0 && l.cost == null) ? null : f.lines.reduce((a, l) => a + (l.cost || 0), 0);
-  const flipOpts = () => ({ marketFee: 0, values: itemValues }); // Torn's market-sale log amount is already after the fee
+  // PawnHub users get their sends valued from PawnHub; everyone else leaves plain sends empty (they leave stock but are not counted and never nag).
+  const usesPH = () => { const v = sget('usePH', null); return v == null ? !!state.pawnhubSince : !!v; };
+  const flipOpts = () => ({ marketFee: 0, values: itemValues, skipUnvaluedSends: !usesPH() }); // Torn's market-sale log amount is already after the fee
   const nameOf = id => itemNames[id] || ('Item ' + id);
 
   /* ===================== Torn API ===================== */
@@ -1474,7 +1476,7 @@
   function receiptsHtml() {
     const li = state.lastInbox, hasW = !!sget('w3bkey', '');
     let h = `<div class="tfp-cat"><div class="tfp-dl"><span>Weaver (TornW3B)</span><span class="${hasW ? 'tfp-pos' : 'tfp-warn'}">${hasW ? 'connected ✓' : 'not connected (add a key in Settings)'}</span></div>
-      <div class="tfp-dl"><span>PawnHub Balance</span><span>${state.pawnhubSince ? '<span class="tfp-pos">read</span> · from ' + fdate(state.pawnhubSince) : 'open the Balance page in Torn to read it'}</span></div>
+      ${usesPH() ? '<div class="tfp-dl"><span>PawnHub Balance</span><span>' + (state.pawnhubSince ? '<span class="tfp-pos">read</span> · from ' + fdate(state.pawnhubSince) : 'open the Balance page in Torn to read it') + '</span></div>' : ''}
       <div class="tfp-dl"><span>TornExchange</span><span>by link</span></div>${li ? '<div class="tfp-sub">Last receipt added ' + fdate(li.at) + (li.msg ? ': ' + esc(li.msg) : '') + '</div>' : ''}</div>`;
     { const wl = ui.inboxList || [], dd = state.lastSyncDetail && state.lastSyncDetail.weaver, wm = dd && dd.match(/not found in your log \((.*)\)\. TornW3B lists/), cnt = wl.length + (wm ? 1 : 0);
       if (cnt) {
@@ -1518,7 +1520,8 @@
       <tr><td>TornW3B key</td><td>Optional, for Weaver receipts. Stored here, sent only to weav3r.dev.</td></tr>
       <tr><td>PawnHub</td><td>Optional. Read only when you open a receipt or the Balance page. Nothing is sent to PawnHub.</td></tr></table>
 `;
-    return `${inboxHtml()}${keyBox}<div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
+    const phBox = `<div class="tfp-row"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-act="useph" ${usesPH() ? 'checked' : ''}> <b>I use PawnHub</b></label><div class="tfp-sub">${usesPH() ? 'Item sends are valued from PawnHub (Balance page, or your PawnHub key). Sends it can\'t value show under Needs attention.' : 'Item sends are left empty: they leave your stock but are not counted in profit and never show under Needs attention.'}</div></div>`;
+    return `${inboxHtml()}${keyBox}${phBox}<div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
       <input class="tfp-in" id="tfp-days" data-act="setting" inputmode="numeric" value="${esc(sget('startDays', 30))}">
       <div class="tfp-sub">Sync from the Profit tab. Last sync: ${state.syncedAt || state.lastSync ? fdate(state.syncedAt || state.lastSync) : 'never'} · ${Object.keys(state.txs).length} records</div>
       <div class="tfp-gap"></div><div class="tfp-sub">TornW3B key (optional, for Weaver receipts). Use the key from TornW3B, not your Torn key.</div>
@@ -1678,6 +1681,7 @@
       else if (act === 'itemsby') { ui.itemsBy = v; ui.ilimit = 25; }
       else if (act === 'itemlogclose') ui.itemLog = null;
       else if (act === 'clearval') { const tx = state.txs[id]; tx.amount = null; tx.gift = false; tx.src = null; tx.locked = false; ui.editing = null; save(); }
+      else if (act === 'useph') { sset('usePH', !!el.checked); ui.msg = el.checked ? 'PawnHub on: sends are valued from PawnHub.' : 'PawnHub off: item sends are left empty.'; }
       else if (act === 'savew3b') {
         const k = val('tfp-w3b').trim();
         if (!/^[A-Za-z0-9_-]{8,64}$/.test(k)) throw new Error('That does not look like a TornW3B key.');
