@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.137-beta
+// @version      0.1.139-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.137-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.139-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1507,23 +1507,21 @@
   }
   function settingsHtml() {
     const own = !!sget('apikey', '');
-    const keyBox = `<div class="tfp-sub">Torn API key${IN_PDA && !own ? ' (currently using the Torn PDA key; add your own if it lacks log access)' : ''}. Use a Custom key with only what this script reads (your basic info, your log, the item list). <a href="${esc(KEYURL)}">Create that key for me ↗</a> opens Torn's key page already filled in: just tap Create there, copy the key and paste it below. Full Access also works but is not needed; Limited is not enough.</div>
+    const keyBox = `<div class="tfp-sub">${IN_PDA && !own ? 'Using your Torn PDA key by default.' : 'Torn API key.'} <a href="${esc(KEYURL)}">Create a custom key ↗</a> (read-only: just your log and item names), then paste it here. Limited keys don't work.</div>
       <input class="tfp-in" id="tfp-key" type="password" autocomplete="off" placeholder="${own ? 'Key saved (hidden). Paste a new one to replace.' : 'Paste your key'}"><div class="tfp-gap"></div>
       <button class="tfp-b" data-act="savekey">Save key</button> ${own ? '<button class="tfp-b" data-act="clearkey">Remove key</button>' : ''}
-      <table class="tfp-disc"><tr><td>Data storage</td><td>Your trade history and settings are kept only on this device.</td></tr>
-      <tr><td>Data sharing</td><td>Not shared with anyone.</td></tr>
-      <tr><td>Purpose of use</td><td>Read your own item log, item names and key info to calculate flip profit. Read-only; no game actions.</td></tr>
-      <tr><td>Key storage</td><td>Only in this script's local storage on this device.</td></tr>
-      <tr><td>Key sharing</td><td>Sent only to api.torn.com. Never shared with anyone else.</td></tr>
-      <tr><td>TornW3B key</td><td>Optional. Only if you add one for Weaver receipts: stored on this device, sent only to weav3r.dev. Your Torn key never goes there.</td></tr>
-      <tr><td>PawnHub</td><td>Optional. In desktop browsers, "Read PawnHub Balance now" lets Sync load your own Balance page (z0cl.eu) in a hidden frame, like opening it yourself. In Torn PDA, open the Balance page yourself and it hands itself over. Nothing is sent to PawnHub.</td></tr>
-      <tr><td>Player names</td><td>When you open a trade or market row, the name of that player is looked up once with your Torn key (api.torn.com only) and kept on this device.</td></tr>
-      <tr><td>Key access level</td><td>A Custom key with only: user basic, user log, torn items (and torn log categories for the debug sample). Torn does not give the log to a Limited key. The script only reads; it never acts.</td></tr></table>
-      <div class="tfp-sub">Tip: make a separate key just for this script. Deleting it in Torn settings revokes access at once.</div>`;
+      <table class="tfp-disc"><tr><td>Your data</td><td>Stays on this device. Not shared with anyone.</td></tr>
+      <tr><td>What it does</td><td>Reads your own item log and item names to work out flip profit. Read-only; no game actions.</td></tr>
+      <tr><td>Your key</td><td>Stored only on this device. Sent only to api.torn.com.</td></tr>
+      <tr><td>Key needs</td><td>Custom key: user basic, user log, torn items.</td></tr>
+      <tr><td>Player names</td><td>Looked up once with your key when you open a row, then kept here.</td></tr>
+      <tr><td>TornW3B key</td><td>Optional, for Weaver receipts. Stored here, sent only to weav3r.dev.</td></tr>
+      <tr><td>PawnHub</td><td>Optional. Read only when you open a receipt or the Balance page. Nothing is sent to PawnHub.</td></tr></table>
+`;
     return `${inboxHtml()}${keyBox}<div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
       <input class="tfp-in" id="tfp-days" data-act="setting" inputmode="numeric" value="${esc(sget('startDays', 30))}">
       <div class="tfp-sub">Sync from the Profit tab. Last sync: ${state.syncedAt || state.lastSync ? fdate(state.syncedAt || state.lastSync) : 'never'} · ${Object.keys(state.txs).length} records</div>
-      <div class="tfp-gap"></div><div class="tfp-sub">TornW3B key (optional, for importing Weaver receipts automatically). Use the key you registered on TornW3B, not your Torn key. It is stored on this device and sent only to weav3r.dev.</div>
+      <div class="tfp-gap"></div><div class="tfp-sub">TornW3B key (optional, for Weaver receipts). Use the key from TornW3B, not your Torn key.</div>
       <input class="tfp-in" id="tfp-w3b" type="password" autocomplete="off" placeholder="${sget('w3bkey', '') ? 'TornW3B key saved (hidden). Paste a new one to replace.' : 'Paste your TornW3B key'}"><div class="tfp-gap"></div>
       <button class="tfp-b" data-act="savew3b">Save TornW3B key</button> ${sget('w3bkey', '') ? '<button class="tfp-b" data-act="clearw3b">Remove</button> <button class="tfp-b" data-act="w3bcheck">' + (ui.busy ? 'Checking…' : 'Check Weaver') + '</button>' : ''}
       ${ui.w3bReport ? '<div class="tfp-msg">' + ui.w3bReport.map(l => '<div class="tfp-sub" style="color:#ccc">' + esc(l) + '</div>').join('') + '</div>' : ''}
