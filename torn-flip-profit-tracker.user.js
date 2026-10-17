@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.143-beta
+// @version      0.1.144-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.143-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.144-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -760,6 +760,7 @@
     if (added) bits.push(added + ' new record' + (added === 1 ? '' : 's'));
     if (att) bits.push(att + ' receipt' + (att === 1 ? '' : 's') + ' attached');
     if (last && last.missing) bits.push(last.missing + ' Weaver receipt' + (last.missing === 1 ? ' has' : 's have') + ' no matching trade yet (Settings → Check Weaver)');
+    if (pawn && pawn.preview) bits.push('PawnHub is ready: check the box at the top of the screen');
     if (pawn && pawn.valued) bits.push(pawn.valued + ' PawnHub payment' + (pawn.valued === 1 ? '' : 's') + ' matched');
     if (weaverErr) bits.push('Weaver: ' + weaverErr.slice(0, 90));
     if (pawnErr) bits.push('PawnHub: ' + pawnErr.slice(0, 70));
@@ -1096,7 +1097,15 @@
     state.phApiSample = { keys: Object.keys(j || {}), eventKeys: Object.keys(j.balance_events || {}), rows: evs.length, eventCount: j.balance && j.balance.event_count != null ? j.balance.event_count : null };
     const events = evs.filter(e => Number(e.item_id) > 0 && /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(String(e.created_at || ''))).map(e => ({ id: e.id, ts: Date.parse(String(e.created_at).replace(' ', 'T').replace(/Z?$/, 'Z')) / 1000, itemId: Number(e.item_id), item: e.item_name, role: e.member_role, qty: Number(e.quantity), unit: Number(e.unit_price), total: Number(e.total_value) })).filter(e => e.qty > 0 && isFinite(e.unit) && isFinite(e.total) && isFinite(e.ts));
     if (!events.length) return { text: 'PawnHub: no item payments in the reply.', valued: 0 };
-    const msg = await applyPawnHubBalance({ source: 'pawnhub-balance', url: 'https://z0cl.eu/PawnHub/balance.php', events, total: events.reduce((a, e) => a + e.total, 0) });
+    const rc = { source: 'pawnhub-balance', url: 'https://z0cl.eu/PawnHub/balance.php', events, total: events.reduce((a, e) => a + e.total, 0) };
+    if (!state.phFirstDone) { // the first read can change a lot of old values: show what it would do and wait for a tap
+      await ensureItems(); rebuildSendTxs();
+      const byName = {}; Object.entries(itemNames).forEach(([id, n]) => { byName[String(n).toLowerCase()] = Number(id); });
+      const hits = matchPawnHubEvents(events, state.txs, byName), ts = hits.map(h => state.txs[h.txId].ts);
+      ui.phPreview = { rc, n: hits.length, total: hits.reduce((a, h) => a + h.event.total, 0), from: ts.length ? Math.min.apply(null, ts) : null, to: ts.length ? Math.max.apply(null, ts) : null, manual: hits.filter(h => state.txs[h.txId].src === 'manual').length, loose: events.length - hits.length };
+      return { text: hits.length ? 'PawnHub: ' + hits.length + ' sends ready to fill in. Check the box at the top and tap Apply.' : 'PawnHub: no sends match its payments yet.', valued: 0, preview: true };
+    }
+    const msg = await applyPawnHubBalance(rc);
     state.phAt = Math.floor(Date.now() / 1000); save();
     const m = msg.match(/valued (\d+)/);
     return { text: msg.replace('The Balance page starts', "PawnHub's list starts"), valued: m ? Number(m[1]) : 0 };
@@ -1484,6 +1493,10 @@
     const sk = res.flips.filter(f => f.profit == null);
     return { pend: res.pending.filter(t => !ack[t.id]), skip: sk.filter(f => !ack[f.tx.id]), dPend: res.pending.filter(t => ack[t.id]), dSkip: sk.filter(f => ack[f.tx.id]) };
   }
+  function phPreviewHtml() {
+    const p = ui.phPreview; if (!p) return '';
+    return `<div class="tfp-msg" style="border:1px solid #3b6fd1"><b>PawnHub is ready</b><div class="tfp-sub" style="color:#ccc">This would fill in <b>${p.n}</b> send${p.n === 1 ? '' : 's'}${p.from ? ' (' + dayLabel(p.from) + ' to ' + dayLabel(p.to) + ')' : ''}, ${fmt(p.total)} in all.${p.manual ? ' ' + p.manual + (p.manual === 1 ? ' of them has a value you entered, which would be replaced.' : ' of them have a value you entered, which would be replaced.') : ''}${p.loose ? ' ' + p.loose + ' PawnHub row' + (p.loose === 1 ? ' has' : 's have') + ' no matching send in your data.' : ''} Profit for past days will change. This check only happens the first time.</div><div class="tfp-gap"></div><button class="tfp-b" data-act="phapply">Apply</button> <button class="tfp-b" data-act="phcancel">Not now</button></div>`;
+  }
   function inboxHtml() {
     const a = attention(), n = a.pend.length + a.skip.length, nd = a.dPend.length + a.dSkip.length;
     let h = `<div class="tfp-cat"><div class="tfp-top"><a href="#" class="tfp-cat-h" data-act="toggle" data-v="showInbox"><span class="tfp-chev">${ui.showInbox ? '▾' : '▸'}</span><b>Needs attention</b><div class="tfp-sub">${n ? (a.pend.length ? '<span class="tfp-warn">' + a.pend.length + ' need a value</span>' : '') + (a.pend.length && a.skip.length ? ' · ' : '') + (a.skip.length ? '<span class="tfp-warn">' + a.skip.length + ' not counted</span>' : '') : 'Nothing waiting'}${nd ? ' · ' + nd + ' dismissed' : ''}</div></a></div>`;
@@ -1544,7 +1557,7 @@
       <tr><td>PawnHub</td><td>Optional. Read when you open a receipt or the Balance page. If you add a PawnHub key (the Torn key you log in to PawnHub with), it is stored here and sent only to z0cl.eu. Without it, nothing is sent to PawnHub.</td></tr></table>
 `;
     const hasPH = !!sget('phkey', '');
-    const phKey = usesPH() ? `<div class="tfp-sub" style="margin-top:8px">PawnHub key (optional). Paste the Torn API key you use to log in to PawnHub. It is stored only on this device and sent only to PawnHub (z0cl.eu), like logging in there. Leave it empty and nothing is sent to PawnHub. A key with just "user basic" ticked is enough.</div><input class="tfp-in" id="tfp-phkey" type="password" autocomplete="off" placeholder="${hasPH ? 'PawnHub key saved (hidden). Paste a new one to replace.' : 'Paste your PawnHub key'}"><div class="tfp-gap"></div><button class="tfp-b" data-act="savephkey">Save PawnHub key</button> ${hasPH ? '<button class="tfp-b" data-act="clearphkey">Remove</button> <button class="tfp-b" data-act="phapi">' + (ui.busy ? 'Reading…' : 'Read PawnHub now') + '</button>' : ''}` : '';
+    const phKey = usesPH() ? `<div class="tfp-sub" style="margin-top:8px">PawnHub key (optional). Paste the Torn API key you use to log in to PawnHub. It is stored only on this device and sent only to PawnHub (z0cl.eu), like logging in there. Leave it empty and nothing is sent to PawnHub. A key with just "user basic" ticked is enough.</div><input class="tfp-in" id="tfp-phkey" type="password" autocomplete="off" placeholder="${hasPH ? 'PawnHub key saved (hidden). Paste a new one to replace.' : 'Paste your PawnHub key'}"><div class="tfp-gap"></div><button class="tfp-b" data-act="savephkey">Save PawnHub key</button> ${hasPH ? '<button class="tfp-b" data-act="clearphkey">Remove</button> ' : ''}` : '';
     const phBox = `<div class="tfp-row"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-act="useph" ${usesPH() ? 'checked' : ''}> <b>I use PawnHub</b></label><div class="tfp-sub">${usesPH() ? 'Item sends are valued from PawnHub (Balance page, or your PawnHub key). Sends it can\'t value show under Needs attention.' : 'Item sends are left empty: they leave your stock but are not counted in profit and never show under Needs attention.'}</div>${phKey}</div>`;
     return `${inboxHtml()}${keyBox}${phBox}<div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
       <input class="tfp-in" id="tfp-days" data-act="setting" inputmode="numeric" value="${esc(sget('startDays', 30))}">
@@ -1596,7 +1609,7 @@
     const fab = ui.tab === 'profit' || ui.tab === 'receipts' || ui.tab === 'items' ? `<button class="tfp-fab" data-act="sync">${ui.busy ? 'Syncing…' : state.resume ? 'Continue' : '⟳ Sync'}</button>` : '';
     card.innerHTML = `<div class="tfp-hd"><span>${back ? '<button class="tfp-b" data-act="back">‹ Back</button> ' : ''}<b>💰 Arbitrage</b> <span class="tfp-sub">v${VERSION}</span></span><span><button class="tfp-b tfp-hsync" data-act="sync">${ui.busy ? 'Syncing…' : state.resume ? 'Continue' : '⟳ Sync'}</button> <button class="tfp-b" data-act="close">– minimise</button></span></div>
       <div class="tfp-body">${lastSaveOk ? '' : '<div class="tfp-msg tfp-warn">⚠️ Could not save your data on this device (storage may be full). Export a backup in Settings.</div>'}
-      ${ui.msg ? `<div class="tfp-msg">${esc(ui.msg)}</div>` : ''}
+      ${phPreviewHtml()}${ui.msg ? `<div class="tfp-msg">${esc(ui.msg)}</div>` : ''}
       ${ui.itemLog && ui.tab === 'profit' ? ledgerHtml() : ''}${ui.tab === 'profit' ? profitHtml() : ui.tab === 'items' ? itemsHtml() : ui.tab === 'receipts' ? receiptsHtml() : settingsHtml()}</div>${fab}
       <div class="tfp-nav">${tabs.map(t => `<button class="${ui.tab === t[0] ? 'on' : ''}" data-act="tab" data-v="${t[0]}"><i>${t[1]}${t[0] === 'settings' && badge ? '<span class="tfp-bdg">' + badge + '</span>' : ''}</i>${t[2]}</button>`).join('')}</div>`;
     const nb = card.querySelector('.tfp-body'); if (nb) nb.scrollTop = keep;
@@ -1710,15 +1723,14 @@
       else if (act === 'savephkey') {
         const k = val('tfp-phkey').trim();
         if (!/^[A-Za-z0-9_-]{8,64}$/.test(k)) throw new Error('That does not look like a Torn API key.');
-        sset('phkey', k); ui.msg = 'PawnHub key saved on this device. Tap Read PawnHub now, or Sync.';
+        sset('phkey', k); ui.msg = 'PawnHub key saved on this device. Tap Sync to read it.';
       }
       else if (act === 'clearphkey') { sset('phkey', ''); ui.msg = 'PawnHub key removed from this device.'; }
-      else if (act === 'phapi') {
-        if (ui.busy) return;
-        ui.busy = true; render();
-        try { const r = await readPawnHubApi(); ui.msg = r.text; if (r.valued) toast(r.valued + ' PawnHub payment' + (r.valued === 1 ? '' : 's') + ' matched'); }
-        finally { ui.busy = false; }
+      else if (act === 'phapply') {
+        const p = ui.phPreview; ui.phPreview = null;
+        if (p) { ui.msg = await applyPawnHubBalance(p.rc); state.phFirstDone = true; state.phAt = Math.floor(Date.now() / 1000); save(); }
       }
+      else if (act === 'phcancel') { ui.phPreview = null; ui.msg = 'Okay, nothing changed. PawnHub will ask again on the next Sync.'; }
       else if (act === 'savew3b') {
         const k = val('tfp-w3b').trim();
         if (!/^[A-Za-z0-9_-]{8,64}$/.test(k)) throw new Error('That does not look like a TornW3B key.');
