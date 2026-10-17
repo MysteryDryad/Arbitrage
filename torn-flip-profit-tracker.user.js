@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.129-beta
+// @version      0.1.130-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.129-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.130-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1112,7 +1112,7 @@
   const CSS = `
   #tfp-btn{z-index:2147483646;cursor:pointer;font-size:16px;line-height:1;padding:3px 7px;border-radius:8px;border:1px solid #555;background:#2b2b2b;color:#fff}
   #tfp-btn{position:absolute;touch-action:none;-webkit-user-select:none;user-select:none}
-  #tfp-wrap.pda{padding-bottom:50px}
+  #tfp-wrap.pda{padding-bottom:0}
   #tfp-wrap.pda #tfp-card{max-height:100%}
   #tfp-wrap{position:fixed;inset:0;z-index:2147483647;background:#1e1e1e;display:none;align-items:stretch;justify-content:center}
   #tfp-wrap.open{display:flex}
@@ -1365,7 +1365,7 @@
     if (!rows.length) return h + '<div class="tfp-msg">No sales in this range yet.</div>';
     const mx = Math.max.apply(null, rows.map(r => Math.abs(r.p))) || 1, lim = ui.ilimit || 25;
     rows.slice(0, lim).forEach(r => {
-      h += `<${r.id ? 'a href="#" data-act="itemlog" data-id="' + esc(r.id) + '"' : 'div'} class="tfp-ir"><div class="tfp-top"><b>${r.t}</b><b class="${pnlCls(r.p)}">${sgn(r.p)}</b></div><div class="tfp-sub">${r.sub}</div><div class="tfp-bar"><i style="width:${Math.max(2, Math.abs(r.p) / mx * 100).toFixed(0)}%;background:${r.p >= 0 ? '#3fae72' : '#d65a5a'}"></i></div></${r.id ? 'a' : 'div'}>`;
+      h += `<${r.id ? 'a href="#" data-act="itemlog" data-id="' + esc(r.id) + '"' : 'div'} class="tfp-ir"><div class="tfp-top"><b>${r.t}</b><b class="${pnlCls(r.p)}">${sgn(r.p)}</b></div><div class="tfp-sub">${r.sub}</div><div class="tfp-bar"><i style="width:${Math.max(2, Math.abs(r.p) / mx * 100).toFixed(0)}%;background:${r.p >= 0 ? '#3fae72' : '#d65a5a'}"></i></div></${r.id ? 'a' : 'div'}>${r.id && String(ui.itemLog) === String(r.id) ? ledgerHtml(r.id) : ''}`;
     });
     if (rows.length > lim) h += `<a href="#" class="tfp-more" data-act="imore">Show 25 more · ${lim} of ${rows.length}</a>`;
     return h + (by === 'item' ? '<div class="tfp-sub" style="margin-top:8px">Tap an item for its buy and sell history.</div>' : '');
@@ -1381,8 +1381,8 @@
     return Math.max(0, n);
   }
   // Every buy, sale, send and removal of one item in time order with the running amount in stock, so a shortage can be traced.
-  function ledgerHtml() {
-    const id = ui.itemLog; if (!id) return '';
+  function ledgerHtml(forId) {
+    const id = forId || ui.itemLog; if (!id) return '';
     const txs = Object.values(state.txs).filter(t => t.items && t.items.some(i => String(i.id) === String(id))).sort((a, b) => (a.ts - b.ts) || String(a.id).localeCompare(String(b.id)));
     let bal = 0;
     const rows = txs.map(t => {
@@ -1437,7 +1437,7 @@
     const a = attention(), n = a.pend.length + a.skip.length, nd = a.dPend.length + a.dSkip.length;
     let h = `<div class="tfp-cat"><div class="tfp-top"><a href="#" class="tfp-cat-h" data-act="toggle" data-v="showInbox"><span class="tfp-chev">${ui.showInbox ? '▾' : '▸'}</span><b>Needs attention</b><div class="tfp-sub">${n ? (a.pend.length ? '<span class="tfp-warn">' + a.pend.length + ' need a value</span>' : '') + (a.pend.length && a.skip.length ? ' · ' : '') + (a.skip.length ? '<span class="tfp-warn">' + a.skip.length + ' not counted</span>' : '') : 'Nothing waiting'}${nd ? ' · ' + nd + ' dismissed' : ''}</div></a></div>`;
     if (ui.showInbox) {
-      if (n) h += `<div class="tfp-gap"></div><button class="tfp-b" data-act="ackall">${ui.armAck ? 'Tap again to confirm: dismiss ' + n : 'Got it for all ' + n}</button>`;
+      if (n) h += `<div class="tfp-gap"></div><button class="tfp-b" data-act="ackall">${ui.armAck ? 'Tap again to dismiss all ' + n : 'Dismiss all ' + n}</button>`;
       h += pendingHtml(a.pend, false) + a.skip.map(f => skippedRowHtml(f, false)).join('');
       if (!n) h += '<div class="tfp-sub">Nothing needs a value. 🎉</div>';
       if (nd) h += `<div class="tfp-gap"></div><a href="#" data-act="toggle" data-v="showDismissed">${ui.showDismissed ? '▾' : '▸'} Dismissed (${nd})</a>` + (ui.showDismissed ? pendingHtml(a.dPend, true) + a.dSkip.map(f => skippedRowHtml(f, true)).join('') : '');
@@ -1538,7 +1538,7 @@
     card.innerHTML = `<div class="tfp-hd"><span>${back ? '<button class="tfp-b" data-act="back">‹ Back</button> ' : ''}<b>💰 Arbitrage</b> <span class="tfp-sub">v${VERSION}</span></span><button class="tfp-b" data-act="close">– minimise</button></div>
       <div class="tfp-body">${lastSaveOk ? '' : '<div class="tfp-msg tfp-warn">⚠️ Could not save your data on this device (storage may be full). Export a backup in Settings.</div>'}
       ${ui.msg ? `<div class="tfp-msg">${esc(ui.msg)}</div>` : ''}
-      ${ui.itemLog && (ui.tab === 'profit' || ui.tab === 'items') ? ledgerHtml() : ''}${ui.tab === 'profit' ? profitHtml() : ui.tab === 'items' ? itemsHtml() : ui.tab === 'receipts' ? receiptsHtml() : settingsHtml()}</div>${fab}
+      ${ui.itemLog && ui.tab === 'profit' ? ledgerHtml() : ''}${ui.tab === 'profit' ? profitHtml() : ui.tab === 'items' ? itemsHtml() : ui.tab === 'receipts' ? receiptsHtml() : settingsHtml()}</div>${fab}
       <div class="tfp-nav">${tabs.map(t => `<button class="${ui.tab === t[0] ? 'on' : ''}" data-act="tab" data-v="${t[0]}"><i>${t[1]}${t[0] === 'settings' && badge ? '<span class="tfp-bdg">' + badge + '</span>' : ''}</i>${t[2]}</button>`).join('')}</div>`;
     const nb = card.querySelector('.tfp-body'); if (nb) nb.scrollTop = keep;
   }
@@ -1638,7 +1638,7 @@
         if (!ui.armAck) ui.armAck = true;
         else { const a = attention(); state.ack = state.ack || {}; a.pend.forEach(t => { state.ack[t.id] = 1; }); a.skip.forEach(f => { state.ack[f.tx.id] = 1; }); save(); ui.armAck = false; }
       }
-      else if (act === 'itemlog') { navPush(); if (ui.tab !== 'items') ui.tab = 'profit'; ui.itemLog = id; card0().scrollTop = 0; }
+      else if (act === 'itemlog') { if (ui.tab === 'items') ui.itemLog = String(ui.itemLog) === String(id) ? null : id; else { navPush(); ui.tab = 'profit'; ui.itemLog = id; card0().scrollTop = 0; } }
       else if (act === 'more') ui.limit = (ui.limit || 10) + 10;
       else if (act === 'imore') ui.ilimit = (ui.ilimit || 25) + 25;
       else if (act === 'rmore') ui.rlimit = (ui.rlimit || 10) + 10;
