@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.132-beta
+// @version      0.1.133-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.132-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.133-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1815,7 +1815,8 @@
   /* ===================== receipt pages (tornexchange / weav3r) ===================== */
   function mountReceiptButton() {
     if (document.getElementById('tfp-rbtn')) return;
-    if (!(/(^|\.)z0cl\.eu$/i.test(location.hostname) && /^\/pawnhub\/balance\.php/i.test(location.pathname))) return; // the manual button is only for the PawnHub Balance page; other receipt pages add themselves
+    const onBalance = /(^|\.)z0cl\.eu$/i.test(location.hostname) && /^\/pawnhub\/balance\.php/i.test(location.pathname), onTE = /(^|\.)tornexchange\.com$/i.test(location.hostname);
+    if (!onBalance && !onTE) return; // the manual button is only for the PawnHub Balance page and TornExchange (no API there); other receipt pages add themselves
     const st = document.createElement('style'); st.textContent = CSS; document.head.appendChild(st);
     const b = document.createElement('button');
     b.id = 'tfp-rbtn'; b.className = 'tfp-b'; b.textContent = '💰 Add to profit tracker';
