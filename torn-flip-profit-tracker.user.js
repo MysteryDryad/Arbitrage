@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.148-beta
+// @version      0.1.149-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.148-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.149-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1467,15 +1467,17 @@
     const id = forId || ui.itemLog; if (!id) return '';
     const txs = Object.values(state.txs).filter(t => t.items && t.items.some(i => String(i.id) === String(id))).sort((a, b) => (a.ts - b.ts) || String(a.id).localeCompare(String(b.id)));
     let bal = 0;
+    let firstShort = null;
     const rows = txs.map(t => {
       const qty = t.items.filter(i => String(i.id) === String(id)).reduce((a, i) => a + i.qty, 0), buy = t.dir === 'buy', gift = isGift(t);
       if (buy && !gift) bal += qty; else if (!buy) bal -= qty;
+      if (bal < 0 && !firstShort) firstShort = { ts: t.ts, short: -bal, what: (buy ? 'buy' : t.channel === 'send' ? 'send' : 'sale') + ' of ' + qty };
       const what = t.channel === 'writeoff' ? 'removed from stock' : buy ? (gift ? 'received as a gift (not stock)' : 'bought') : (gift ? 'given away' : 'sold');
       return `<div class="tfp-sub">${fdate(t.ts)} · ${buy && !gift ? '+' : buy ? '' : '−'}${qty} ${what} (${chanLabel(t.channel)}${tradeTag(t)}) → <b class="${bal < 0 ? 'tfp-warn' : ''}">${bal} in stock</b></div>`;
     });
     const listed = listedNow(id);
     const listNote = listed != null ? `<div class="tfp-sub">Still listed on the item market: about ${listed}. Listing does not count as a sale; only units that sell are counted.</div>` : '';
-    return `<div class="tfp-row"><div class="tfp-top"><b>${esc(nameOf(id))} history</b><a href="#" data-act="itemlogclose">close</a></div>${rows.length ? rows.slice(-40).reverse().join('') : '<div class="tfp-sub">Nothing recorded for this item.</div>'}${rows.length > 40 ? '<div class="tfp-sub">(newest 40 of ' + rows.length + ')</div>' : ''}${listNote}<div class="tfp-sub">A negative number means more was sold or sent than the tracker saw coming in.</div></div>`;
+    return `<div class="tfp-row"><div class="tfp-top"><b>${esc(nameOf(id))} history</b><a href="#" data-act="itemlogclose">close</a></div>${firstShort ? '<div class="tfp-sub tfp-warn">Stock first goes short at ' + fdate(firstShort.ts) + ' (' + esc(firstShort.what) + '): ' + firstShort.short + ' more went out than the tracker saw come in. Look for a missing buy just before that.</div>' : ''}${rows.length ? rows.slice(ui.ledgerAll ? 0 : -40).reverse().join('') : '<div class="tfp-sub">Nothing recorded for this item.</div>'}${rows.length > 40 ? (ui.ledgerAll ? '<a href="#" data-act="ledgermore">Show newest 40 only</a>' : '<div class="tfp-sub">(newest 40 of ' + rows.length + ') <a href="#" data-act="ledgermore">Show all ' + rows.length + '</a></div>') : ''}${listNote}<div class="tfp-sub">A negative number means more was sold or sent than the tracker saw coming in.</div></div>`;
   }
   function editBox(tx) {
     const label = tx.dir === 'buy' ? 'Amount paid ($)' : 'Amount received ($)';
@@ -1714,7 +1716,7 @@
     const el = e.target.closest('[data-act]');
     if (!el) return;
     const act = el.dataset.act, id = el.dataset.id, v = el.dataset.v;
-    if (act === 'edit' || act === 'toggle' || act === 'more' || act === 'imore' || act === 'rmore' || act === 'pawnoff' || act === 'itemlog' || act === 'itemlogclose') e.preventDefault();
+    if (act === 'edit' || act === 'toggle' || act === 'ledgermore' || act === 'more' || act === 'imore' || act === 'rmore' || act === 'pawnoff' || act === 'itemlog' || act === 'itemlogclose') e.preventDefault();
     ui.msg = ''; ui._res = null;
     if (act !== 'giftall') ui.armGift = false;
     if (act !== 'giftolder') ui.armOlder = false;
@@ -1736,6 +1738,7 @@
       }
       else if (act === 'itemlog') { if (ui.tab === 'items') ui.itemLog = String(ui.itemLog) === String(id) ? null : id; else { navPush(); ui.tab = 'profit'; ui.itemLog = id; card0().scrollTop = 0; } }
       else if (act === 'more') ui.limit = (ui.limit || 10) + 10;
+      else if (act === 'ledgermore') ui.ledgerAll = !ui.ledgerAll;
       else if (act === 'imore') ui.ilimit = (ui.ilimit || 25) + 25;
       else if (act === 'rmore') ui.rlimit = (ui.rlimit || 10) + 10;
       else if (act === 'itemsby') { ui.itemsBy = v; ui.ilimit = 25; }
