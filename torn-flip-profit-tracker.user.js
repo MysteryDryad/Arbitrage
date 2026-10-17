@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.141-beta
+// @version      0.1.142-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.141-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.142-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -277,7 +277,9 @@
     }
     return { source: 'pawnhub-balance', url, events: rows, halved, total: rows.reduce((a, e) => a + e.total, 0) };
   }
-  // Pair each credited item event with the send of the same item and quantity closest in time (event times have minute precision).
+  // Pair each credited item event with the oldest unmatched send of the same item and quantity in the 30 minutes before the credit (the credit lands some minutes after the send).
+  const PH_LAG = 1800;
+  const phNear = (t, e) => e.ts - t.ts >= -120 && e.ts - t.ts <= PH_LAG;
   function matchPawnHubEvents(events, txsObj, byName) {
     const sends = Object.values(txsObj).filter(t => t.channel === 'send' && t.dir === 'sell' && t.src !== 'receipt' && t.items && t.items.length === 1);
     const used = new Set(), out = [];
@@ -287,8 +289,8 @@
       let best = null;
       sends.forEach(t => {
         if (used.has(t.id) || t.items[0].id !== id || t.items[0].qty !== ev.qty) return;
-        const d = Math.abs(t.ts - ev.ts);
-        if (d <= 600 && (!best || d < best.d)) best = { t, d };
+        const d = ev.ts - t.ts; // PawnHub credits the payment some minutes after the send: take the oldest unmatched send up to 30 minutes before the credit (events go oldest first)
+        if (d >= -120 && d <= PH_LAG && (!best || t.ts < best.t.ts)) best = { t, d };
       });
       if (best) { used.add(best.t.id); out.push({ txId: best.t.id, event: ev }); }
     });
@@ -911,13 +913,13 @@
     const earliest = itemEv.length ? Math.min.apply(null, itemEv.map(e => e.ts)) : null;
     if (earliest && (!state.pawnhubSince || earliest < state.pawnhubSince)) state.pawnhubSince = earliest;
     save();
-    const olderCount = earliest ? Object.values(state.txs).filter(t => t.channel === 'send' && t.dir === 'sell' && t.amount == null && t.ts < earliest - 600).length : 0;
+    const olderCount = earliest ? Object.values(state.txs).filter(t => t.channel === 'send' && t.dir === 'sell' && t.amount == null && t.ts < earliest - PH_LAG).length : 0;
     const itemEvents = itemEv.length;
     const matched = new Set(hits.map(h => h.event));
     const sends1 = Object.values(state.txs).filter(t => t.channel === 'send' && t.dir === 'sell' && t.items && t.items.length === 1);
     const near = e => sends1.filter(t => t.items[0].id === idFor(e) && t.items[0].qty === e.qty).sort((a, b) => Math.abs(a.ts - e.ts) - Math.abs(b.ts - e.ts))[0];
     // An event whose send already carries the same value was applied earlier (or the page lists it twice): not a failure.
-    const done = e => { const t = near(e); return !!t && t.src === 'receipt' && t.amount === e.total && Math.abs(t.ts - e.ts) <= 600; };
+    const done = e => { const t = near(e); return !!t && t.src === 'receipt' && t.amount === e.total && phNear(t, e); };
     const rest = itemEv.filter(e => !matched.has(e) && !done(e));
     const already = itemEvents - hits.length - rest.length;
     let why = '';
@@ -1455,7 +1457,7 @@
     if (!list.length) return '';
     const giftable = dismissed ? [] : list.filter(t => t.channel === 'send' || t.channel === 'recv');
     const bulk = giftable.length > 3 ? `<button class="tfp-b" data-act="giftall">${ui.armGift ? 'Tap again to confirm: ' + giftable.length + ' set to $0' : 'Mark all ' + giftable.length + ' sends/receives as gifts ($0)'}</button>` : '';
-    const older = !dismissed && state.pawnhubSince ? list.filter(t => t.channel === 'send' && t.dir === 'sell' && t.ts < state.pawnhubSince - 600) : [];
+    const older = !dismissed && state.pawnhubSince ? list.filter(t => t.channel === 'send' && t.dir === 'sell' && t.ts < state.pawnhubSince - PH_LAG) : [];
     const olderBtn = older.length ? `<button class="tfp-b" data-act="giftolder">${ui.armOlder ? 'Tap again to confirm: ' + older.length + ' not counted' : older.length + ' sends from before PawnHub Balance starts: leave out of profit'}</button> ` : '';
     const ackBtn = tx => `<div class="tfp-gap"></div><button class="tfp-b" data-act="${dismissed ? 'unack' : 'ack'}" data-id="${esc(tx.id)}">${dismissed ? 'Show again' : 'Got it'}</button>`;
     return olderBtn + bulk + list.slice().sort((a, b) => b.ts - a.ts).map(tx => {
@@ -1752,7 +1754,7 @@
       else if (act === 'giftolder') {
         if (!ui.armOlder) { ui.armOlder = true; render(); return; }
         ui.armOlder = false;
-        computeFlips(state.txs, flipOpts()).pending.filter(t => t.channel === 'send' && t.dir === 'sell' && state.pawnhubSince && t.ts < state.pawnhubSince - 600).forEach(t => { const x = state.txs[t.id]; x.amount = 0; x.gift = true; x.src = 'manual'; x.locked = true; });
+        computeFlips(state.txs, flipOpts()).pending.filter(t => t.channel === 'send' && t.dir === 'sell' && state.pawnhubSince && t.ts < state.pawnhubSince - PH_LAG).forEach(t => { const x = state.txs[t.id]; x.amount = 0; x.gift = true; x.src = 'manual'; x.locked = true; });
         save();
       }
       else if (act === 'giftall') {
