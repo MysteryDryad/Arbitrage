@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.147-beta
+// @version      0.1.148-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.147-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.148-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1088,14 +1088,31 @@
   async function readPawnHubApi() {
     const key = sget('phkey', ''); if (!key) throw new Error('Add your PawnHub key in Settings first.');
     const clean = t => String(t == null ? '' : t).split(key).join('***');
-    let r;
-    try { r = await httpRetry('https://z0cl.eu/PawnHub/api.php?selections=balance_events&key=' + encodeURIComponent(key), { Accept: 'application/json' }); }
-    catch (e) { throw new Error('Could not reach PawnHub: ' + clean(e && e.message).slice(0, 100)); }
-    let j; try { j = JSON.parse(r.text); } catch (e) { throw new Error('PawnHub did not return data (HTTP ' + (r && r.status) + '). Check the key in Settings.'); }
-    if (j && j.error) throw new Error('PawnHub: ' + clean(typeof j.error === 'string' ? j.error : (j.error.message || JSON.stringify(j.error))).slice(0, 100));
-    const evs = j && j.balance_events && j.balance_events.events;
-    if (!Array.isArray(evs)) throw new Error('PawnHub answered, but without payment rows. Check the key in Settings.');
-    state.phApiSample = { keys: Object.keys(j || {}), eventKeys: Object.keys(j.balance_events || {}), rows: evs.length, eventCount: j.balance && j.balance.event_count != null ? j.balance.event_count : null, pagination: JSON.stringify((j.balance_events || {}).pagination === undefined ? null : j.balance_events.pagination).slice(0, 400), from: (j.balance_events || {}).from === undefined ? null : j.balance_events.from, toExclusive: (j.balance_events || {}).to_exclusive === undefined ? null : j.balance_events.to_exclusive };
+    // PawnHub returns 100 payments per page, newest first, with a cursor (pagination.next_before_id). Keep paging until we are past your oldest send that still has no value.
+    const base = 'https://z0cl.eu/PawnHub/api.php?selections=balance_events&key=' + encodeURIComponent(key);
+    const unvalued = Object.values(state.txs).filter(t => t.channel === 'send' && t.dir === 'sell' && t.items && t.items.length === 1 && t.src !== 'receipt').map(t => t.ts);
+    const needTs = unvalued.length ? Math.min.apply(null, unvalued) - PH_LAG : Infinity;
+    const tsOf = e => Date.parse(String(e.created_at).replace(' ', 'T').replace(/Z?$/, 'Z')) / 1000;
+    let evs = [], beforeId = null, pages = 0, firstJ = null, stop = 'end'; const seen = new Set();
+    for (;;) {
+      let r;
+      try { r = await httpRetry(base + (beforeId ? '&before_id=' + encodeURIComponent(beforeId) : ''), { Accept: 'application/json' }); }
+      catch (e) { throw new Error('Could not reach PawnHub: ' + clean(e && e.message).slice(0, 100)); }
+      let j; try { j = JSON.parse(r.text); } catch (e) { throw new Error('PawnHub did not return data (HTTP ' + (r && r.status) + '). Check the key in Settings.'); }
+      if (j && j.error) throw new Error('PawnHub: ' + clean(typeof j.error === 'string' ? j.error : (j.error.message || JSON.stringify(j.error))).slice(0, 100));
+      const page = j && j.balance_events && j.balance_events.events;
+      if (!Array.isArray(page)) throw new Error('PawnHub answered, but without payment rows. Check the key in Settings.');
+      if (!firstJ) firstJ = j;
+      pages++;
+      const fresh = page.filter(e => !seen.has(e.id)); fresh.forEach(e => seen.add(e.id)); evs = evs.concat(fresh);
+      const pg = j.balance_events.pagination || {}, times = page.map(tsOf).filter(isFinite), oldest = times.length ? Math.min.apply(null, times) : Infinity;
+      if (!fresh.length) { stop = pages > 1 ? 'before_id ignored' : 'empty'; break; }
+      if (!pg.has_more || !pg.next_before_id) { stop = 'end'; break; }
+      if (oldest <= needTs) { stop = 'far enough'; break; }
+      if (pages >= 15) { stop = 'page limit'; break; }
+      beforeId = pg.next_before_id; await sleep(700);
+    }
+    state.phApiSample = { keys: Object.keys(firstJ || {}), eventKeys: Object.keys((firstJ || {}).balance_events || {}), pages, rows: evs.length, stop, pagination: JSON.stringify(((firstJ || {}).balance_events || {}).pagination === undefined ? null : firstJ.balance_events.pagination).slice(0, 300) };
     const events = evs.filter(e => Number(e.item_id) > 0 && /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(String(e.created_at || ''))).map(e => ({ id: e.id, ts: Date.parse(String(e.created_at).replace(' ', 'T').replace(/Z?$/, 'Z')) / 1000, itemId: Number(e.item_id), item: e.item_name, role: e.member_role, qty: Number(e.quantity), unit: Number(e.unit_price), total: Number(e.total_value) })).filter(e => e.qty > 0 && isFinite(e.unit) && isFinite(e.total) && isFinite(e.ts));
     if (!events.length) return { text: 'PawnHub: no item payments in the reply.', valued: 0 };
     const rc = { source: 'pawnhub-balance', url: 'https://z0cl.eu/PawnHub/balance.php', events, total: events.reduce((a, e) => a + e.total, 0) };
@@ -1105,7 +1122,7 @@
       const hits = matchPawnHubEvents(events, state.txs, byName), ts = hits.map(h => state.txs[h.txId].ts);
       if (!hits.length) { // nothing new to fill in (for example the Balance page already valued these sends): no need to ask
         const msg = await applyPawnHubBalance(rc); state.phFirstDone = true; state.phAt = Math.floor(Date.now() / 1000); save();
-        return { text: 'PawnHub: read ' + events.length + ' item payments (of ' + (state.phApiSample.eventCount != null ? state.phApiSample.eventCount : '?') + ' rows PawnHub lists). Nothing new to fill in. ' + msg.replace('PawnHub balance: ', '').replace('The Balance page starts', "PawnHub's list starts"), valued: 0, short: events.length + ' PawnHub payments read, nothing new to fill in' };
+        return { text: 'PawnHub: read ' + events.length + ' item payments (' + state.phApiSample.pages + ' page' + (state.phApiSample.pages === 1 ? '' : 's') + '). Nothing new to fill in. ' + msg.replace('PawnHub balance: ', '').replace('The Balance page starts', "PawnHub's list starts"), valued: 0, short: events.length + ' PawnHub payments read, nothing new to fill in' };
       }
       ui.phPreview = { rc, read: events.length, n: hits.length, total: hits.reduce((a, h) => a + h.event.total, 0), from: ts.length ? Math.min.apply(null, ts) : null, to: ts.length ? Math.max.apply(null, ts) : null, manual: hits.filter(h => state.txs[h.txId].src === 'manual').length, loose: events.length - hits.length };
       return { text: hits.length ? 'PawnHub: ' + hits.length + ' sends ready to fill in. Check the box at the top and tap Apply.' : 'PawnHub: no sends match its payments yet.', valued: 0, preview: true };
