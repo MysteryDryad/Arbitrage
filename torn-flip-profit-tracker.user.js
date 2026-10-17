@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.142-beta
+// @version      0.1.143-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.142-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.143-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -277,8 +277,8 @@
     }
     return { source: 'pawnhub-balance', url, events: rows, halved, total: rows.reduce((a, e) => a + e.total, 0) };
   }
-  // Pair each credited item event with the oldest unmatched send of the same item and quantity in the 30 minutes before the credit (the credit lands some minutes after the send).
-  const PH_LAG = 1800;
+  // Pair each credited item event with the oldest unmatched send of the same item and quantity in the 10 minutes before the credit (the credit lands some minutes after the send).
+  const PH_LAG = 600;
   const phNear = (t, e) => e.ts - t.ts >= -120 && e.ts - t.ts <= PH_LAG;
   function matchPawnHubEvents(events, txsObj, byName) {
     const sends = Object.values(txsObj).filter(t => t.channel === 'send' && t.dir === 'sell' && t.src !== 'receipt' && t.items && t.items.length === 1);
@@ -289,7 +289,7 @@
       let best = null;
       sends.forEach(t => {
         if (used.has(t.id) || t.items[0].id !== id || t.items[0].qty !== ev.qty) return;
-        const d = ev.ts - t.ts; // PawnHub credits the payment some minutes after the send: take the oldest unmatched send up to 30 minutes before the credit (events go oldest first)
+        const d = ev.ts - t.ts; // PawnHub credits the payment some minutes after the send: take the oldest unmatched send up to 10 minutes before the credit (events go oldest first)
         if (d >= -120 && d <= PH_LAG && (!best || t.ts < best.t.ts)) best = { t, d };
       });
       if (best) { used.add(best.t.id); out.push({ txId: best.t.id, event: ev }); }
