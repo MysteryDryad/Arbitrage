@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.130-beta
+// @version      0.1.131-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.130-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.131-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1140,7 +1140,7 @@
   .tfp-dl.sep{border-top:1px solid #2e2e2e;margin-top:4px;padding-top:5px}
   .tfp-hdr{font-size:11px;color:#999;text-transform:uppercase;letter-spacing:.04em;margin:6px 0 2px}
   a.tfp-more{display:block;text-align:center;padding:12px;border-top:1px solid #333}
-  .tfp-graph{margin:6px 0 2px;display:block}.tfp-axis{display:flex;justify-content:space-between;color:#999;font-size:11px}
+  .tfp-graph{margin:6px 0 2px;display:block;touch-action:pan-y}.tfp-axis{display:flex;justify-content:space-between;color:#999;font-size:11px}
   .tfp-seg{display:flex;background:#262626;border-radius:10px;padding:3px;margin:8px 0}.tfp-seg span{flex:1;text-align:center;padding:6px 0;border-radius:8px;color:#999;font-size:12.5px;cursor:pointer}.tfp-seg span.on{background:#3a4152;color:#eee}
   a.tfp-ir,div.tfp-ir{display:block;padding:9px 0;border-top:1px solid #333;color:inherit!important;text-decoration:none}
   .tfp-bar{height:8px;background:#2b303b;border-radius:6px;margin-top:6px;overflow:hidden}.tfp-bar i{display:block;height:100%;border-radius:6px}
@@ -1252,7 +1252,9 @@
     try {
       state.names = state.names || {}; ui.nameFail = ui.nameFail || {};
       const want = [];
-      Object.keys(ui).forEach(k => { if (/^tx_/.test(k) && ui[k]) { const tx = state.txs[k.slice(3)]; if (tx && isPid(tx.cp) && !state.names[tx.cp] && !ui.nameFail[tx.cp] && want.indexOf(String(tx.cp)) < 0) want.push(String(tx.cp)); } });
+      const addId = tx => { if (tx && isPid(tx.cp) && !state.names[tx.cp] && !ui.nameFail[tx.cp] && want.indexOf(String(tx.cp)) < 0) want.push(String(tx.cp)); };
+      Object.keys(ui).forEach(k => { if (/^tx_/.test(k) && ui[k]) addId(state.txs[k.slice(3)]); });
+      (ui.visTx || []).forEach(id => addId(state.txs[id]));
       let got = 0;
       for (const id of want.slice(0, 4)) {
         try {
@@ -1280,6 +1282,7 @@
     const market = tx.channel === 'market' && tx.dir === 'sell';
     if (e.kind === 'sale' || e.kind === 'skip') {
       if (market && tx.fee != null && tx.each != null) d += dl('Listed at', fmt(tx.each) + ' each', true) + dl('Sold for', fmt(tx.amount + tx.fee)) + dl('Torn fee', '−' + fmt(tx.fee)) + dl('You received', '<b>' + fmt(tx.amount) + '</b>');
+      else if (market) d += dl('You received', '<b>' + fmt(netAmt(tx)) + '</b>', true) + '<div class="tfp-sub">Listing price and fee are not stored for sales read before v0.1.129. Settings → Re-sync from start fills them in.</div>';
       else d += dl(gotWord(tx).replace(/^./, c => c.toUpperCase()), '<b>' + fmt(netAmt(tx)) + '</b>', true);
       if (e.kind === 'sale') d += dl('Your cost', costOf(f) == null ? '?' : fmt(costOf(f))) + dl('Profit', `<b class="${pnlCls(f.profit)}">${sgn(f.profit)}</b>`) + (f.unmatched ? `<div class="tfp-sub tfp-warn">${f.unmatched} unit(s) had no matching buy</div>` : '');
     } else if (tx.amount != null) d += dl(e.kind === 'buy' ? 'You paid' : 'Amount', '<b>' + fmt(tx.amount) + '</b>', true);
@@ -1306,7 +1309,9 @@
     const mn = Math.min(0, ...cum), mx = Math.max(0, ...cum), rg = (mx - mn) || 1, y = val => 78 - (val - mn) / rg * 66;
     const pts = cum.map((val, i) => [(i / (nb - 1) * 300).toFixed(1), y(val).toFixed(1)]), line = pts.map(q => q.join(',')).join(' '), up = cum[nb - 1] >= 0, col = up ? '#6fcf6f' : '#ef6f6f';
     const lab = [0, 1, 2, 3].map(i => { const ts = t0 + Math.round((nb - 1) * i / 3) * step; return step === 3600 ? hhmm(ts) : dayLabel(ts); });
-    return `<svg viewBox="0 0 300 90" width="100%" height="90" preserveAspectRatio="none" class="tfp-graph">${mn < 0 ? `<line x1="0" x2="300" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}" stroke="#555" stroke-width=".6" stroke-dasharray="3 3"/>` : ''}<polygon fill="${up ? 'rgba(111,207,111,.13)' : 'rgba(239,111,111,.13)'}" points="${line} 300,${y(0).toFixed(1)} 0,${y(0).toFixed(1)}"/><polyline fill="none" stroke="${col}" stroke-width="2" points="${line}"/><circle cx="300" cy="${y(cum[nb - 1]).toFixed(1)}" r="3.5" fill="${col}"/></svg><div class="tfp-axis">${lab.map(x => '<span>' + x + '</span>').join('')}</div>`;
+    const gl = cum.map((val, i) => { const ts = t0 + i * step; return step === 3600 ? dayLabel(ts) + ' ' + hhmm(ts) : step === 86400 ? dayLabel(ts) : 'week of ' + dayLabel(ts); });
+    const gdata = esc(JSON.stringify({ l: gl, v: cum.map(Math.round), y: pts.map(q => Number(q[1])) }));
+    return `<svg viewBox="0 0 300 90" width="100%" height="90" preserveAspectRatio="none" class="tfp-graph" data-g="${gdata}">${mn < 0 ? `<line x1="0" x2="300" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}" stroke="#555" stroke-width=".6" stroke-dasharray="3 3"/>` : ''}<polygon fill="${up ? 'rgba(111,207,111,.13)' : 'rgba(239,111,111,.13)'}" points="${line} 300,${y(0).toFixed(1)} 0,${y(0).toFixed(1)}"/><polyline fill="none" stroke="${col}" stroke-width="2" points="${line}"/><circle cx="300" cy="${y(cum[nb - 1]).toFixed(1)}" r="3.5" fill="${col}"/><line class="gl" x1="0" x2="0" y1="0" y2="90" stroke="#aaa" stroke-width=".7" stroke-dasharray="2 2" style="display:none"/><circle class="gd" r="4" cx="0" cy="0" fill="${col}" style="display:none"/></svg><div class="tfp-axis">${lab.map(x => '<span>' + x + '</span>').join('')}</div><div class="tfp-sub tfp-gcap" style="min-height:17px">Touch the graph to see running profit for a day.</div>`;
   }
   function rangeCaption() {
     const r = ui.range;
@@ -1336,6 +1341,7 @@
     if (!entries.length) return h + '<div class="tfp-msg">No activity in this time range. Sales appear once you sell items you bought.</div>';
     const dayTot = {}; entries.forEach(e => { if (e.kind === 'sale') dayTot[dayLabel(e.tx.ts)] = (dayTot[dayLabel(e.tx.ts)] || 0) + e.f.profit; });
     const lim = ui.limit || 10; let last = '';
+    ui.visTx = entries.slice(0, lim).map(e => e.tx.id);
     entries.slice(0, lim).forEach(e => {
       const d = dayLabel(e.tx.ts);
       if (d !== last) { last = d; h += `<div class="tfp-day"><span>${d}</span>${dayTot[d] != null ? '<b class="' + pnlCls(dayTot[d]) + '">' + sgn(dayTot[d]) + '</b>' : ''}</div>`; }
@@ -1450,7 +1456,14 @@
     let h = `<div class="tfp-cat"><div class="tfp-dl"><span>Weaver (TornW3B)</span><span class="${hasW ? 'tfp-pos' : 'tfp-warn'}">${hasW ? 'connected ✓' : 'not connected (add a key in Settings)'}</span></div>
       <div class="tfp-dl"><span>PawnHub Balance</span><span>${state.pawnhubSince ? '<span class="tfp-pos">read</span> · from ' + fdate(state.pawnhubSince) : 'open the Balance page in Torn to read it'}</span></div>
       <div class="tfp-dl"><span>TornExchange</span><span>by link</span></div>${li ? '<div class="tfp-sub">Last receipt added ' + fdate(li.at) + (li.msg ? ': ' + esc(li.msg) : '') + '</div>' : ''}</div>`;
-    if (ui.inboxN) h += `<div class="tfp-note" style="font-size:12.5px;color:#c9aa5d">⏳ ${ui.inboxN} saved receipt(s) are waiting for their trade or to be read. They attach on the next Sync. <a href="#" data-act="inbox">Try now</a></div>`;
+    { const wl = ui.inboxList || [], dd = state.lastSyncDetail && state.lastSyncDetail.weaver, wm = dd && dd.match(/not found in your log \((.*)\)\. TornW3B lists/), cnt = wl.length + (wm ? 1 : 0);
+      if (cnt) {
+        h += `<div class="tfp-note" style="font-size:12.5px;color:#c9aa5d">⏳ ${wl.length ? wl.length + ' saved receipt' + (wl.length === 1 ? ' is' : 's are') + ' waiting for their trade or to be read.' : 'Some Weaver receipts are waiting for their trade.'} They attach on the next Sync. <a href="#" data-act="toggle" data-v="showWaiting">See which ${ui.showWaiting ? '▾' : '▸'}</a>${wl.length ? ' · <a href="#" data-act="inbox">Try now</a>' : ''}</div>`;
+        if (ui.showWaiting) {
+          h += wl.map(x => { const u = safeUrl(x.u); return `<div class="tfp-row"><div class="tfp-top"><span><span class="tfp-tag ${x.s === 'weaver' ? 'trade' : x.s === 'pawnhub' || x.s === 'pawnhub-balance' ? 'sent' : 'market'}">${esc(x.s === 'pawnhub-balance' ? 'PawnHub Balance' : x.s === 'weaver' ? 'Weaver' : x.s === 'pawnhub' ? 'PawnHub' : 'Receipt')}</span>${esc(x.i || (x.n ? x.n + ' rows' : 'receipt'))}</span><b>${x.t != null ? fmt(x.t) : ''}</b></div><div class="tfp-sub">${x.id ? 'Trade #' + esc(x.id) + ' · ' : ''}${x.e ? esc(x.e) : 'its trade is not in your log yet'}${u ? ' · <a href="' + esc(u) + '" target="_blank" rel="noopener">open receipt ↗</a>' : ''}</div></div>`; }).join('');
+          if (wm) h += `<div class="tfp-row"><div class="tfp-sub">Weaver receipts from the last sync whose trade is not in your log yet: ${esc(wm[1].slice(0, 600))}</div></div>`;
+        }
+      } }
     h += '<div class="tfp-day"><span>Add a receipt</span></div><div class="tfp-sub">Open a receipt in Torn, or paste its link here.</div><textarea class="tfp-ta" id="tfp-rc" placeholder="Paste a receipt link"></textarea><div class="tfp-gap"></div><button class="tfp-b" data-act="addrc">Add receipt</button>';
     if (ui.failedLinks && ui.failedLinks.length) h += '<div class="tfp-msg">Could not read automatically. Open, and it adds itself (then come back here): ' + ui.failedLinks.map((u, i) => '<a href="' + esc(u.split('#')[0]) + '#tfp-add" target="_blank" rel="noopener">receipt ' + (i + 1) + '</a>').join(' · ') + '</div>';
     if (!IS_PDA_ENV) h += ' <button class="tfp-b" data-act="pawnhub">' + (ui.busy ? 'Reading…' : 'Read PawnHub Balance now') + '</button>';
@@ -1541,6 +1554,7 @@
       ${ui.itemLog && ui.tab === 'profit' ? ledgerHtml() : ''}${ui.tab === 'profit' ? profitHtml() : ui.tab === 'items' ? itemsHtml() : ui.tab === 'receipts' ? receiptsHtml() : settingsHtml()}</div>${fab}
       <div class="tfp-nav">${tabs.map(t => `<button class="${ui.tab === t[0] ? 'on' : ''}" data-act="tab" data-v="${t[0]}"><i>${t[1]}${t[0] === 'settings' && badge ? '<span class="tfp-bdg">' + badge + '</span>' : ''}</i>${t[2]}</button>`).join('')}</div>`;
     const nb = card.querySelector('.tfp-body'); if (nb) nb.scrollTop = keep;
+    if (ui.tab === 'profit' && !ui.busy && (ui.visTx || []).length) setTimeout(fetchNames, 400);
   }
   function toast(msg) {
     let t = document.getElementById('tfp-toast');
@@ -1550,6 +1564,7 @@
   }
   const val = id => { const el = document.getElementById(id); return el ? el.value : ''; };
 
+  const inboxBrief = list => list.map(rc => ({ s: rc.source || '', u: rc.url || '', t: rc.total != null ? rc.total : null, n: rc.events ? rc.events.length : 0, i: (rc.items || []).slice(0, 3).map(i => i.qty + '× ' + i.name).join(', ') + ((rc.items || []).length > 3 ? ' +' + ((rc.items || []).length - 3) : ''), e: rc.lastErr || '', id: rc.tradeId || null }));
   let inboxBusy = false;
   // force: also retry receipts that were put on hold (their trade was not in the log yet, or a read failed). Held ones are retried by Sync or every few minutes, and never re-announced.
   async function processInbox(force) {
@@ -1574,7 +1589,7 @@
         changed = true;
       }
       if (changed || keep.length !== inbox.length) await inboxSet(keep);
-      ui.inboxN = keep.length;
+      ui.inboxN = keep.length; ui.inboxList = inboxBrief(keep);
       return last;
     } finally { inboxBusy = false; }
   }
@@ -1606,7 +1621,7 @@
   }
   async function autoInbox() {
     if (inboxBusy || !(hasGM || nat())) return;
-    const queued = await inboxGet(); ui.inboxN = queued.length;
+    const queued = await inboxGet(); ui.inboxN = queued.length; ui.inboxList = inboxBrief(queued);
     const nowS = Math.floor(Date.now() / 1000);
     if (!queued.length || queued.every(r => r.nextTry && r.nextTry > nowS)) return;
     try { ui.msg = await processInbox(); } catch (e) { ui.msg = String(e.message || e); }
@@ -1776,6 +1791,15 @@
     if (!document.getElementById('tfp-wrap')) {
       const w = document.createElement('div'); w.id = 'tfp-wrap'; if (IS_PDA_ENV) w.classList.add('pda'); w.innerHTML = '<div id="tfp-card"></div>';
       w.addEventListener('click', ev => { if (ev.target === w) { w.classList.remove('open'); ui.open = false; } else if (!ev.target.closest('select, input, textarea')) onAction(ev); });
+      const gprobe = ev => {
+        const svg = ev.target && ev.target.closest ? ev.target.closest('svg.tfp-graph') : null; if (!svg) return;
+        let g; try { g = JSON.parse(svg.getAttribute('data-g')); } catch (e) { return; }
+        const r = svg.getBoundingClientRect(), n = g.v.length, x = r.width ? Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)) : 1, i = Math.round(x * (n - 1)), px = n > 1 ? i / (n - 1) * 300 : 300;
+        const ln = svg.querySelector('.gl'), dt = svg.querySelector('.gd'), cap = svg.parentNode.querySelector('.tfp-gcap');
+        ln.setAttribute('x1', px); ln.setAttribute('x2', px); dt.setAttribute('cx', px); dt.setAttribute('cy', g.y[i]); ln.style.display = dt.style.display = '';
+        if (cap) cap.textContent = g.l[i] + ' · running profit ' + (g.v[i] < 0 ? '−' : '+') + fmt(Math.abs(g.v[i]));
+      };
+      ['pointermove', 'pointerdown'].forEach(t => w.addEventListener(t, gprobe));
       ['change', 'input'].forEach(t => w.addEventListener(t, ev => { if (ev.target.matches('select[data-act]') || (t === 'change' && ev.target.matches('input[data-act]'))) onAction(ev); }));
       document.body.appendChild(w);
     }
