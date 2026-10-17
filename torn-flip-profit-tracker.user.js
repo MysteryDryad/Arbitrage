@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.146-beta
+// @version      0.1.147-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.146-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.147-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1095,7 +1095,7 @@
     if (j && j.error) throw new Error('PawnHub: ' + clean(typeof j.error === 'string' ? j.error : (j.error.message || JSON.stringify(j.error))).slice(0, 100));
     const evs = j && j.balance_events && j.balance_events.events;
     if (!Array.isArray(evs)) throw new Error('PawnHub answered, but without payment rows. Check the key in Settings.');
-    state.phApiSample = { keys: Object.keys(j || {}), eventKeys: Object.keys(j.balance_events || {}), rows: evs.length, eventCount: j.balance && j.balance.event_count != null ? j.balance.event_count : null };
+    state.phApiSample = { keys: Object.keys(j || {}), eventKeys: Object.keys(j.balance_events || {}), rows: evs.length, eventCount: j.balance && j.balance.event_count != null ? j.balance.event_count : null, pagination: JSON.stringify((j.balance_events || {}).pagination === undefined ? null : j.balance_events.pagination).slice(0, 400), from: (j.balance_events || {}).from === undefined ? null : j.balance_events.from, toExclusive: (j.balance_events || {}).to_exclusive === undefined ? null : j.balance_events.to_exclusive };
     const events = evs.filter(e => Number(e.item_id) > 0 && /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(String(e.created_at || ''))).map(e => ({ id: e.id, ts: Date.parse(String(e.created_at).replace(' ', 'T').replace(/Z?$/, 'Z')) / 1000, itemId: Number(e.item_id), item: e.item_name, role: e.member_role, qty: Number(e.quantity), unit: Number(e.unit_price), total: Number(e.total_value) })).filter(e => e.qty > 0 && isFinite(e.unit) && isFinite(e.total) && isFinite(e.ts));
     if (!events.length) return { text: 'PawnHub: no item payments in the reply.', valued: 0 };
     const rc = { source: 'pawnhub-balance', url: 'https://z0cl.eu/PawnHub/balance.php', events, total: events.reduce((a, e) => a + e.total, 0) };
