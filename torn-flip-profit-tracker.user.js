@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.144-beta
+// @version      0.1.145-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.144-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.145-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1102,7 +1102,11 @@
       await ensureItems(); rebuildSendTxs();
       const byName = {}; Object.entries(itemNames).forEach(([id, n]) => { byName[String(n).toLowerCase()] = Number(id); });
       const hits = matchPawnHubEvents(events, state.txs, byName), ts = hits.map(h => state.txs[h.txId].ts);
-      ui.phPreview = { rc, n: hits.length, total: hits.reduce((a, h) => a + h.event.total, 0), from: ts.length ? Math.min.apply(null, ts) : null, to: ts.length ? Math.max.apply(null, ts) : null, manual: hits.filter(h => state.txs[h.txId].src === 'manual').length, loose: events.length - hits.length };
+      if (!hits.length) { // nothing new to fill in (for example the Balance page already valued these sends): no need to ask
+        const msg = await applyPawnHubBalance(rc); state.phFirstDone = true; state.phAt = Math.floor(Date.now() / 1000); save();
+        return { text: 'PawnHub: read ' + events.length + ' item payments (of ' + (state.phApiSample.eventCount != null ? state.phApiSample.eventCount : '?') + ' rows PawnHub lists). Nothing new to fill in. ' + msg.replace('PawnHub balance: ', '').replace('The Balance page starts', "PawnHub's list starts"), valued: 0 };
+      }
+      ui.phPreview = { rc, read: events.length, n: hits.length, total: hits.reduce((a, h) => a + h.event.total, 0), from: ts.length ? Math.min.apply(null, ts) : null, to: ts.length ? Math.max.apply(null, ts) : null, manual: hits.filter(h => state.txs[h.txId].src === 'manual').length, loose: events.length - hits.length };
       return { text: hits.length ? 'PawnHub: ' + hits.length + ' sends ready to fill in. Check the box at the top and tap Apply.' : 'PawnHub: no sends match its payments yet.', valued: 0, preview: true };
     }
     const msg = await applyPawnHubBalance(rc);
@@ -1495,7 +1499,7 @@
   }
   function phPreviewHtml() {
     const p = ui.phPreview; if (!p) return '';
-    return `<div class="tfp-msg" style="border:1px solid #3b6fd1"><b>PawnHub is ready</b><div class="tfp-sub" style="color:#ccc">This would fill in <b>${p.n}</b> send${p.n === 1 ? '' : 's'}${p.from ? ' (' + dayLabel(p.from) + ' to ' + dayLabel(p.to) + ')' : ''}, ${fmt(p.total)} in all.${p.manual ? ' ' + p.manual + (p.manual === 1 ? ' of them has a value you entered, which would be replaced.' : ' of them have a value you entered, which would be replaced.') : ''}${p.loose ? ' ' + p.loose + ' PawnHub row' + (p.loose === 1 ? ' has' : 's have') + ' no matching send in your data.' : ''} Profit for past days will change. This check only happens the first time.</div><div class="tfp-gap"></div><button class="tfp-b" data-act="phapply">Apply</button> <button class="tfp-b" data-act="phcancel">Not now</button></div>`;
+    return `<div class="tfp-msg" style="border:1px solid #3b6fd1"><b>PawnHub is ready</b><div class="tfp-sub" style="color:#ccc">PawnHub sent ${p.read} item payments. This would fill in <b>${p.n}</b> send${p.n === 1 ? '' : 's'}${p.from ? ' (' + dayLabel(p.from) + ' to ' + dayLabel(p.to) + ')' : ''}, ${fmt(p.total)} in all.${p.manual ? ' ' + p.manual + (p.manual === 1 ? ' of them has a value you entered, which would be replaced.' : ' of them have a value you entered, which would be replaced.') : ''}${p.loose ? ' ' + p.loose + ' PawnHub row' + (p.loose === 1 ? ' has' : 's have') + ' no matching send in your data.' : ''} Profit for past days will change. This check only happens the first time.</div><div class="tfp-gap"></div><button class="tfp-b" data-act="phapply">Apply</button> <button class="tfp-b" data-act="phcancel">Not now</button></div>`;
   }
   function inboxHtml() {
     const a = attention(), n = a.pend.length + a.skip.length, nd = a.dPend.length + a.dSkip.length;
