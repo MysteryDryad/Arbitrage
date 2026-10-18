@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.153-beta
+// @version      0.1.154-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.153-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.154-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1387,14 +1387,12 @@
     const gdata = esc(JSON.stringify({ l: gl, v: cum.map(Math.round), y: pts.map(q => Number(q[1])) }));
     return `<svg viewBox="0 0 300 90" width="100%" height="90" preserveAspectRatio="none" class="tfp-graph" data-g="${gdata}">${mn < 0 ? `<line x1="0" x2="300" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}" stroke="#555" stroke-width=".6" stroke-dasharray="3 3"/>` : ''}<polygon fill="${up ? 'rgba(111,207,111,.13)' : 'rgba(239,111,111,.13)'}" points="${line} 300,${y(0).toFixed(1)} 0,${y(0).toFixed(1)}"/><polyline fill="none" stroke="${col}" stroke-width="2" points="${line}"/><circle cx="300" cy="${y(cum[nb - 1]).toFixed(1)}" r="3.5" fill="${col}"/><line class="gl" x1="0" x2="0" y1="0" y2="90" stroke="#aaa" stroke-width=".7" stroke-dasharray="2 2" style="display:none"/><circle class="gd" r="4" cx="0" cy="0" fill="${col}" style="display:none"/></svg><div class="tfp-axis">${lab.map(x => '<span>' + x + '</span>').join('')}</div><div class="tfp-sub tfp-gcap" style="min-height:17px">Touch the graph to see running profit for a day.</div>`;
   }
-  // The first sync only reads the last N days (Settings). When the chosen range reaches back past what was loaded, say so and offer to load more.
-  function olderNote(cutoff) {
-    const ts = Object.values(state.txs).map(t => t.ts).filter(Number), start = Number(sget('startDays', 30)) || 30;
-    if (!ts.length) return '';
-    const first = Math.min.apply(null, ts), now = Date.now() / 1000;
-    if (cutoff >= first - 86400 || now - first < (start - 3) * 86400) return ''; // the range does not reach before the data, or the data already goes back further than the look-back (account may simply be newer)
-    const opts = [90, 365, 1825].filter(d => d > start);
-    return `<div class="tfp-msg"><b>Only ${Math.round((now - first) / 86400)} days are loaded</b> (from ${dayLabel(first)}), so this range stops there. Sales older than that are not in your data yet.${opts.length ? '<div class="tfp-gap"></div>' + opts.map(d => `<button class="tfp-b" data-act="loadback" data-v="${d}">Load ${d === 90 ? '3 months' : d === 365 ? '1 year' : '5 years'}</button>`).join(' ') + '<div class="tfp-sub">Longer takes longer. It keeps going if you close this, and your receipts and values stay.</div>' : ''}</div>`;
+  // On All: say how much history is loaded, in a small line (the first sync only reads the last N days; Settings changes it).
+  function olderNote() {
+    if (ui.range !== 0) return '';
+    const ts = Object.values(state.txs).map(t => t.ts).filter(Number); if (!ts.length) return '';
+    const days = Math.max(1, Math.round((Date.now() / 1000 - Math.min.apply(null, ts)) / 86400));
+    return `<div class="tfp-sub" style="margin:6px 0">${days} day${days === 1 ? '' : 's'} of history loaded. <a href="#" data-act="tab" data-v="settings">Change in Settings</a> if you want more.</div>`;
   }
   function rangeCaption() {
     const r = ui.range;
@@ -1410,7 +1408,7 @@
     const profit = done.reduce((a, f) => a + f.profit, 0);
     let h = `${rangeChips()}${rangeDates()}<div class="tfp-sub" style="margin:0">Profit · ${esc(rangeCaption())}</div><div class="tfp-prow"><div class="tfp-big ${pnlCls(profit)}">${fmt(profit)}</div><div class="tfp-sub" style="margin:0">${cost > 0 ? (profit >= 0 ? '▲ ' : '▼ ') + (profit / cost * 100).toFixed(1) + '% on cost' : ''}</div></div>
       ${graphHtml(done.map(f => ({ ts: f.tx.ts, profit: f.profit })), cutoff)}
-      <div class="tfp-stats"><div class="tfp-stat"><span>Sold for</span><b>${fmt(revenue)}</b></div><div class="tfp-stat"><span>Cost</span><b>${fmt(cost)}</b></div><div class="tfp-stat"><span>Sales</span><b>${done.length}</b></div></div>${olderNote(cutoff)}`;
+      <div class="tfp-stats"><div class="tfp-stat"><span>Sold for</span><b>${fmt(revenue)}</b></div><div class="tfp-stat"><span>Cost</span><b>${fmt(cost)}</b></div><div class="tfp-stat"><span>Sales</span><b>${done.length}</b></div></div>${olderNote()}`;
     const left = h; h = ''; const wrap2 = r => '<div class="tfp-two"><div class="tfp-colL">' + left + '</div><div class="tfp-colR">' + r + '</div></div>';
     if (!Object.keys(state.txs).length) return wrap2('<div class="tfp-msg">Nothing imported yet. Tap Sync to read your Torn log.</div>');
     const entries = [];
@@ -1439,7 +1437,7 @@
     const [cutoff, upto] = rangeBounds(), inR = ts => ts >= cutoff && ts < upto;
     const done = getRes().flips.filter(f => f.profit != null && inR(f.tx.ts)), profit = done.reduce((a, f) => a + f.profit, 0), by = ui.itemsBy || 'item';
     let h = `${rangeChips()}${rangeDates()}<div class="tfp-sub" style="margin:0">Profit · ${esc(rangeCaption())}</div><div class="tfp-big ${pnlCls(profit)}">${fmt(profit)}</div>
-      ${olderNote(cutoff)}<div class="tfp-seg">${[['item', 'By item'], ['day', 'By day'], ['channel', 'By channel']].map(x => `<span class="${by === x[0] ? 'on' : ''}" data-act="itemsby" data-v="${x[0]}">${x[1]}</span>`).join('')}</div>`;
+      ${olderNote()}<div class="tfp-seg">${[['item', 'By item'], ['day', 'By day'], ['channel', 'By channel']].map(x => `<span class="${by === x[0] ? 'on' : ''}" data-act="itemsby" data-v="${x[0]}">${x[1]}</span>`).join('')}</div>`;
     const left = h; h = ''; const wrap2 = r => '<div class="tfp-two"><div class="tfp-colL">' + left + '</div><div class="tfp-colR">' + r + '</div></div>';
     const rows = [];
     if (by === 'item') {
@@ -1725,7 +1723,7 @@
     const el = e.target.closest('[data-act]');
     if (!el) return;
     const act = el.dataset.act, id = el.dataset.id, v = el.dataset.v;
-    if (act === 'edit' || act === 'toggle' || act === 'ledgermore' || act === 'more' || act === 'imore' || act === 'rmore' || act === 'pawnoff' || act === 'itemlog' || act === 'itemlogclose') e.preventDefault();
+    if (act === 'edit' || act === 'toggle' || act === 'tab' || act === 'ledgermore' || act === 'more' || act === 'imore' || act === 'rmore' || act === 'pawnoff' || act === 'itemlog' || act === 'itemlogclose') e.preventDefault();
     ui.msg = ''; ui._res = null;
     if (act !== 'giftall') ui.armGift = false;
     if (act !== 'giftolder') ui.armOlder = false;
@@ -1827,9 +1825,8 @@
         } catch (e) { sset('apikey', old); throw e; }
       }
       else if (act === 'clearkey') { sset('apikey', ''); state.me = null; save(); ui.msg = 'Key removed from this device.'; }
-      else if (act === 'sync' || act === 'resync' || act === 'loadback') {
-        if (act === 'loadback') sset('startDays', Number(v) || 30);
-        if (act === 'resync' || act === 'loadback') { state.lastSync = 0; state.seenTitles = {}; state.tradeParts = {}; state.sendParts = {}; state.moneyEvents = {}; state.listEvents = {}; state.resume = null; save(); }
+      else if (act === 'sync' || act === 'resync') {
+        if (act === 'resync') { state.lastSync = 0; state.seenTitles = {}; state.tradeParts = {}; state.sendParts = {}; state.moneyEvents = {}; state.listEvents = {}; state.resume = null; save(); }
         if (ui.busy) return;
         { const d = document.getElementById('tfp-days'); if (d) sset('startDays', Number(d.value) || 30); }
         ui.busy = true; render();
