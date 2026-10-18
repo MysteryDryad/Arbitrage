@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.150-beta
+// @version      0.1.149-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.150-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.149-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1569,7 +1569,7 @@
   }
   function settingsHtml() {
     const own = !!sget('apikey', '');
-    const keyBox = `<div class="tfp-sub">${IN_PDA && !own ? 'Using your Torn PDA key by default.' : 'Torn API key.'} <a href="${esc(KEYURL)}" data-act="makekey">Create a custom key ↗</a> (read-only: just your log and item names), then paste it here. Limited keys don't work. If the link does nothing, make it yourself: Torn → Settings → API Key → new key, type <b>Custom</b>, name it Arbitrage, tick <b>User: basic, log</b> and <b>Torn: items</b>.</div>
+    const keyBox = `<div class="tfp-sub">${IN_PDA && !own ? 'Using your Torn PDA key by default.' : 'Torn API key.'} <a href="${esc(KEYURL)}">Create a custom key ↗</a> (read-only: just your log and item names), then paste it here. Limited keys don't work.</div>
       <input class="tfp-in" id="tfp-key" type="password" autocomplete="off" placeholder="${own ? 'Key saved (hidden). Paste a new one to replace.' : 'Paste your key'}"><div class="tfp-gap"></div>
       <button class="tfp-b" data-act="savekey">Save key</button> ${own ? '<button class="tfp-b" data-act="clearkey">Remove key</button>' : ''}
       <table class="tfp-disc"><tr><td>Your data</td><td>Stays on this device. Not shared with anyone.</td></tr>
@@ -1716,7 +1716,7 @@
     const el = e.target.closest('[data-act]');
     if (!el) return;
     const act = el.dataset.act, id = el.dataset.id, v = el.dataset.v;
-    if (act === 'edit' || act === 'toggle' || act === 'makekey' || act === 'ledgermore' || act === 'more' || act === 'imore' || act === 'rmore' || act === 'pawnoff' || act === 'itemlog' || act === 'itemlogclose') e.preventDefault();
+    if (act === 'edit' || act === 'toggle' || act === 'ledgermore' || act === 'more' || act === 'imore' || act === 'rmore' || act === 'pawnoff' || act === 'itemlog' || act === 'itemlogclose') e.preventDefault();
     ui.msg = ''; ui._res = null;
     if (act !== 'giftall') ui.armGift = false;
     if (act !== 'giftolder') ui.armOlder = false;
@@ -1737,10 +1737,6 @@
         else { const a = attention(); state.ack = state.ack || {}; a.pend.forEach(t => { state.ack[t.id] = 1; }); a.skip.forEach(f => { state.ack[f.tx.id] = 1; }); save(); ui.armAck = false; }
       }
       else if (act === 'itemlog') { if (ui.tab === 'items') ui.itemLog = String(ui.itemLog) === String(id) ? null : id; else { navPush(); ui.tab = 'profit'; ui.itemLog = id; card0().scrollTop = 0; } }
-      else if (act === 'makekey') { // a link that only changes the #part of the page you are already on does not reload it, so Torn would ignore it
-        const onPrefs = /preferences\.php/i.test(location.pathname);
-        location.href = KEYURL; if (onPrefs) setTimeout(() => location.reload(), 150);
-      }
       else if (act === 'more') ui.limit = (ui.limit || 10) + 10;
       else if (act === 'ledgermore') ui.ledgerAll = !ui.ledgerAll;
       else if (act === 'imore') ui.ilimit = (ui.ilimit || 25) + 25;
