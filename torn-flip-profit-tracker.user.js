@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.154-beta
+// @version      0.1.155-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.154-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.155-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -61,6 +61,13 @@
     return hasGM ? sset('inbox', v) : false;
   }
 
+  // With a PawnHub key saved, the API reads the payments and the PawnHub pages need no banner or button. The flag lives in PDA's shared storage too, so the PawnHub page can see it.
+  async function phKeyOn() {
+    if (sget('phkey', '')) return true;
+    const n = nat(); if (n) { try { return !!(await n.get('phkeyset', false)); } catch (e) { /* ignore */ } }
+    return false;
+  }
+  async function phFlagSet(v) { try { sset('phkeyset', !!v); } catch (e) { /* ignore */ } const n = nat(); if (n) { try { await n.set('phkeyset', !!v); } catch (e) { /* ignore */ } } }
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
   // to localStorage when GM has nothing usable (PDA may return odd placeholders after an update).
   let lastSaveOk = true;
@@ -1755,9 +1762,9 @@
       else if (act === 'savephkey') {
         const k = val('tfp-phkey').trim();
         if (!/^[A-Za-z0-9_-]{8,64}$/.test(k)) throw new Error('That does not look like a Torn API key.');
-        sset('phkey', k); ui.msg = 'PawnHub key saved on this device. Tap Sync to read it.';
+        sset('phkey', k); phFlagSet(true); ui.msg = 'PawnHub key saved on this device. Tap Sync to read it.';
       }
-      else if (act === 'clearphkey') { sset('phkey', ''); ui.msg = 'PawnHub key removed from this device.'; }
+      else if (act === 'clearphkey') { sset('phkey', ''); phFlagSet(false); ui.msg = 'PawnHub key removed from this device.'; }
       else if (act === 'phapply') {
         const p = ui.phPreview; ui.phPreview = null;
         if (p) { ui.msg = await applyPawnHubBalance(p.rc); state.phFirstDone = true; state.phAt = Math.floor(Date.now() / 1000); save(); }
@@ -1916,9 +1923,12 @@
   }
 
   /* ===================== receipt pages (tornexchange / weav3r) ===================== */
+  let phOn = false;
   function mountReceiptButton() {
-    if (document.getElementById('tfp-rbtn')) return;
-    const onBalance = /(^|\.)z0cl\.eu$/i.test(location.hostname) && /^\/pawnhub\/balance\.php/i.test(location.pathname), onTE = /(^|\.)tornexchange\.com$/i.test(location.hostname);
+    const old = document.getElementById('tfp-rbtn');
+    if (old && phOn && /z0cl\.eu$/i.test(location.hostname)) { old.remove(); return; }
+    if (old) return;
+    const onBalance = /(^|\.)z0cl\.eu$/i.test(location.hostname) && /^\/pawnhub\/balance\.php/i.test(location.pathname) && !phOn, onTE = /(^|\.)tornexchange\.com$/i.test(location.hostname);
     if (!onBalance && !onTE) return; // the manual button is only for the PawnHub Balance page and TornExchange (no API there); other receipt pages add themselves
     const st = document.createElement('style'); st.textContent = CSS; document.head.appendChild(st);
     const b = document.createElement('button');
@@ -1956,8 +1966,8 @@
         }, 1000);
         return;
       }
-      mountReceiptButton();
-      setInterval(mountReceiptButton, 3000);
+      const refreshBtn = () => phKeyOn().then(v => { phOn = v; mountReceiptButton(); });
+      refreshBtn(); setInterval(refreshBtn, 3000);
       { // any receipt page you open is added by itself once it has loaded (nothing is sent anywhere; it is saved on this device)
         // The Balance page fills in as it loads, so keep re-reading it until the number of rows stops growing.
         let tries = 0, count = -1, stable = 0, banner = null;
@@ -1966,6 +1976,7 @@
           if (busy) return; busy = true;
           try {
           const rc = parseReceiptDoc(document, location.href.split('#')[0]);
+          if (rc && rc.source === 'pawnhub-balance' && await phKeyOn()) { clearInterval(t); return; } // the PawnHub API already covers this page
           if (rc && (hasGM || nat())) {
             const n = rc.events ? rc.events.length : 0, grow = rc.source === 'pawnhub-balance';
             if (n !== count) {
@@ -1987,7 +1998,7 @@
     } else {
       mountTornUI();
       setInterval(mountTornUI, 2500);
-      bootP.then(() => { setTimeout(autoInbox, 2500); setTimeout(importFromHash, 1200); });
+      bootP.then(() => { if (sget('phkey', '')) phFlagSet(true); setTimeout(autoInbox, 2500); setTimeout(importFromHash, 1200); });
       document.addEventListener('visibilitychange', () => { if (!document.hidden) bootP.then(() => { // another page may have saved newer data while this one slept
         (hasIDB ? idb.get('state').catch(() => null) : Promise.resolve(sget('state', null))).then(st => { if (st && st.txs && (st.savedAt || 0) > lastWrite && !ui.busy) { const mine = state; state = mergeState(Object.assign(STATE_DEFAULTS(), st), mine); lastWrite = st.savedAt; if (ui.open) render(); } }).catch(() => {});
         autoInbox(); }); });
