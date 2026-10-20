@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.157-beta
+// @version      0.1.158-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.157-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.158-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1661,7 +1661,7 @@
       await apiUrl('https://api.torn.com/v2/user/log?limit=1&key=' + enc); // the log is the part that needs the right access
       let name = ''; try { const j = await apiUrl('https://api.torn.com/v2/user/basic?key=' + enc); name = ((j && j.profile) || j || {}).name || ''; } catch (e) { /* name is only a nicety */ }
       return { ok: true, name };
-    } catch (e) { return { ok: false, msg: String((e && e.message) || e).split(key).join('***').slice(0, 200) }; }
+    } catch (e) { return { ok: false, msg: e && e.rate ? 'Torn is limiting requests right now. Wait a minute, then tap Check key again.' : String((e && e.message) || e).split(key).join('***').slice(0, 200) }; }
   }
   async function checkPawnKey(key) {
     try {
@@ -1685,7 +1685,7 @@
       foot = `<span class="tfp-sub">Step 1 of ${n}</span>` + next(true, 'Start ▸');
     } else if (cur === 'torn') {
       title = 'Your Torn API key';
-      const custom = `<p>Arbitrage needs a key that can read your log. Make a <b>custom</b> key with only what it needs:</p><p><a href="${esc(KEYURL)}">Create the key for me ↗</a><br><span class="tfp-sub">Opens Torn already filled in. Tap Create, copy the key, then come back and paste it.</span></p><input class="tfp-in" id="tfp-swkey" type="password" autocomplete="off" data-act="swkey" placeholder="Paste your key"><div class="tfp-gap"></div><button class="tfp-b" data-act="swcheck">${S.busy ? 'Checking…' : 'Check key'}</button>`;
+      const custom = `<p>Arbitrage needs a key that can read your log. Make a <b>custom</b> key with only what it needs:</p><p><a href="${esc(KEYURL)}">Create the key for me ↗</a><br><span class="tfp-sub">Opens Torn already filled in. Tap Create, copy the key, then come back and paste it.</span></p><input class="tfp-in" id="tfp-swkey" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore style="-webkit-text-security:disc" placeholder="Paste your key"><div class="tfp-gap"></div><button class="tfp-b" data-act="swcheck">${S.busy ? 'Checking…' : 'Check key'}</button>`;
       if (IN_PDA) body = `<p>You're in Torn PDA. Use PDA's key, or a custom one.</p>` + opt('swpda', 'pda', 'Use my PDA key', 'Nothing to paste.', S.torn === 'pda') + opt('swcustom', 'custom', 'Use a custom key instead', 'Safer: only your log and item names.', S.torn === 'custom') + (S.torn === 'custom' ? custom : '');
       else body = custom;
       body += S.msg ? `<div class="tfp-msg ${S.tornOk ? 'tfp-pos' : 'tfp-warn'}">${esc(S.msg)}</div>` : (S.tornOk ? `<div class="tfp-msg tfp-pos">✓ Key saved${S.tornName ? ' for ' + esc(S.tornName) : ''}.</div>` : '');
@@ -1697,7 +1697,7 @@
       foot = back + next(S.ph !== null);
     } else if (cur === 'phkey') {
       title = 'Your PawnHub key';
-      body = `<p>Paste the Torn API key you use to log in to PawnHub.</p><input class="tfp-in" id="tfp-swph" type="password" autocomplete="off" data-act="swphkey" placeholder="Paste your PawnHub key"><div class="tfp-gap"></div><button class="tfp-b" data-act="swphcheck">${S.busy ? 'Checking…' : 'Check key'}</button>` + (S.phMsg ? `<div class="tfp-msg ${S.phOk ? 'tfp-pos' : 'tfp-warn'}">${esc(S.phMsg)}</div>` : (S.phOk ? '<div class="tfp-msg tfp-pos">✓ PawnHub key saved.</div>' : '')) + `<p class="tfp-sub">Stored only on this device and sent only to PawnHub (z0cl.eu), like logging in there. A key with just "user basic" ticked is enough. You can skip this and add it later in Settings.</p>`;
+      body = `<p>Paste the Torn API key you use to log in to PawnHub.</p><input class="tfp-in" id="tfp-swph" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore style="-webkit-text-security:disc" placeholder="Paste your PawnHub key"><div class="tfp-gap"></div><button class="tfp-b" data-act="swphcheck">${S.busy ? 'Checking…' : 'Check key'}</button>` + (S.phMsg ? `<div class="tfp-msg ${S.phOk ? 'tfp-pos' : 'tfp-warn'}">${esc(S.phMsg)}</div>` : (S.phOk ? '<div class="tfp-msg tfp-pos">✓ PawnHub key saved.</div>' : '')) + `<p class="tfp-sub">Stored only on this device and sent only to PawnHub (z0cl.eu), like logging in there. A key with just "user basic" ticked is enough. You can skip this and add it later in Settings.</p>`;
       foot = back + (S.phOk ? next(true) : '<span><button class="tfp-b" data-act="swskip">Skip</button></span>');
     } else if (cur === 'days') {
       title = 'How far back?';
@@ -1705,7 +1705,7 @@
       foot = back + next(true);
     } else if (cur === 'weaver') {
       title = 'Weaver receipts (optional)';
-      body = `<p>If you trade through Weaver (TornW3B), paste the key you registered there and receipts attach to your trades automatically.</p><input class="tfp-in" id="tfp-swweaver" type="password" autocomplete="off" placeholder="TornW3B key (optional)">${S.wMsg ? '<div class="tfp-msg tfp-warn">' + esc(S.wMsg) + '</div>' : ''}<p class="tfp-sub">Stored only on this device, sent only to weav3r.dev. Your Torn key never goes there. TornExchange receipts need no key.</p>`;
+      body = `<p>If you trade through Weaver (TornW3B), paste the key you registered there and receipts attach to your trades automatically.</p><input class="tfp-in" id="tfp-swweaver" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore style="-webkit-text-security:disc" placeholder="TornW3B key (optional)">${S.wMsg ? '<div class="tfp-msg tfp-warn">' + esc(S.wMsg) + '</div>' : ''}<p class="tfp-sub">Stored only on this device, sent only to weav3r.dev. Your Torn key never goes there. TornExchange receipts need no key.</p>`;
       foot = back + '<span><button class="tfp-b" data-act="swskip">Skip</button> ' + next(true) + '</span>';
     } else {
       title = "You're set";
@@ -1716,6 +1716,7 @@
   }
   async function setupAction(act, v, el) {
     const S = ui.setup; if (!S) return false;
+    if (S.busy) return true; // one check at a time: ignore taps and stray events while it runs
     const steps = swSteps();
     const go = d => { S.i = Math.max(0, Math.min(steps.length - 1, S.i + d)); S.msg = ''; S.phMsg = ''; S.wMsg = ''; sset('setupStep', S.i); };
     if (act === 'swnext') {
@@ -1732,7 +1733,7 @@
       else S.msg = 'PDA\'s key cannot read your log (' + r.msg + '). Use a custom key instead.';
       return true;
     }
-    if (act === 'swkey' || act === 'swcheck') {
+    if (act === 'swcheck') {
       const k = val('tfp-swkey').trim(); if (!k) { S.msg = 'Paste your key first.'; return true; }
       if (!/^[A-Za-z0-9]{12,32}$/.test(k)) { S.msg = 'That does not look like a Torn API key.'; return true; }
       S.busy = true; S.msg = 'Checking…'; render();
@@ -1742,7 +1743,7 @@
       return true;
     }
     if (act === 'swph') { S.ph = v === 'yes'; sset('usePH', S.ph); if (!S.ph) S.phOk = false; return true; }
-    if (act === 'swphkey' || act === 'swphcheck') {
+    if (act === 'swphcheck') {
       const k = val('tfp-swph').trim(); if (!k) { S.phMsg = 'Paste your PawnHub key first.'; return true; }
       if (!/^[A-Za-z0-9]{12,32}$/.test(k)) { S.phMsg = 'That does not look like a Torn API key.'; return true; }
       S.busy = true; S.phMsg = 'Checking…'; render();
@@ -1865,7 +1866,7 @@
     const act = el.dataset.act, id = el.dataset.id, v = el.dataset.v;
     if (act === 'edit' || act === 'toggle' || act === 'tab' || act === 'ledgermore' || act === 'more' || act === 'imore' || act === 'rmore' || act === 'pawnoff' || act === 'itemlog' || act === 'itemlogclose') e.preventDefault();
     ui.msg = ''; ui._res = null;
-    if (/^sw(next|back|skip|custom|pda|key|check|ph|phkey|phcheck|days|done)$/.test(act)) { e.preventDefault(); try { await setupAction(act, v, el); } catch (err) { if (ui.setup) { ui.setup.busy = false; ui.setup.msg = String(err.message || err); } } render(); return; }
+    if (/^sw(next|back|skip|custom|pda|check|ph|phcheck|days|done)$/.test(act)) { e.preventDefault(); try { await setupAction(act, v, el); } catch (err) { if (ui.setup) { ui.setup.busy = false; ui.setup.msg = String(err.message || err); } } render(); return; }
     if (act === 'runsetup') { e.preventDefault(); startSetup(true); render(); return; }
     if (act !== 'giftall') ui.armGift = false;
     if (act !== 'giftolder') ui.armOlder = false;
