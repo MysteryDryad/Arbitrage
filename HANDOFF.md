@@ -13,6 +13,9 @@ Runs in Torn PDA (iOS) and Tampermonkey. Read-only: reads the Torn API, never ac
 ## UI (v0.1.131)
 Full-screen panel (`#tfp-card`: header, scrolling `.tfp-body`, floating Sync, bottom nav). Tabs: Profit (range chips, running-profit graph you can touch, timeline newest first, 10 rows then "Show more", trade number/receipt link/player name only in a row's details, market rows show listing, Torn fee and received), Receipts (status, waiting list, add, recent), Items (by item/day/channel, item history opens under the item), Settings (Needs attention inbox with "Got it"/Dismissed, keys, backup, troubleshooting). `state.ack` holds dismissed ids (1 = dismissed, 0 = restored); `state.names` caches player names (looked up one at a time for visible rows). Market sale records gained `each`, `fee`, `anon` (older ones fill in after Re-sync from start).
 
+## First-run setup (v0.1.157)
+New installs (no saved key and no data) see a gated setup popup instead of the tabs: welcome, Torn key (checked on the spot with a log call; on PDA you can use PDA's key or a custom one), "Do you use PawnHub?", PawnHub key (checked against the API, can be skipped), history length (30/90/365 days), optional Weaver key, then Sync now. Closing with X brings it back the next time the 💰 button is used until "Sync now" finishes it (`setupDone`). Existing users are migrated silently (`migrateSetup`). Settings has "Run setup again". Background inbox/PawnHub tasks wait for setup.
+
 ## Known gaps / ideas
 - RW weapons/armor (unique `uid` in log items), museum set exchanges and cache opening are not modelled: need log examples of each (use Settings > Backup & troubleshooting > Copy debug sample; entries with museum/cache/ranked/item use/points titles are kept).
 - PawnHub Balance page lists only the newest ~100 payments; older sends need a value or can be left out of profit. A PawnHub API was requested from its owner.
