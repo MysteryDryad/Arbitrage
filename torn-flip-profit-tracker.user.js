@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.159-beta
+// @version      0.1.160-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.159-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.160-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -755,9 +755,10 @@
     try { if ((await inboxGet()).length) await processInbox(true); } catch (e) { /* receipts stay queued */ }
     lap('inbox');
     let pawn = null, pawnErr = '';
+    const phStart = Date.now();
     if (!IS_PDA_ENV && hasGM && sget('pawnhubAuto', false)) { try { pawn = await readPawnHubBalance(); } catch (e) { pawnErr = String(e.message || e).slice(0, 120); } }
     if (usesPH() && sget('phkey', '')) { try { pawn = await readPawnHubApi(); } catch (e) { pawnErr = String(e.message || e).slice(0, 120); } }
-    lap('pawnhub');
+    lap('pawnhub'); tm.phSecs = Math.round((Date.now() - phStart) / 100) / 10;
     if (sget('w3bkey', '')) {
       try {
         for (let round = 0; round < 15; round++) { last = await weaverImport(); att += last.attached; if (!last.left) break; }
@@ -783,7 +784,7 @@
     if (pawn && pawn.valued) bits.push(pawn.valued + ' PawnHub payment' + (pawn.valued === 1 ? '' : 's') + ' matched');
     if (weaverErr) bits.push('Weaver: ' + weaverErr.slice(0, 90));
     if (pawnErr) bits.push('PawnHub: ' + pawnErr.slice(0, 70));
-    const slow = tm.total > 8 ? ' (' + Math.round(tm.total) + ' s: log ' + Math.round(tm.log) + ', receipts ' + Math.round(tm.weaver - tm.pawnhub) + ')' : '';
+    const slow = tm.total > 8 ? ' (' + Math.round(tm.total) + ' s: log ' + Math.round(tm.log) + ', inbox ' + Math.round(tm.inbox - tm.log) + ', PawnHub ' + Math.round(tm.phSecs) + ', Weaver ' + Math.round(tm.weaver - tm.pawnhub) + ')' : '';
     return (bits.length ? 'Synced · ' + bits.join(' · ') : 'Up to date.') + slow;
   }
   async function syncLog() {
@@ -1112,8 +1113,10 @@
     const clean = t => String(t == null ? '' : t).split(key).join('***');
     // PawnHub returns 100 payments per page, newest first, with a cursor (pagination.next_before_id). Keep paging until we are past your oldest send that still has no value.
     const base = 'https://z0cl.eu/PawnHub/api.php?selections=balance_events&key=' + encodeURIComponent(key);
-    const unvalued = Object.values(state.txs).filter(t => t.channel === 'send' && t.dir === 'sell' && t.items && t.items.length === 1 && t.src !== 'receipt').map(t => t.ts);
-    const needTs = unvalued.length ? Math.min.apply(null, unvalued) - PH_LAG : Infinity;
+    // Only sends with no value at all need payments. After the first read, look back 3 days at most: older sends that PawnHub could value were valued then, and paging through months of history on every Sync is slow.
+    const unvalued = Object.values(state.txs).filter(t => t.channel === 'send' && t.dir === 'sell' && t.items && t.items.length === 1 && t.amount == null).map(t => t.ts);
+    const horizon = state.phFirstDone ? Math.floor(Date.now() / 1000) - 3 * 86400 : 0;
+    const needTs = unvalued.length ? Math.max(Math.min.apply(null, unvalued) - PH_LAG, horizon) : Infinity;
     const tsOf = e => Date.parse(String(e.created_at).replace(' ', 'T').replace(/Z?$/, 'Z')) / 1000;
     let evs = [], beforeId = null, pages = 0, firstJ = null, stop = 'end'; const seen = new Set();
     for (;;) {
