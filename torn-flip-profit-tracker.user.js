@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.158-beta
+// @version      0.1.159-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.158-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.159-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -67,6 +67,12 @@
     const n = nat(); if (n) { try { return !!(await n.get('phkeyset', false)); } catch (e) { /* ignore */ } }
     return false;
   }
+  async function w3bKeyOn() {
+    if (sget('w3bkey', '')) return true;
+    const n = nat(); if (n) { try { return !!(await n.get('w3bkeyset', false)); } catch (e) { /* ignore */ } }
+    return false;
+  }
+  async function w3bFlagSet(v) { try { sset('w3bkeyset', !!v); } catch (e) { /* ignore */ } const n = nat(); if (n) { try { await n.set('w3bkeyset', !!v); } catch (e) { /* ignore */ } } }
   async function phFlagSet(v) { try { sset('phkeyset', !!v); } catch (e) { /* ignore */ } const n = nat(); if (n) { try { await n.set('phkeyset', !!v); } catch (e) { /* ignore */ } } }
   // Values are written to both script storage (GM) and the page's localStorage. Reads try GM first and fall back
   // to localStorage when GM has nothing usable (PDA may return odd placeholders after an update).
@@ -743,12 +749,15 @@
   }
   async function syncAll() {
     let added = 0, att = 0, last = null, weaverErr = '';
+    const T0 = Date.now(), tm = {}, lap = k => { tm[k] = Math.round((Date.now() - T0) / 100) / 10; };
     const readLog = async () => { added += await readLogFully(); };
-    await readLog();
+    await readLog(); lap('log');
     try { if ((await inboxGet()).length) await processInbox(true); } catch (e) { /* receipts stay queued */ }
+    lap('inbox');
     let pawn = null, pawnErr = '';
     if (!IS_PDA_ENV && hasGM && sget('pawnhubAuto', false)) { try { pawn = await readPawnHubBalance(); } catch (e) { pawnErr = String(e.message || e).slice(0, 120); } }
     if (usesPH() && sget('phkey', '')) { try { pawn = await readPawnHubApi(); } catch (e) { pawnErr = String(e.message || e).slice(0, 120); } }
+    lap('pawnhub');
     if (sget('w3bkey', '')) {
       try {
         for (let round = 0; round < 15; round++) { last = await weaverImport(); att += last.attached; if (!last.left) break; }
@@ -761,8 +770,10 @@
         }
       } catch (e) { weaverErr = String(e.message || e); }
     }
+    lap('weaver');
     try { reapplyZeroPriced(); snapshotProfit(); } catch (e) { /* ignore */ }
-    state.lastSyncDetail = { at: Math.floor(Date.now() / 1000), added, attached: att, weaver: last ? last.text : null, weaverErr: weaverErr || null, pawnhub: pawn ? pawn.text : null, pawnhubErr: pawnErr || null }; save();
+    lap('total');
+    state.lastSyncDetail = { at: Math.floor(Date.now() / 1000), seconds: tm, added, attached: att, weaver: last ? last.text : null, weaverErr: weaverErr || null, pawnhub: pawn ? pawn.text : null, pawnhubErr: pawnErr || null }; save();
     const bits = [];
     if (added) bits.push(added + ' new record' + (added === 1 ? '' : 's'));
     if (att) bits.push(att + ' receipt' + (att === 1 ? '' : 's') + ' attached');
@@ -772,7 +783,8 @@
     if (pawn && pawn.valued) bits.push(pawn.valued + ' PawnHub payment' + (pawn.valued === 1 ? '' : 's') + ' matched');
     if (weaverErr) bits.push('Weaver: ' + weaverErr.slice(0, 90));
     if (pawnErr) bits.push('PawnHub: ' + pawnErr.slice(0, 70));
-    return bits.length ? 'Synced · ' + bits.join(' · ') : 'Up to date.';
+    const slow = tm.total > 8 ? ' (' + Math.round(tm.total) + ' s: log ' + Math.round(tm.log) + ', receipts ' + Math.round(tm.weaver - tm.pawnhub) + ')' : '';
+    return (bits.length ? 'Synced · ' + bits.join(' · ') : 'Up to date.') + slow;
   }
   async function syncLog() {
     await ensureMe(); await ensureItems();
@@ -1024,11 +1036,13 @@
     const reread = [];
     const lost = [];
     const seen = new Set();
+    const fullScan = now - (w.fullAt || 0) > 6 * 3600; // newest-first list: a page that is entirely done means everything older is done too, so skip the rest except in an occasional full scan
     try {
       // The list holds 100 receipts, newest first; step back through older pages using the oldest receipt's time.
       while (pages++ < 30) {
         const list = ((await call(base + (to ? '?to=' + to : ''))).trades || []).filter(t => t && t.id && !seen.has(t.id));
         if (!list.length) break;
+        const pageDone = list.filter(t => w.done[t.id]).length;
         list.forEach(t => { seen.add(t.id); listed++; if (w.done[t.id]) already++; if (t.created_at && t.created_at > newest) newest = t.created_at; });
         for (const t of list) {
           if (w.done[t.id] || w.miss[t.id] > now - 20 * 60) continue;
@@ -1045,13 +1059,14 @@
           else { w.miss[t.id] = now; missing++; if (rc.ts && rc.ts > now - 14 * 86400 && !w.re[t.id]) reread.push({ id: t.id, ts: rc.ts }); if (lost.length < 5) lost.push(rc ? 'trade ' + rc.tradeId + ' with ' + rc.buyer + ', ' + fmt(rc.total) + (rc.ts ? ' at ' + fdate(rc.ts) : '') + (() => { const tp = state.tradeParts && state.tradeParts[rc.tradeId]; return tp ? ' [log has: ' + Object.values(tp.parts || {}).map(p => p.title).join(', ') + ']' : ' [no log entry with this trade ID]'; })() : 'receipt ' + t.id + ' (unreadable)'); }
         }
         if (list.length < 100) break;
+        if (pageDone === list.length && !fullScan) break;
         const last = list[list.length - 1];
         if (!w.at[last.id]) { await sleep(900); const r = await call(base + '/' + encodeURIComponent(last.id)); if (r && r.created_at) w.at[last.id] = r.created_at; }
         if (!w.at[last.id] || w.at[last.id] === to) break;
         to = w.at[last.id];
         await sleep(900);
       }
-    } finally { save(); }
+    } finally { if (fullScan && pages > 1) w.fullAt = now; save(); }
     const text = 'Weaver: ' + attached + ' receipt(s) attached' + (ended ? ', ' + ended + ' skipped (their trades were cancelled, expired or declined)' : '') + (noId ? ', ' + noId + ' ignored (no Torn trade number or no prices)' : '') + (missing ? ', ' + missing + ' not found in your log (' + lost.join('; ') + ')' : '') + (left ? ', ' + left + ' more waiting: tap again' : '') + (!attached && !missing && !left ? ' (nothing new)' : '') + '. TornW3B lists ' + listed + ' receipt(s)' + (newest ? ', newest ' + fdate(newest) : '') + '; ' + already + ' already attached.';
     return { text, attached, left, ended, missing, reread };
   }
@@ -1720,7 +1735,7 @@
     const steps = swSteps();
     const go = d => { S.i = Math.max(0, Math.min(steps.length - 1, S.i + d)); S.msg = ''; S.phMsg = ''; S.wMsg = ''; sset('setupStep', S.i); };
     if (act === 'swnext') {
-      if (steps[S.i] === 'weaver') { const k = val('tfp-swweaver').trim(); if (k) { if (!/^[A-Za-z0-9_-]{8,64}$/.test(k)) { S.wMsg = 'That does not look like a TornW3B key. Check it, or Skip.'; return true; } sset('w3bkey', k); } }
+      if (steps[S.i] === 'weaver') { const k = val('tfp-swweaver').trim(); if (k) { if (!/^[A-Za-z0-9_-]{8,64}$/.test(k)) { S.wMsg = 'That does not look like a TornW3B key. Check it, or Skip.'; return true; } sset('w3bkey', k); w3bFlagSet(true); } }
       go(1); return true;
     }
     if (act === 'swback') { go(-1); return true; }
@@ -1909,9 +1924,9 @@
       else if (act === 'savew3b') {
         const k = val('tfp-w3b').trim();
         if (!/^[A-Za-z0-9_-]{8,64}$/.test(k)) throw new Error('That does not look like a TornW3B key.');
-        sset('w3bkey', k); ui.msg = 'TornW3B key saved on this device.';
+        sset('w3bkey', k); w3bFlagSet(true); ui.msg = 'TornW3B key saved on this device.';
       }
-      else if (act === 'clearw3b') { sset('w3bkey', ''); ui.msg = 'TornW3B key removed from this device.'; }
+      else if (act === 'clearw3b') { sset('w3bkey', ''); w3bFlagSet(false); ui.msg = 'TornW3B key removed from this device.'; }
       else if (act === 'pawnhub') {
         if (ui.busy) return;
         ui.busy = true; render();
@@ -2114,6 +2129,7 @@
           try {
           const rc = parseReceiptDoc(document, location.href.split('#')[0]);
           if (rc && rc.source === 'pawnhub-balance' && await phKeyOn()) { clearInterval(t); return; } // the PawnHub API already covers this page
+          if (rc && rc.source === 'weaver' && await w3bKeyOn()) { clearInterval(t); return; } // the Weaver API already covers this receipt
           if (rc && (hasGM || nat())) {
             const n = rc.events ? rc.events.length : 0, grow = rc.source === 'pawnhub-balance';
             if (n !== count) {
@@ -2135,7 +2151,7 @@
     } else {
       mountTornUI();
       setInterval(mountTornUI, 2500);
-      bootP.then(() => { if (sget('phkey', '')) phFlagSet(true); setTimeout(autoInbox, 2500); setTimeout(importFromHash, 1200); });
+      bootP.then(() => { if (sget('phkey', '')) phFlagSet(true); if (sget('w3bkey', '')) w3bFlagSet(true); setTimeout(autoInbox, 2500); setTimeout(importFromHash, 1200); });
       document.addEventListener('visibilitychange', () => { if (!document.hidden) bootP.then(() => { // another page may have saved newer data while this one slept
         (hasIDB ? idb.get('state').catch(() => null) : Promise.resolve(sget('state', null))).then(st => { if (st && st.txs && (st.savedAt || 0) > lastWrite && !ui.busy) { const mine = state; state = mergeState(Object.assign(STATE_DEFAULTS(), st), mine); lastWrite = st.savedAt; if (ui.open) render(); } }).catch(() => {});
         autoInbox(); }); });
