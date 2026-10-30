@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.161-beta
+// @version      0.1.162-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.161-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.162-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1193,7 +1193,10 @@
   /* ===================== UI ===================== */
   const CSS = `
   #tfp-btn{z-index:2147483646;cursor:pointer;font-size:16px;line-height:1;padding:3px 7px;border-radius:8px;border:1px solid #555;background:#2b2b2b;color:#fff}
-  #tfp-btn{position:absolute;touch-action:none;-webkit-user-select:none;user-select:none}
+  #tfp-btn{position:absolute;touch-action:none;-webkit-user-select:none;user-select:none;font:700 12px Arial;white-space:nowrap}
+  #tfp-btn.up{color:#6fcf6f;background:#1f2a1f;border-color:#3f7a3f}#tfp-btn.dn{color:#ef6f6f;background:#2a1f1f;border-color:#7a3f3f}#tfp-btn.zero{color:#9aa0ab}
+  #tfp-btn.att:after{content:"";position:absolute;top:-3px;right:-3px;width:8px;height:8px;border-radius:50%;background:#ffb74d;border:1px solid #181818}
+  #tfp-btn.hdr{position:relative;margin:0 6px;align-self:center;display:inline-block}
   #tfp-wrap.pda{padding-bottom:0}
   #tfp-wrap.pda #tfp-card{max-height:100%}
   #tfp-wrap{position:fixed;inset:0;z-index:2147483647;background:#1e1e1e;display:none;align-items:stretch;justify-content:center}
@@ -1796,7 +1799,7 @@
   function render() {
     const card = document.getElementById('tfp-card');
     if (!card) return;
-    ui._res = null;
+    ui._res = null; setTimeout(updateBtn, 0);
     if (!booted) { card.className = ''; card.innerHTML = '<div class="tfp-body"><div class="tfp-sub" style="padding:20px">Loading…</div></div>'; return; }
     if (!ui.setup && !setupDone()) startSetup(false);
     if (ui.setup) { card.className = 'tfp-setup'; card.innerHTML = setupHtml(); return; }
@@ -2029,7 +2032,7 @@
     if (act === 'toggle' && /^tx_/.test(v || '') && ui[v]) fetchNames();
   }
 
-  bootP.then(() => { migrateSetup(); booted = true; if (ui.open) render(); });
+  bootP.then(() => { migrateSetup(); booted = true; updateBtn(); setInterval(updateBtn, 30000); if (ui.open) render(); });
   function openPanel() { ui.open = true; document.getElementById('tfp-wrap').classList.add('open'); render(); bootP.then(() => render()); }
   function placeBtn(b, pos) {
     const de = document.documentElement;
@@ -2061,6 +2064,19 @@
     ['mousedown', 'touchstart', 'click'].forEach(t => b.addEventListener(t, ev => { ev.stopPropagation(); if (t === 'click') ev.preventDefault(); }));
   }
 
+  // Today's profit shown on the button itself (green up, red down, grey at 0; amber dot when something needs attention).
+  const shortMoney = n => { const a = Math.abs(n); return a >= 1e9 ? (a / 1e9).toFixed(2) + 'B' : a >= 1e6 ? (a / 1e6).toFixed(a >= 1e7 ? 1 : 2).replace(/\.?0+$/, '') + 'M' : a >= 1e3 ? Math.round(a / 1e3) + 'k' : String(Math.round(a)); };
+  function updateBtn() {
+    const b = document.getElementById('tfp-btn'); if (!b || !booted) return;
+    try {
+      const today = Math.floor(Date.now() / 86400000) * 86400, p = getRes().flips.filter(f => f.profit != null && f.tx.ts >= today).reduce((a, f) => a + f.profit, 0), at = attention();
+      const t = Math.round(p) === 0 ? '$0' : (p < 0 ? '−$' : '+$') + shortMoney(p);
+      if (b.textContent !== t) b.textContent = t;
+      b.classList.toggle('up', p > 0); b.classList.toggle('dn', p < 0); b.classList.toggle('zero', Math.round(p) === 0);
+      b.classList.toggle('att', at.pend.length + at.skip.length > 0);
+      b.title = 'Arbitrage · today ' + (p < 0 ? '−' : '+') + fmt(Math.abs(p));
+    } catch (e) { /* keep the last text */ }
+  }
   function mountTornUI() {
     if (!document.getElementById('tfp-style')) {
       const st = document.createElement('style'); st.id = 'tfp-style'; st.textContent = CSS; document.head.appendChild(st);
@@ -2082,10 +2098,22 @@
     }
     if (!document.getElementById('tfp-btn')) {
       const b = document.createElement('button'); b.id = 'tfp-btn'; b.textContent = '💰'; b.title = 'Arbitrage';
-      const pos = sget('btnpos2', null) || (window.innerWidth < 700 ? { left: 124, top: 4 } : { left: Math.max(8, window.innerWidth - 110), top: 8 });
-      placeBtn(b, pos);
-      attachDrag(b);
-      document.body.appendChild(b);
+      const phone = window.innerWidth < 700, hw = !phone && document.querySelector('.header-buttons-wrapper');
+      if (phone) { // phones: fixed spot, not draggable
+        placeBtn(b, { left: 124, top: 4 });
+        b.addEventListener('click', ev => { ev.stopPropagation(); ev.preventDefault(); openPanel(); });
+        ['mousedown', 'touchstart'].forEach(t => b.addEventListener(t, ev => ev.stopPropagation()));
+        document.body.appendChild(b);
+      } else if (hw) { // PC: in Torn's header icon row
+        b.classList.add('hdr'); b.style.cssText = '';
+        b.addEventListener('click', ev => { ev.stopPropagation(); ev.preventDefault(); openPanel(); });
+        hw.insertBefore(b, hw.firstChild);
+      } else { // PC fallback if the header is not found: floating and draggable
+        placeBtn(b, sget('btnpos2', null) || { left: Math.max(8, window.innerWidth - 110), top: 8 });
+        attachDrag(b);
+        document.body.appendChild(b);
+      }
+      updateBtn();
     }
   }
 
