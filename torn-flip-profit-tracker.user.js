@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.162-beta
+// @version      0.1.163-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.162-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.163-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1196,7 +1196,7 @@
   #tfp-btn{position:absolute;touch-action:none;-webkit-user-select:none;user-select:none;font:700 12px Arial;white-space:nowrap}
   #tfp-btn.up{color:#6fcf6f;background:#1f2a1f;border-color:#3f7a3f}#tfp-btn.dn{color:#ef6f6f;background:#2a1f1f;border-color:#7a3f3f}#tfp-btn.zero{color:#9aa0ab}
   #tfp-btn.att:after{content:"";position:absolute;top:-3px;right:-3px;width:8px;height:8px;border-radius:50%;background:#ffb74d;border:1px solid #181818}
-  #tfp-btn.hdr{position:relative;margin:0 6px;align-self:center;display:inline-block}
+
   #tfp-wrap.pda{padding-bottom:0}
   #tfp-wrap.pda #tfp-card{max-height:100%}
   #tfp-wrap{position:fixed;inset:0;z-index:2147483647;background:#1e1e1e;display:none;align-items:stretch;justify-content:center}
@@ -2032,7 +2032,7 @@
     if (act === 'toggle' && /^tx_/.test(v || '') && ui[v]) fetchNames();
   }
 
-  bootP.then(() => { migrateSetup(); booted = true; updateBtn(); setInterval(updateBtn, 30000); if (ui.open) render(); });
+  bootP.then(() => { migrateSetup(); booted = true; updateBtn(); if (typeof document !== 'undefined') setInterval(updateBtn, 30000); if (ui.open) render(); });
   function openPanel() { ui.open = true; document.getElementById('tfp-wrap').classList.add('open'); render(); bootP.then(() => render()); }
   function placeBtn(b, pos) {
     const de = document.documentElement;
@@ -2067,7 +2067,7 @@
   // Today's profit shown on the button itself (green up, red down, grey at 0; amber dot when something needs attention).
   const shortMoney = n => { const a = Math.abs(n); return a >= 1e9 ? (a / 1e9).toFixed(2) + 'B' : a >= 1e6 ? (a / 1e6).toFixed(a >= 1e7 ? 1 : 2).replace(/\.?0+$/, '') + 'M' : a >= 1e3 ? Math.round(a / 1e3) + 'k' : String(Math.round(a)); };
   function updateBtn() {
-    const b = document.getElementById('tfp-btn'); if (!b || !booted) return;
+    if (typeof document === 'undefined') return; const b = document.getElementById('tfp-btn'); if (!b || !booted) return;
     try {
       const today = Math.floor(Date.now() / 86400000) * 86400, p = getRes().flips.filter(f => f.profit != null && f.tx.ts >= today).reduce((a, f) => a + f.profit, 0), at = attention();
       const t = Math.round(p) === 0 ? '$0' : (p < 0 ? '−$' : '+$') + shortMoney(p);
@@ -2104,12 +2104,9 @@
         b.addEventListener('click', ev => { ev.stopPropagation(); ev.preventDefault(); openPanel(); });
         ['mousedown', 'touchstart'].forEach(t => b.addEventListener(t, ev => ev.stopPropagation()));
         document.body.appendChild(b);
-      } else if (hw) { // PC: in Torn's header icon row
-        b.classList.add('hdr'); b.style.cssText = '';
-        b.addEventListener('click', ev => { ev.stopPropagation(); ev.preventDefault(); openPanel(); });
-        hw.insertBefore(b, hw.firstChild);
-      } else { // PC fallback if the header is not found: floating and draggable
-        placeBtn(b, sget('btnpos2', null) || { left: Math.max(8, window.innerWidth - 110), top: 8 });
+      } else { // PC: floats over the header without touching Torn's layout; drag to adjust, position is remembered
+        const r = hw ? hw.getBoundingClientRect() : null;
+        placeBtn(b, sget('btnpos2', null) || (r && r.width ? { left: r.left + window.pageXOffset, top: Math.max(2, r.top + window.pageYOffset - 24) } : { left: Math.max(8, window.innerWidth - 110), top: 8 }));
         attachDrag(b);
         document.body.appendChild(b);
       }
