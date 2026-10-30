@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.160-beta
+// @version      0.1.161-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.160-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.161-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1434,6 +1434,18 @@
     const r = ui.range;
     return r === 'today' ? 'Today' : r === 'yesterday' ? 'Yesterday' : r === 'custom' ? (ui.from || '') + ' to ' + (ui.to || ui.from || '') : r ? 'Last ' + r + ' days' : 'All time';
   }
+  // Counts for the chosen range: how many trades, sends, sales and buys, how many items moved and the money on them.
+  function activityHtml(inR) {
+    const L = { 'trade|sell': 'Trades (sold)', 'trade|buy': 'Trades (bought)', 'send|sell': 'Sent', 'recv|buy': 'Received', 'market|sell': 'Market sales', 'bazaar|sell': 'Bazaar sales', 'market|buy': 'Market buys', 'bazaar|buy': 'Bazaar buys', 'shop|buy': 'Shop buys', 'abroad|buy': 'Abroad buys' }, m = {};
+    Object.values(state.txs).forEach(t => {
+      if (!inR(t.ts) || !t.items || !t.items.length || !L[t.channel + '|' + t.dir]) return;
+      const o = m[t.channel + '|' + t.dir] = m[t.channel + '|' + t.dir] || { n: 0, q: 0, amt: 0, unk: 0 };
+      o.n++; o.q += t.items.reduce((a, i) => a + (i.qty || 0), 0);
+      if (t.amount != null) o.amt += t.amount; else o.unk++;
+    });
+    const keys = Object.keys(L).filter(k => m[k]); if (!keys.length) return '';
+    return '<div class="tfp-hdr">Activity · ' + esc(rangeCaption()) + '</div>' + keys.map(k => { const o = m[k]; return dl(L[k], '<b>' + o.n + '</b> · ' + o.q.toLocaleString() + ' item' + (o.q === 1 ? '' : 's') + (o.amt ? ' · ' + fmt(o.amt) : '') + (o.unk ? ' <span class="tfp-sub">(' + o.unk + ' no value)</span>' : '')); }).join('');
+  }
   function profitHtml() {
     const [cutoff, upto] = rangeBounds(), inR = ts => ts >= cutoff && ts < upto;
     const res = getRes(), ack = state.ack || {};
@@ -1444,7 +1456,7 @@
     const profit = done.reduce((a, f) => a + f.profit, 0);
     let h = `${rangeChips()}${rangeDates()}<div class="tfp-sub" style="margin:0">Profit · ${esc(rangeCaption())}</div><div class="tfp-prow"><div class="tfp-big ${pnlCls(profit)}">${fmt(profit)}</div><div class="tfp-sub" style="margin:0">${cost > 0 ? (profit >= 0 ? '▲ ' : '▼ ') + (profit / cost * 100).toFixed(1) + '% on cost' : ''}</div></div>
       ${graphHtml(done.map(f => ({ ts: f.tx.ts, profit: f.profit })), cutoff)}
-      <div class="tfp-stats"><div class="tfp-stat"><span>Sold for</span><b>${fmt(revenue)}</b></div><div class="tfp-stat"><span>Cost</span><b>${fmt(cost)}</b></div><div class="tfp-stat"><span>Sales</span><b>${done.length}</b></div></div>${olderNote()}`;
+      <div class="tfp-stats"><div class="tfp-stat"><span>Sold for</span><b>${fmt(revenue)}</b></div><div class="tfp-stat"><span>Cost</span><b>${fmt(cost)}</b></div><div class="tfp-stat"><span>Sales</span><b>${done.length}</b></div></div>${activityHtml(inR)}${olderNote()}`;
     const left = h; h = ''; const wrap2 = r => '<div class="tfp-two"><div class="tfp-colL">' + left + '</div><div class="tfp-colR">' + r + '</div></div>';
     if (!Object.keys(state.txs).length) return wrap2('<div class="tfp-msg">Nothing imported yet. Tap Sync to read your Torn log.</div>');
     const entries = [];
