@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.163-beta
+// @version      0.1.164-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.163-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.164-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -784,7 +784,7 @@
     if (pawn && pawn.valued) bits.push(pawn.valued + ' PawnHub payment' + (pawn.valued === 1 ? '' : 's') + ' matched');
     if (weaverErr) bits.push('Weaver: ' + weaverErr.slice(0, 90));
     if (pawnErr) bits.push('PawnHub: ' + pawnErr.slice(0, 70));
-    const slow = tm.total > 8 ? ' (' + Math.round(tm.total) + ' s: log ' + Math.round(tm.log) + ', inbox ' + Math.round(tm.inbox - tm.log) + ', PawnHub ' + Math.round(tm.phSecs) + ', Weaver ' + Math.round(tm.weaver - tm.pawnhub) + ')' : '';
+    const sec = x => Math.max(0, Math.round(x)) + 's', slow = tm.total > 8 ? ' · took ' + sec(tm.total) + ' (Torn log ' + sec(tm.log) + ', receipt inbox ' + sec(tm.inbox - tm.log) + ', PawnHub ' + sec(tm.phSecs) + ', Weaver ' + sec(tm.weaver - tm.pawnhub) + ')' : '';
     return (bits.length ? 'Synced · ' + bits.join(' · ') : 'Up to date.') + slow;
   }
   async function syncLog() {
