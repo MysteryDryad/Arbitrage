@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.168-beta
+// @version      0.1.169-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.168-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.169-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1461,7 +1461,7 @@
       ['abroad|buy', o => 'Bought ' + it(o) + ' abroad']
     ];
     S.forEach(x => { if (m[x[0]]) L.push('<div class="tfp-act">' + x[1](m[x[0]]) + '</div>'); });
-    return L.length ? '<div class="tfp-hdr">Activity · ' + esc(rangeCaption()) + '</div>' + L.join('') + '<div class="tfp-sub">Money and profit: see the boxes above.</div>' : '';
+    return L.length ? '<div class="tfp-hdr">Activity · ' + esc(rangeCaption()) + '</div>' + L.join('') : '';
   }
   function profitHtml() {
     const [cutoff, upto] = rangeBounds(), inR = ts => ts >= cutoff && ts < upto;
