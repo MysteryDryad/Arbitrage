@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.167-beta
+// @version      0.1.168-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.167-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.168-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1443,26 +1443,25 @@
     const ph = usesPH(), m = {};
     Object.values(state.txs).forEach(t => {
       if (!inR(t.ts) || !t.items || !t.items.length) return;
-      const k = t.channel + '|' + t.dir, o = m[k] = m[k] || { n: 0, q: 0, amt: 0, unk: 0 };
+      const k = t.channel + "|" + t.dir, o = m[k] = m[k] || { n: 0, q: 0 };
       o.n++; o.q += t.items.reduce((a, i) => a + (i.qty || 0), 0);
-      if (t.amount != null) o.amt += t.amount; else o.unk++;
     });
-    const b = x => '<b>' + x + '</b>', it = o => b(o.q.toLocaleString() + ' item' + (o.q === 1 ? '' : 's')), cnt = (o, w) => b(o.n) + ' ' + w + (o.n === 1 ? '' : 's'), nov = o => o.unk ? ' <span class="tfp-sub">(' + o.unk + ' no value)</span>' : '';
+    const b = x => '<b>' + x + '</b>', it = o => b(o.q.toLocaleString() + ' item' + (o.q === 1 ? '' : 's')), cnt = (o, w) => b(o.n) + ' ' + w + (o.n === 1 ? '' : 's');
     const L = [];
     const S = [
-      ['trade|buy', o => 'Bought ' + it(o) + ' in ' + cnt(o, 'trade') + (o.amt ? ' for ' + b(fmt(o.amt)) : '') + nov(o)],
-      ['trade|sell', o => 'Sold ' + it(o) + ' in ' + cnt(o, 'trade') + (o.amt ? ' for ' + b(fmt(o.amt)) : '') + nov(o)],
-      ['send|sell', o => 'Sent away ' + it(o) + (ph ? ' to PawnHub, received ' + b(fmt(o.amt)) + nov(o) : '')],
+      ['trade|buy', o => 'Bought ' + it(o) + ' in ' + cnt(o, 'trade')],
+      ['trade|sell', o => 'Sold ' + it(o) + ' in ' + cnt(o, 'trade')],
+      ['send|sell', o => 'Sent away ' + it(o) + (ph ? ' to PawnHub' : '') + ' in ' + cnt(o, 'send')],
       ['recv|buy', o => 'Got ' + it(o)],
-      ['market|sell', o => 'Sold ' + it(o) + ' on the market' + (o.amt ? ' for ' + b(fmt(o.amt)) : '') + nov(o)],
-      ['bazaar|sell', o => 'Sold ' + it(o) + ' from your bazaar' + (o.amt ? ' for ' + b(fmt(o.amt)) : '') + nov(o)],
-      ['market|buy', o => 'Bought ' + it(o) + ' on the market' + (o.amt ? ' for ' + b(fmt(o.amt)) : '') + nov(o)],
-      ['bazaar|buy', o => 'Bought ' + it(o) + ' from bazaars' + (o.amt ? ' for ' + b(fmt(o.amt)) : '') + nov(o)],
-      ['shop|buy', o => 'Bought ' + it(o) + ' from shops' + (o.amt ? ' for ' + b(fmt(o.amt)) : '') + nov(o)],
-      ['abroad|buy', o => 'Bought ' + it(o) + ' abroad' + (o.amt ? ' for ' + b(fmt(o.amt)) : '') + nov(o)]
+      ['market|sell', o => 'Sold ' + it(o) + ' on the market'],
+      ['bazaar|sell', o => 'Sold ' + it(o) + ' from your bazaar'],
+      ['market|buy', o => 'Bought ' + it(o) + ' on the market'],
+      ['bazaar|buy', o => 'Bought ' + it(o) + ' from bazaars'],
+      ['shop|buy', o => 'Bought ' + it(o) + ' from shops'],
+      ['abroad|buy', o => 'Bought ' + it(o) + ' abroad']
     ];
     S.forEach(x => { if (m[x[0]]) L.push('<div class="tfp-act">' + x[1](m[x[0]]) + '</div>'); });
-    return L.length ? '<div class="tfp-hdr">Activity · ' + esc(rangeCaption()) + '</div>' + L.join('') : '';
+    return L.length ? '<div class="tfp-hdr">Activity · ' + esc(rangeCaption()) + '</div>' + L.join('') + '<div class="tfp-sub">Money and profit: see the boxes above.</div>' : '';
   }
   function profitHtml() {
     const [cutoff, upto] = rangeBounds(), inR = ts => ts >= cutoff && ts < upto;
