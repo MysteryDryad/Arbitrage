@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.169-beta
+// @version      0.1.170-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.169-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.170-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1406,7 +1406,7 @@
     if (tx.tradeId) d += dl('Trade number', '#' + esc(tx.tradeId));
     const ru = safeUrl(tx.receiptUrl);
     if (ru) d += dl('Receipt', `<a href="${esc(ru)}" target="_blank" rel="noopener">🧾 ${rcSource(ru)} ↗</a>`);
-    else if (tx.src === 'receipt') d += dl('Receipt', '🧾 attached');
+    else if (tx.src === 'receipt' && tx.channel !== 'send') d += dl('Receipt', '🧾 attached'); // PawnHub-valued sends are marked src receipt but have no receipt page
     if (e.kind === 'skip') d += skippedRowHtml(f, false);
     else if (e.kind === 'pend') d += pendingHtml([tx], false);
     else d += `<div class="tfp-sub"><a href="#" data-act="edit" data-id="${esc(tx.id)}">✎ ${e.kind === 'gift' ? 'set value' : 'edit'}</a></div>` + (ui.editing === tx.id ? editBox(tx) : '');
