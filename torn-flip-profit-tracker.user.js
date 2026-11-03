@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.166-beta
+// @version      0.1.167-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.166-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.167-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -1273,6 +1273,7 @@
   .tfp-msg{background:#2a2a2a;border-radius:8px;padding:8px;margin:6px 0}
   .tfp-gap{height:6px}
   .tfp-big{font-size:28px;font-weight:700;line-height:1.1}
+  .tfp-act{padding:3px 0;line-height:1.5}.tfp-act b{color:#eee}
   .tfp-stats{display:flex;gap:8px;margin:8px 0}
   .tfp-stat{flex:1;background:#262626;border-radius:10px;padding:8px 10px}
   .tfp-stat b{display:block;font-size:14px;color:#eee}
@@ -1437,17 +1438,31 @@
     const r = ui.range;
     return r === 'today' ? 'Today' : r === 'yesterday' ? 'Yesterday' : r === 'custom' ? (ui.from || '') + ' to ' + (ui.to || ui.from || '') : r ? 'Last ' + r + ' days' : 'All time';
   }
-  // Counts for the chosen range: how many trades, sends, sales and buys, how many items moved and the money on them.
+  // Plain-sentence summary for the chosen range: what was bought, sent, received and sold, with items, counts and money.
   function activityHtml(inR) {
-    const L = { 'trade|sell': 'Trades (sold)', 'trade|buy': 'Trades (bought)', 'send|sell': 'Sent', 'recv|buy': 'Received', 'market|sell': 'Market sales', 'bazaar|sell': 'Bazaar sales', 'market|buy': 'Market buys', 'bazaar|buy': 'Bazaar buys', 'shop|buy': 'Shop buys', 'abroad|buy': 'Abroad buys' }, m = {};
+    const ph = usesPH(), m = {};
     Object.values(state.txs).forEach(t => {
-      if (!inR(t.ts) || !t.items || !t.items.length || !L[t.channel + '|' + t.dir]) return;
-      const o = m[t.channel + '|' + t.dir] = m[t.channel + '|' + t.dir] || { n: 0, q: 0, amt: 0, unk: 0 };
+      if (!inR(t.ts) || !t.items || !t.items.length) return;
+      const k = t.channel + '|' + t.dir, o = m[k] = m[k] || { n: 0, q: 0, amt: 0, unk: 0 };
       o.n++; o.q += t.items.reduce((a, i) => a + (i.qty || 0), 0);
       if (t.amount != null) o.amt += t.amount; else o.unk++;
     });
-    const keys = Object.keys(L).filter(k => m[k]); if (!keys.length) return '';
-    return '<div class="tfp-hdr">Activity · ' + esc(rangeCaption()) + '</div>' + keys.map(k => { const o = m[k]; return dl(L[k], '<b>' + o.n + '</b> · ' + o.q.toLocaleString() + ' item' + (o.q === 1 ? '' : 's') + (o.amt ? ' · ' + fmt(o.amt) : '') + (o.unk ? ' <span class="tfp-sub">(' + o.unk + ' no value)</span>' : '')); }).join('');
+    const b = x => '<b>' + x + '</b>', it = o => b(o.q.toLocaleString() + ' item' + (o.q === 1 ? '' : 's')), cnt = (o, w) => b(o.n) + ' ' + w + (o.n === 1 ? '' : 's'), nov = o => o.unk ? ' <span class="tfp-sub">(' + o.unk + ' no value)</span>' : '';
+    const L = [];
+    const S = [
+      ['trade|buy', o => 'Bought ' + it(o) + ' in ' + cnt(o, 'trade') + (o.amt ? ' for ' + b(fmt(o.amt)) : '') + nov(o)],
+      ['trade|sell', o => 'Sold ' + it(o) + ' in ' + cnt(o, 'trade') + (o.amt ? ' for ' + b(fmt(o.amt)) : '') + nov(o)],
+      ['send|sell', o => 'Sent away ' + it(o) + (ph ? ' to PawnHub, received ' + b(fmt(o.amt)) + nov(o) : '')],
+      ['recv|buy', o => 'Got ' + it(o)],
+      ['market|sell', o => 'Sold ' + it(o) + ' on the market' + (o.amt ? ' for ' + b(fmt(o.amt)) : '') + nov(o)],
+      ['bazaar|sell', o => 'Sold ' + it(o) + ' from your bazaar' + (o.amt ? ' for ' + b(fmt(o.amt)) : '') + nov(o)],
+      ['market|buy', o => 'Bought ' + it(o) + ' on the market' + (o.amt ? ' for ' + b(fmt(o.amt)) : '') + nov(o)],
+      ['bazaar|buy', o => 'Bought ' + it(o) + ' from bazaars' + (o.amt ? ' for ' + b(fmt(o.amt)) : '') + nov(o)],
+      ['shop|buy', o => 'Bought ' + it(o) + ' from shops' + (o.amt ? ' for ' + b(fmt(o.amt)) : '') + nov(o)],
+      ['abroad|buy', o => 'Bought ' + it(o) + ' abroad' + (o.amt ? ' for ' + b(fmt(o.amt)) : '') + nov(o)]
+    ];
+    S.forEach(x => { if (m[x[0]]) L.push('<div class="tfp-act">' + x[1](m[x[0]]) + '</div>'); });
+    return L.length ? '<div class="tfp-hdr">Activity · ' + esc(rangeCaption()) + '</div>' + L.join('') : '';
   }
   function profitHtml() {
     const [cutoff, upto] = rangeBounds(), inR = ts => ts >= cutoff && ts < upto;
