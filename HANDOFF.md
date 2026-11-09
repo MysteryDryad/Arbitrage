@@ -3,12 +3,17 @@
 Script: `torn-flip-profit-tracker.user.js` (see `@version`; `VERSION` must match, `test.js` checks it). Tests: `node test.js` (needs `npm i --no-save jsdom fake-indexeddb`).
 Runs in Torn PDA (iOS) and Tampermonkey. Read-only: reads the Torn API, never acts in the game. Data stays on the device.
 
+## Branch
+All work and pushes go to `claude/torn-flip-tracker-handoff-0o79ga` (the main branch for this project). Do not use other branches; `claude/serene-fermi-3tusq7` was merged into it and is retired.
+
 ## How it works
 - `user/log` (v2, newest first) is paged into `state.txs`: item market, bazaar, trade, item send/receive, abroad and NPC shop buys/sells. Trade direction comes from the log (`Trade items incoming` = buy).
 - `computeFlips` does FIFO per item; sales without a matching buy are "not counted", buys/sends without an amount "need a value".
 - Receipts override log amounts: Weaver/TornW3B (API, own key, matched by trade ID), TornExchange and PawnHub pages (auto-added when opened, picked up from the GM `inbox` by the Torn page), PawnHub Balance page (matched to sends by item, quantity and time).
 - One Sync button does everything (log, inbox, Weaver import, one re-read of the log for receipts whose trade is missing). Details of the last sync are in the debug sample (`lastSyncDetail`).
 - Storage: full state in IndexedDB (shared by Torn pages); compressed backup in script storage (`statez`); `mergeState` folds in values from a newer copy so a stale page cannot overwrite receipt values.
+
+- Crimes (v0.1.171): successes that gain items ("...successfully searching the cemetery gaining 3x Candle") become `channel: 'crime'` buys at amount 0 with `free: true` (stock at cost 0, never a gift). Money gains and failures are ignored. The sentence is searched for in the log entry's data/details/title, and the raw shape is unverified: if crime items still show "no matching buy" after Re-sync, copy the debug sample (it keeps crime entries with items). Unmapped item names are counted in `state.crimeUnknown`.
 
 ## UI (v0.1.131)
 Full-screen panel (`#tfp-card`: header, scrolling `.tfp-body`, floating Sync, bottom nav). Tabs: Profit (range chips, running-profit graph you can touch, timeline newest first, 10 rows then "Show more", trade number/receipt link/player name only in a row's details, market rows show listing, Torn fee and received), Receipts (status, waiting list, add, recent), Items (by item/day/channel, item history opens under the item), Settings (Needs attention inbox with "Got it"/Dismissed, keys, backup, troubleshooting). `state.ack` holds dismissed ids (1 = dismissed, 0 = restored); `state.names` caches player names (looked up one at a time for visible rows). Market sale records gained `each`, `fee`, `anon` (older ones fill in after Re-sync from start).
