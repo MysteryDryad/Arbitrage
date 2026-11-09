@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.171-beta
+// @version      0.1.172-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.171-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.172-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -518,10 +518,21 @@
     });
     return { items, unknown };
   }
+  // Structured route: Torn titles these entries "Crime success item gain (new)" and keeps the items in the entry data (same shape as other item entries).
+  const nameOfGlobal = id => (typeof nameOf === 'function' ? nameOf(id) : null);
+  function crimeItemsFromData(d) {
+    let items = pickItems(d || {});
+    if (!items.length && d && typeof d === 'object') for (const v of Object.values(d)) { if (v && typeof v === 'object') { items = pickItems({ items: v }); if (items.length) break; } }
+    return items;
+  }
   function crimeTx(e, byName) {
     const title = (e.details && e.details.title) || e.title || '';
-    const text = crimeText(e);
-    const r = parseCrimeItems(text, byName);
+    let r = null;
+    if (/^Crime success item gain/i.test(title)) {
+      const items = crimeItemsFromData(e.data).map(i => Object.assign(i, { name: i.name || nameOfGlobal(i.id), price: 0 }));
+      if (items.length) r = { items, unknown: [] };
+    }
+    if (!r) r = parseCrimeItems(crimeText(e), byName);
     if (!r || (!r.items.length && !r.unknown.length)) return null;
     return { unknown: r.unknown, tx: r.items.length ? { id: 'crime:' + e.id, ts: e.timestamp, dir: 'buy', channel: 'crime', cp: null, tradeId: null, items: r.items, amount: 0, src: 'log', locked: true, free: true, title: title || 'Crime' } : null };
   }
@@ -846,7 +857,7 @@
         if (title) state.seenTitles[title] = (state.seenTitles[title] || 0) + 1;
         if (e.timestamp > newest) newest = e.timestamp;
         state.seenExamples = state.seenExamples || {};
-        if (title && !state.seenExamples[title] && (Object.keys(state.seenExamples).length < 40 || /abroad|shop|museum|cache|ranked|item use|points/i.test(title)) && (!/^(Crime|Forums|Message|Faction newsletter)/i.test(title) || (/^Crime/i.test(title) && crimeText(e)))) state.seenExamples[title] = e; // crime entries that give items are kept so the raw shape can be checked
+        if (title && !state.seenExamples[title] && (Object.keys(state.seenExamples).length < 40 || /abroad|shop|museum|cache|ranked|item use|points|crime/i.test(title)) && (!/^(Forums|Message|Faction newsletter)/i.test(title))) state.seenExamples[title] = e; // crime entries that give items are kept so the raw shape can be checked
         if (/^Money (receive|send)/i.test(title) && e.data && typeof e.data.money === 'number') {
           state.moneyEvents = state.moneyEvents || {};
           state.moneyEvents[e.id] = { ts: e.timestamp, dir: /receive/i.test(title) ? 'in' : 'out', cp: e.data.sender != null ? e.data.sender : (e.data.receiver != null ? e.data.receiver : (e.data.user != null ? e.data.user : null)), amount: e.data.money };

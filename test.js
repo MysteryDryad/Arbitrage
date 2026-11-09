@@ -27,6 +27,9 @@ eq('unmatched sale has no profit and is flagged', [r.flips.find(f => f.tx.id ===
   eq('crime money is ignored', T.crimeTx({ id: 'x2', timestamp: 10, data: { text: 'You used 2 nerve successfully searching the cemetery gaining $238' } }, by), null);
   eq('crime failure is ignored', T.crimeTx({ id: 'x3', timestamp: 10, data: { text: 'You used 2 nerve and failed searching the cemetery' } }, by), null);
   eq('crime unknown item reported', T.crimeTx({ id: 'x4', timestamp: 10, data: { text: 'You used 2 nerve successfully searching the cemetery gaining 2x Mystery' } }, by).unknown, ['Mystery']);
+  const c3 = T.crimeTx({ id: 'x6', timestamp: 11, details: { title: 'Crime success item gain (new)' }, data: { items: [{ id: 1, uid: null, qty: 5 }, { id: 3, qty: 1 }] } }, by);
+  eq('crime item gain parses structured items', c3.tx.items.map(i => [i.id, i.qty]), [[1, 5], [3, 1]]);
+  eq('crime money gain title is ignored', T.crimeTx({ id: 'x7', timestamp: 11, details: { title: 'Crime success money gain (new)' }, data: { money: 238 } }, by), null);
   const c2 = T.crimeTx({ id: 'x5', timestamp: 10, data: { text: 'You used 2 nerve successfully searching the cemetery gaining 5x Daffodil' } }, by).tx;
   const rc = T.computeFlips({ [c2.id]: c2, s: { id: 's', ts: 20, dir: 'sell', channel: 'market', items: [{ id: 1, qty: 5, price: null }], amount: 1000 } });
   eq('crime item sells with cost 0', [rc.flips[0].profit, rc.flips[0].unmatched], [1000, 0]);
