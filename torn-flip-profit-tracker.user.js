@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.173-beta
+// @version      0.1.174-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.173-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.174-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -786,6 +786,8 @@
     return added;
   }
   let syncRunning = false, progressText = '';
+  // Leaving the tab (minimise, app switch) can freeze or kill the page: save the read position right away so Continue picks up exactly there.
+  function flushNow() { if (syncRunning) { try { save(); } catch (e) { /* ignore */ } } }
   // Live text on the Sync buttons while a tap-started sync runs (a background sync does not touch the buttons).
   function setProgress(t) { progressText = t; if (ui.busy) document.querySelectorAll('.tfp-fab,.tfp-hsync').forEach(b => { b.textContent = t || 'Syncing…'; }); }
   async function syncAll(opts) {
@@ -797,7 +799,7 @@
     let added = 0, att = 0, last = null, weaverErr = '';
     const T0 = Date.now(), tm = {}, lap = k => { tm[k] = Math.round((Date.now() - T0) / 100) / 10; };
     const readLog = async () => { added += await readLogFully(); };
-    setProgress('Reading log…');
+    setProgress(state.resume ? 'Continuing from ' + fdate(state.resume.to) + '…' : 'Reading log…');
     await readLog(); lap('log');
     setProgress('Receipts…');
     try { if ((await inboxGet()).length) await processInbox(true); } catch (e) { /* receipts stay queued */ }
@@ -926,8 +928,8 @@
       if (oldest <= from) break;
       const to = oldest === prevTo ? oldest - 1 : oldest;
       prevTo = oldest; curTo = to;
-      state.resume = { from, to, newest }; if (pages % 10 === 0) save(); // checkpoint: an interrupted import continues from here (a full save of the whole state is slow, so only every 10 pages)
-      setProgress('Reading log, page ' + (pages + 1) + '…');
+      state.resume = { from, to, newest }; if (pages % 5 === 0) save(); // checkpoint: an interrupted import continues from here (a full save of the whole state is slow, so every 5 pages; leaving the tab saves it at once, see flushNow)
+      setProgress('Reading log, back to ' + fdate(oldest) + '…');
       await sleep(500);
       j = await fetchPage(to);
     }
@@ -2291,6 +2293,8 @@
       mountTornUI();
       setInterval(mountTornUI, 2500);
       bootP.then(() => { if (sget('phkey', '')) phFlagSet(true); if (sget('w3bkey', '')) w3bFlagSet(true); setTimeout(autoInbox, 2500); setTimeout(importFromHash, 1200); });
+      document.addEventListener('visibilitychange', () => { if (document.hidden) flushNow(); });
+      window.addEventListener('pagehide', flushNow);
       document.addEventListener('visibilitychange', () => { if (!document.hidden) bootP.then(() => { // another page may have saved newer data while this one slept
         (hasIDB ? idb.get('state').catch(() => null) : Promise.resolve(sget('state', null))).then(st => { if (st && st.txs && (st.savedAt || 0) > lastWrite && !ui.busy) { const mine = state; state = mergeState(Object.assign(STATE_DEFAULTS(), st), mine); lastWrite = st.savedAt; if (ui.open) render(); } }).catch(() => {});
         autoInbox(); autoSync(); }); });
