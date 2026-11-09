@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.170-beta
+// @version      0.1.171-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.170-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.171-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -350,7 +350,7 @@
 
   /* ===================== ledger engine (pure) ===================== */
   // A send valued at $0 by hand is a gift too (covers gifts saved before the gift flag existed).
-  const isGift = tx => (tx.dir === 'sell' && (tx.gift || (tx.channel === 'send' && tx.src === 'manual' && tx.amount === 0))) || (tx.dir === 'buy' && (tx.gift || (tx.channel === 'recv' && tx.src === 'manual' && tx.amount === 0)));
+  const isGift = tx => !tx.free && (tx.dir === 'sell' && (tx.gift || (tx.channel === 'send' && tx.src === 'manual' && tx.amount === 0))) || (tx.dir === 'buy' && (tx.gift || (tx.channel === 'recv' && tx.src === 'manual' && tx.amount === 0)));
   function computeFlips(txsObj, opts) {
     const fee = (opts && opts.marketFee) || 0;
     const vals = (opts && opts.values) || {};
@@ -497,6 +497,33 @@
       items, amount, src: amount != null ? 'log' : null, locked: false,
       title: (e.details && e.details.title) || e.title || ''
     }, rule.channel === 'market' && rule.dir === 'sell' ? { each: typeof d.cost_each === 'number' ? d.cost_each : null, fee: typeof d.fee === 'number' ? d.fee : null, anon: d.anonymous ? 1 : 0 } : {});
+  }
+  // Crime successes that give items ("You used 2 nerve successfully searching the cemetery gaining 3x Bunch of Carnations, 1x Candle").
+  // The items come from the game, so they are stock at cost 0 (a real buy, not a gift). Money gains and failures give no items and are ignored.
+  const CRIME_RE = /nerve (?:and )?successfully\b.*?\bgaining\s+(.+)$/i;
+  function crimeText(e) {
+    const out = [];
+    const walk = (v, depth) => { if (typeof v === 'string') out.push(v); else if (v && typeof v === 'object' && depth < 3) Object.values(v).forEach(x => walk(x, depth + 1)); };
+    walk(e.data, 0); walk(e.details, 0); walk(e.title, 0); walk(e.text, 0); walk(e.message, 0);
+    return out.find(t => CRIME_RE.test(t)) || null;
+  }
+  function parseCrimeItems(text, byName) {
+    const m = text && text.match(CRIME_RE); if (!m) return null;
+    const items = [], unknown = [];
+    m[1].replace(/\.$/, '').split(/,\s*(?=\d+x\s)/i).forEach(part => {
+      const q = part.trim().match(/^(\d+)x\s+(.+)$/i);
+      if (!q) return; // "$238" and other money
+      const id = byName[q[2].trim().toLowerCase()];
+      if (id) items.push({ id, qty: Number(q[1]), name: q[2].trim(), price: 0 }); else unknown.push(q[2].trim());
+    });
+    return { items, unknown };
+  }
+  function crimeTx(e, byName) {
+    const title = (e.details && e.details.title) || e.title || '';
+    const text = crimeText(e);
+    const r = parseCrimeItems(text, byName);
+    if (!r || (!r.items.length && !r.unknown.length)) return null;
+    return { unknown: r.unknown, tx: r.items.length ? { id: 'crime:' + e.id, ts: e.timestamp, dir: 'buy', channel: 'crime', cp: null, tradeId: null, items: r.items, amount: 0, src: 'log', locked: true, free: true, title: title || 'Crime' } : null };
   }
   function normalizeLog(log) {
     if (!log) return [];
@@ -819,7 +846,7 @@
         if (title) state.seenTitles[title] = (state.seenTitles[title] || 0) + 1;
         if (e.timestamp > newest) newest = e.timestamp;
         state.seenExamples = state.seenExamples || {};
-        if (title && !state.seenExamples[title] && (Object.keys(state.seenExamples).length < 40 || /abroad|shop|museum|cache|ranked|item use|points/i.test(title)) && !/^(Crime|Forums|Message|Faction newsletter)/i.test(title)) state.seenExamples[title] = e;
+        if (title && !state.seenExamples[title] && (Object.keys(state.seenExamples).length < 40 || /abroad|shop|museum|cache|ranked|item use|points/i.test(title)) && (!/^(Crime|Forums|Message|Faction newsletter)/i.test(title) || (/^Crime/i.test(title) && crimeText(e)))) state.seenExamples[title] = e; // crime entries that give items are kept so the raw shape can be checked
         if (/^Money (receive|send)/i.test(title) && e.data && typeof e.data.money === 'number') {
           state.moneyEvents = state.moneyEvents || {};
           state.moneyEvents[e.id] = { ts: e.timestamp, dir: /receive/i.test(title) ? 'in' : 'out', cp: e.data.sender != null ? e.data.sender : (e.data.receiver != null ? e.data.receiver : (e.data.user != null ? e.data.user : null)), amount: e.data.money };
@@ -845,6 +872,15 @@
           state.sendParts = state.sendParts || {};
           state.sendParts[e.id] = { ts: e.timestamp, kind: /send/i.test(title) ? 'send' : 'recv', cp: e.data.receiver != null ? e.data.receiver : (e.data.sender != null ? e.data.sender : null), items: pickItems(e.data).map(i => ({ id: i.id, qty: i.qty })), msg: String(e.data.message || '').slice(0, 80) };
           return;
+        }
+        if (!/^Item (market|abroad|shop)/i.test(title)) {
+          const byName = {}; Object.entries(itemNames).forEach(([id, n]) => { byName[String(n).toLowerCase()] = Number(id); });
+          const cr = crimeTx(e, byName);
+          if (cr) {
+            if (cr.tx && !state.txs[cr.tx.id]) { state.txs[cr.tx.id] = cr.tx; added++; }
+            if (cr.unknown.length) { state.crimeUnknown = state.crimeUnknown || {}; cr.unknown.forEach(n => { state.crimeUnknown[n] = (state.crimeUnknown[n] || 0) + 1; }); }
+            return;
+          }
         }
         const rule = LOG_RULES.find(r => r.re.test(title));
         if (!rule) return;
@@ -1306,7 +1342,7 @@
   const fdate = ts => { const d = new Date(ts * 1000); return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }) + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' }) + ' TCT'; };
   const itemSummary = tx => tx.items.slice(0, 5).map(i => i.qty + '× ' + esc(i.name || nameOf(i.id))).join(', ') + (tx.items.length > 5 ? ' + ' + (tx.items.length - 5) + ' more' : '') + (tx.count > 1 ? ' · ' + tx.count + ' sends' : '');
   const tradeTag = tx => tx.tradeId ? ' · #' + tx.tradeId : '';
-  const chanLabel = c => ({ market: 'Market', bazaar: 'Bazaar', trade: 'Trade', send: 'Send', recv: 'Received', abroad: 'Abroad', shop: 'Shop' }[c] || c);
+  const chanLabel = c => ({ market: 'Market', bazaar: 'Bazaar', trade: 'Trade', send: 'Send', recv: 'Received', abroad: 'Abroad', shop: 'Shop', crime: 'Crime' }[c] || c);
 
   // Profit ranges are in TCT (UTC) days, like the log. Presets, single days and a from-to range.
   const dayStr = ts => new Date(ts * 1000).toISOString().slice(0, 10);
@@ -1355,7 +1391,7 @@
   const dayLabel = ts => new Date(ts * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
   const sgn = n => (n >= 0 ? '+' : '−') + fmt(Math.abs(n));
   const dl = (a, b, sep) => `<div class="tfp-dl${sep ? ' sep' : ''}"><span>${a}</span><span>${b}</span></div>`;
-  const TAGCLS = { trade: 'trade', market: 'market', bazaar: 'market', abroad: 'market', send: 'sent', recv: 'sent', shop: 'sent' };
+  const TAGCLS = { trade: 'trade', market: 'market', bazaar: 'market', abroad: 'market', send: 'sent', recv: 'sent', shop: 'sent', crime: 'sent' };
   const rcSource = u => /weav3r/i.test(u || '') ? 'Weaver' : /tornexchange/i.test(u || '') ? 'TornExchange' : /z0cl/i.test(u || '') ? 'PawnHub' : 'Receipt';
   const safeUrl = u => /^https:\/\//i.test(u || '') ? u : null;
   const titleOf = (tx, verb) => verb + ' ' + ((tx.items || []).length === 1 ? tx.items[0].qty + '× ' + esc(tx.items[0].name || nameOf(tx.items[0].id)) : (tx.items || []).length + ' items');
@@ -1458,7 +1494,8 @@
       ['market|buy', o => 'Bought ' + it(o) + ' on the market'],
       ['bazaar|buy', o => 'Bought ' + it(o) + ' from bazaars'],
       ['shop|buy', o => 'Bought ' + it(o) + ' from shops'],
-      ['abroad|buy', o => 'Bought ' + it(o) + ' abroad']
+      ['abroad|buy', o => 'Bought ' + it(o) + ' abroad'],
+      ['crime|buy', o => 'Got ' + it(o) + ' from crimes']
     ];
     S.forEach(x => { if (m[x[0]]) L.push('<div class="tfp-act">' + x[1](m[x[0]]) + '</div>'); });
     return L.length ? '<div class="tfp-hdr">Activity · ' + esc(rangeCaption()) + '</div>' + L.join('') : '';
@@ -2218,7 +2255,7 @@
   }
 
   if (typeof module !== 'undefined') {
-    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
+    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
   }
   if (typeof document !== 'undefined' && !globalThis.__TFP_TEST) init();
 })();

@@ -18,6 +18,20 @@ eq('FIFO profit', r.flips.find(f => f.tx.id === 'c').profit, 420000 - (10 * 3000
 eq('pending count (send + dir-less trade)', r.pending.map(p => p.id).sort(), ['d', 'f']);
 eq('unmatched sale has no profit and is flagged', [r.flips.find(f => f.tx.id === 'e').profit, r.flips.find(f => f.tx.id === 'e').unmatched], [null, 2]);
 
+
+// Crime items: free stock at cost 0
+{
+  const by = { daffodil: 1, 'bunch of carnations': 2, candle: 3 };
+  const c1 = T.crimeTx({ id: 'x1', timestamp: 10, data: { text: 'You used 2 nerve successfully searching the cemetery gaining 3x Bunch of Carnations, 1x Candle' } }, by);
+  eq('crime parses two items', c1.tx.items.map(i => [i.id, i.qty]), [[2, 3], [3, 1]]);
+  eq('crime money is ignored', T.crimeTx({ id: 'x2', timestamp: 10, data: { text: 'You used 2 nerve successfully searching the cemetery gaining $238' } }, by), null);
+  eq('crime failure is ignored', T.crimeTx({ id: 'x3', timestamp: 10, data: { text: 'You used 2 nerve and failed searching the cemetery' } }, by), null);
+  eq('crime unknown item reported', T.crimeTx({ id: 'x4', timestamp: 10, data: { text: 'You used 2 nerve successfully searching the cemetery gaining 2x Mystery' } }, by).unknown, ['Mystery']);
+  const c2 = T.crimeTx({ id: 'x5', timestamp: 10, data: { text: 'You used 2 nerve successfully searching the cemetery gaining 5x Daffodil' } }, by).tx;
+  const rc = T.computeFlips({ [c2.id]: c2, s: { id: 's', ts: 20, dir: 'sell', channel: 'market', items: [{ id: 1, qty: 5, price: null }], amount: 1000 } });
+  eq('crime item sells with cost 0', [rc.flips[0].profit, rc.flips[0].unmatched], [1000, 0]);
+}
+
 // multi-item sell with receipt prices, per-item lines
 const tx2 = {
   a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 384, qty: 13, price: null }, { id: 215, qty: 191, price: null }], amount: 13 * 60000 + 191 * 400 },
