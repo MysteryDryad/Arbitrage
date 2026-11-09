@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.172-beta
+// @version      0.1.173-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.172-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.173-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -785,19 +785,34 @@
     }
     return added;
   }
-  async function syncAll() {
+  let syncRunning = false, progressText = '';
+  // Live text on the Sync buttons while a tap-started sync runs (a background sync does not touch the buttons).
+  function setProgress(t) { progressText = t; if (ui.busy) document.querySelectorAll('.tfp-fab,.tfp-hsync').forEach(b => { b.textContent = t || 'Syncing…'; }); }
+  async function syncAll(opts) {
+    if (syncRunning) return 'A sync is already running, give it a moment.';
+    syncRunning = true;
+    try { return await syncAllInner(opts || {}); } finally { syncRunning = false; setProgress(''); }
+  }
+  async function syncAllInner(opts) {
     let added = 0, att = 0, last = null, weaverErr = '';
     const T0 = Date.now(), tm = {}, lap = k => { tm[k] = Math.round((Date.now() - T0) / 100) / 10; };
     const readLog = async () => { added += await readLogFully(); };
+    setProgress('Reading log…');
     await readLog(); lap('log');
+    setProgress('Receipts…');
     try { if ((await inboxGet()).length) await processInbox(true); } catch (e) { /* receipts stay queued */ }
     lap('inbox');
     let pawn = null, pawnErr = '';
-    const phStart = Date.now();
-    if (!IS_PDA_ENV && hasGM && sget('pawnhubAuto', false)) { try { pawn = await readPawnHubBalance(); } catch (e) { pawnErr = String(e.message || e).slice(0, 120); } }
-    if (usesPH() && sget('phkey', '')) { try { pawn = await readPawnHubApi(); } catch (e) { pawnErr = String(e.message || e).slice(0, 120); } }
-    lap('pawnhub'); tm.phSecs = Math.round((Date.now() - phStart) / 100) / 10;
-    if (sget('w3bkey', '')) {
+    const phStart = Date.now(), nowS = Math.floor(Date.now() / 1000);
+    // PawnHub and Weaver talk to different sites and both only need the log read above, so they run side by side.
+    const doPawn = async () => {
+      if (opts.bg && nowS - (state.phBgAt || 0) < 30 * 60) return; // background syncs look at PawnHub every 30 minutes, not every 5
+      if (opts.bg) state.phBgAt = nowS;
+      if (!opts.bg && !IS_PDA_ENV && hasGM && sget('pawnhubAuto', false)) { try { pawn = await readPawnHubBalance(); } catch (e) { pawnErr = String(e.message || e).slice(0, 120); } }
+      if (usesPH() && sget('phkey', '')) { try { pawn = await readPawnHubApi(); } catch (e) { pawnErr = String(e.message || e).slice(0, 120); } }
+    };
+    const doWeaver = async () => {
+      if (!sget('w3bkey', '')) return;
       try {
         for (let round = 0; round < 15; round++) { last = await weaverImport(); att += last.attached; if (!last.left) break; }
         // A receipt whose trade is not in your data may have been missed (log read cut short, or an older copy of your data saved over it): read the log again from a bit before it, once per receipt.
@@ -808,8 +823,9 @@
           last = await weaverImport(); att += last.attached;
         }
       } catch (e) { weaverErr = String(e.message || e); }
-    }
-    lap('weaver');
+    };
+    setProgress('PawnHub and Weaver…');
+    await Promise.all([doPawn().then(() => { lap('pawnhub'); tm.phSecs = Math.round((Date.now() - phStart) / 100) / 10; }), doWeaver().then(() => lap('weaver'))]);
     try { reapplyZeroPriced(); snapshotProfit(); } catch (e) { /* ignore */ }
     lap('total');
     state.lastSyncDetail = { at: Math.floor(Date.now() / 1000), seconds: tm, added, attached: att, weaver: last ? last.text : null, weaverErr: weaverErr || null, pawnhub: pawn ? pawn.text : null, pawnhubErr: pawnErr || null }; save();
@@ -822,7 +838,7 @@
     if (pawn && pawn.valued) bits.push(pawn.valued + ' PawnHub payment' + (pawn.valued === 1 ? '' : 's') + ' matched');
     if (weaverErr) bits.push('Weaver: ' + weaverErr.slice(0, 90));
     if (pawnErr) bits.push('PawnHub: ' + pawnErr.slice(0, 70));
-    const sec = x => Math.max(0, Math.round(x)) + 's', slow = tm.total > 8 ? ' · took ' + sec(tm.total) + ' (Torn log ' + sec(tm.log) + ', receipt inbox ' + sec(tm.inbox - tm.log) + ', PawnHub ' + sec(tm.phSecs) + ', Weaver ' + sec(tm.weaver - tm.pawnhub) + ')' : '';
+    const sec = x => Math.max(0, Math.round(x)) + 's', slow = tm.total > 8 ? ' · took ' + sec(tm.total) + ' (Torn log ' + sec(tm.log) + ', receipt inbox ' + sec(tm.inbox - tm.log) + ', PawnHub ' + sec(tm.phSecs) + ', Weaver ' + sec(tm.weaver - tm.inbox) + ')' : '';
     return (bits.length ? 'Synced · ' + bits.join(' · ') : 'Up to date.') + slow;
   }
   async function syncLog() {
@@ -842,6 +858,7 @@
     const seenIds = new Set();
     let prevTo = null, pages = 0, added = 0, newest = Math.max(state.lastSync || 0, resume ? resume.newest : 0);
     lastRaw = [];
+    const byName = {}; Object.entries(itemNames).forEach(([id, n]) => { byName[String(n).toLowerCase()] = Number(id); });
     lastSyncInfo = { from, topKeys: Object.keys(j || {}), logType: Array.isArray(j && j.log) ? 'array' : typeof (j && j.log), entries: 0, pages: 0, firstRaw: [], pageInfo: [] };
     try {
     while (j && pages++ < 100) {
@@ -885,7 +902,6 @@
           return;
         }
         if (!/^Item (market|abroad|shop)/i.test(title)) {
-          const byName = {}; Object.entries(itemNames).forEach(([id, n]) => { byName[String(n).toLowerCase()] = Number(id); });
           const cr = crimeTx(e, byName);
           if (cr) {
             if (cr.tx && !state.txs[cr.tx.id]) { state.txs[cr.tx.id] = cr.tx; added++; }
@@ -910,8 +926,9 @@
       if (oldest <= from) break;
       const to = oldest === prevTo ? oldest - 1 : oldest;
       prevTo = oldest; curTo = to;
-      state.resume = { from, to, newest }; save(); // checkpoint: an interrupted import continues from here
-      await sleep(650);
+      state.resume = { from, to, newest }; if (pages % 10 === 0) save(); // checkpoint: an interrupted import continues from here (a full save of the whole state is slow, so only every 10 pages)
+      setProgress('Reading log, page ' + (pages + 1) + '…');
+      await sleep(500);
       j = await fetchPage(to);
     }
     } catch (e) { state.resume = { from, to: curTo, newest }; state.lastError = { at: Math.floor(Date.now() / 1000), msg: String(e.message || e), page: pages }; save(); throw e; }
@@ -1869,8 +1886,8 @@
     const a = attention(), badge = a.pend.length + a.skip.length;
     const tabs = [['profit', '💰', 'Profit'], ['receipts', '🧾', 'Receipts'], ['items', '📊', 'Items'], ['settings', '⚙️', 'Settings']];
     const back = ui.nav && ui.nav.length, old = card.querySelector('.tfp-body'), keep = old ? old.scrollTop : 0;
-    const fab = ui.tab === 'profit' || ui.tab === 'receipts' || ui.tab === 'items' ? `<button class="tfp-fab" data-act="sync">${ui.busy ? 'Syncing…' : state.resume ? 'Continue' : '⟳ Sync'}</button>` : '';
-    card.innerHTML = `<div class="tfp-hd"><span>${back ? '<button class="tfp-b" data-act="back">‹ Back</button> ' : ''}<b>💰 Arbitrage</b> <span class="tfp-sub">v${VERSION}</span></span><span><button class="tfp-b tfp-hsync" data-act="sync">${ui.busy ? 'Syncing…' : state.resume ? 'Continue' : '⟳ Sync'}</button> <button class="tfp-b" data-act="close">– minimise</button></span></div>
+    const fab = ui.tab === 'profit' || ui.tab === 'receipts' || ui.tab === 'items' ? `<button class="tfp-fab" data-act="sync">${ui.busy ? (progressText || 'Syncing…') : state.resume ? 'Continue' : '⟳ Sync'}</button>` : '';
+    card.innerHTML = `<div class="tfp-hd"><span>${back ? '<button class="tfp-b" data-act="back">‹ Back</button> ' : ''}<b>💰 Arbitrage</b> <span class="tfp-sub">v${VERSION}</span></span><span><button class="tfp-b tfp-hsync" data-act="sync">${ui.busy ? (progressText || 'Syncing…') : state.resume ? 'Continue' : '⟳ Sync'}</button> <button class="tfp-b" data-act="close">– minimise</button></span></div>
       <div class="tfp-body">${lastSaveOk ? '' : '<div class="tfp-msg tfp-warn">⚠️ Could not save your data on this device (storage may be full). Export a backup in Settings.</div>'}
       ${phPreviewHtml()}${ui.msg ? `<div class="tfp-msg">${esc(ui.msg)}</div>` : ''}
       ${ui.itemLog && ui.tab === 'profit' ? ledgerHtml() : ''}${ui.tab === 'profit' ? profitHtml() : ui.tab === 'items' ? itemsHtml() : ui.tab === 'receipts' ? receiptsHtml() : settingsHtml()}</div>${fab}
@@ -1943,6 +1960,26 @@
     try { const r = await readPawnHubBalance(); if (r.valued) { toast('PawnHub: ' + r.valued + ' payment' + (r.valued === 1 ? '' : 's') + ' matched'); if (ui.open) render(); } }
     catch (e) { /* quiet: the next try is in 30 minutes */ }
     finally { pawnRunning = false; save(); }
+  }
+  // Quiet sync every 5 minutes while a Torn page is open (even with the panel closed). A userscript cannot run with no Torn page open.
+  const BG_EVERY = 5 * 60, BG_LOCK = 'tfp_bglock';
+  let bgFailAt = 0;
+  async function autoSync() {
+    if (!setupDone() || !getKey() || !state.lastSync || state.resume) return; // first read and half-done reads are started by hand
+    if (syncRunning || ui.busy || document.hidden) return;
+    const now = Math.floor(Date.now() / 1000);
+    if (now - (state.syncedAt || 0) < BG_EVERY || now - bgFailAt < 15 * 60) return;
+    try { // another open Torn tab may be syncing: whoever claims the lock first goes
+      const t = Number(localStorage.getItem(BG_LOCK) || 0);
+      if (now - t < BG_EVERY - 30) return;
+      localStorage.setItem(BG_LOCK, String(now));
+    } catch (e) { /* no shared storage: just go */ }
+    try {
+      const msg = await syncAll({ bg: true });
+      state.bgAt = now;
+      if (/new record|receipt|matched/.test(msg || '')) { toast('Arbitrage: ' + msg.split(' · ').slice(1, 3).join(' · ')); }
+      if (ui.open && !ui.busy) render();
+    } catch (e) { bgFailAt = now; } // quiet: tries again in 15 minutes
   }
   async function autoInbox() {
     if (!setupDone()) return;
@@ -2256,9 +2293,10 @@
       bootP.then(() => { if (sget('phkey', '')) phFlagSet(true); if (sget('w3bkey', '')) w3bFlagSet(true); setTimeout(autoInbox, 2500); setTimeout(importFromHash, 1200); });
       document.addEventListener('visibilitychange', () => { if (!document.hidden) bootP.then(() => { // another page may have saved newer data while this one slept
         (hasIDB ? idb.get('state').catch(() => null) : Promise.resolve(sget('state', null))).then(st => { if (st && st.txs && (st.savedAt || 0) > lastWrite && !ui.busy) { const mine = state; state = mergeState(Object.assign(STATE_DEFAULTS(), st), mine); lastWrite = st.savedAt; if (ui.open) render(); } }).catch(() => {});
-        autoInbox(); }); });
+        autoInbox(); autoSync(); }); });
       // PDA keeps Torn in its own tab, and a tab you left may not report that it came back, so also look at the inbox every few seconds and when the page gets focus.
       setInterval(() => { if (!document.hidden) bootP.then(autoInbox); }, 4000);
+      setInterval(() => bootP.then(autoSync), 60 * 1000); setTimeout(() => bootP.then(autoSync), 20000);
       setTimeout(() => bootP.then(autoPawnhub), 60000); setInterval(() => bootP.then(autoPawnhub), 5 * 60 * 1000);
       window.addEventListener('focus', () => bootP.then(autoInbox));
       window.addEventListener('pageshow', () => bootP.then(autoInbox));
