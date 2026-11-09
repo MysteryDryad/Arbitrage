@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.174-beta
+// @version      0.1.175-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.174-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.175-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -799,7 +799,7 @@
     let added = 0, att = 0, last = null, weaverErr = '';
     const T0 = Date.now(), tm = {}, lap = k => { tm[k] = Math.round((Date.now() - T0) / 100) / 10; };
     const readLog = async () => { added += await readLogFully(); };
-    setProgress(state.resume ? 'Continuing from ' + fdate(state.resume.to) + '…' : 'Reading log…');
+    setProgress(state.resume ? 'Continuing…' : 'Reading log…');
     await readLog(); lap('log');
     setProgress('Receipts…');
     try { if ((await inboxGet()).length) await processInbox(true); } catch (e) { /* receipts stay queued */ }
@@ -846,7 +846,7 @@
   async function syncLog() {
     await ensureMe(); await ensureItems();
     const startDays = Number(sget('startDays', 30)) || 30;
-    const resume = state.resume || null;
+    const resume = state.resume || null, pageBase = resume ? (resume.pages || 0) : 0; // pages already read before this resume, so the count keeps going
     const from = resume ? resume.from : (state.lastSync ? state.lastSync + 1 : Math.floor(Date.now() / 1000) - startDays * 86400);
     let curTo = resume ? resume.to : null;
     // Torn allows about 100 requests a minute: pause between pages and wait out a rate-limit reply a few times.
@@ -928,12 +928,12 @@
       if (oldest <= from) break;
       const to = oldest === prevTo ? oldest - 1 : oldest;
       prevTo = oldest; curTo = to;
-      state.resume = { from, to, newest }; if (pages % 5 === 0) save(); // checkpoint: an interrupted import continues from here (a full save of the whole state is slow, so every 5 pages; leaving the tab saves it at once, see flushNow)
-      setProgress('Reading log, back to ' + fdate(oldest) + '…');
+      state.resume = { from, to, newest, pages: pageBase + pages }; if (pages % 5 === 0) save(); // checkpoint: an interrupted import continues from here (a full save of the whole state is slow, so every 5 pages; leaving the tab saves it at once, see flushNow)
+      setProgress('Reading log, page ' + (pageBase + pages + 1) + '…');
       await sleep(500);
       j = await fetchPage(to);
     }
-    } catch (e) { state.resume = { from, to: curTo, newest }; state.lastError = { at: Math.floor(Date.now() / 1000), msg: String(e.message || e), page: pages }; save(); throw e; }
+    } catch (e) { state.resume = { from, to: curTo, newest, pages: pageBase + pages }; state.lastError = { at: Math.floor(Date.now() / 1000), msg: String(e.message || e), page: pages }; save(); throw e; }
     const capped = pages > 100;
     const built = buildTradeTxs(state.tradeParts, nameOf);
     Object.entries(built).forEach(([id, tx]) => {
@@ -946,7 +946,7 @@
     added += rebuildSendTxs();
     // The log arrives newest-first, so if we stopped at the page cap, older entries were not read: keep the old cursor.
     if (!capped) { state.lastSync = newest; state.syncedAt = Math.floor(Date.now() / 1000); state.resume = null; }
-    else state.resume = { from, to: curTo, newest };
+    else state.resume = { from, to: curTo, newest, pages: pageBase + pages };
     save(); verifySaved();
     if (capped) { const er = new Error('Imported part of your history (' + added + ' new). Tap Sync now again to continue.'); er.capped = true; er.added = added; throw er; }
     return added;
