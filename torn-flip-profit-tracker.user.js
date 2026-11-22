@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.175-beta
+// @version      0.1.176-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.175-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.176-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -458,6 +458,7 @@
     { re: /item ?market.*(buy|bought|purchase)/i, channel: 'market', dir: 'buy' },
     { re: /item ?market.*(sell|sold|sale)/i, channel: 'market', dir: 'sell' },
     { re: /^item abroad buy/i, channel: 'abroad', dir: 'buy' }, // flowers and plushies bought while travelling
+    { re: /^item abroad sell/i, channel: 'abroad', dir: 'sell' }, // items sold abroad (item, quantity, value_each, total_value)
     { re: /^(item |city )?shop (buy|bought|purchase)/i, channel: 'shop', dir: 'buy' },
     { re: /^(item |city )?shop (sell|sold|sale)|^(item )?sell.*(shop|npc)|^npc.*sell/i, channel: 'shop', dir: 'sell' }
   ];
@@ -800,7 +801,10 @@
     const T0 = Date.now(), tm = {}, lap = k => { tm[k] = Math.round((Date.now() - T0) / 100) / 10; };
     const readLog = async () => { added += await readLogFully(); };
     setProgress(state.resume ? 'Continuing…' : 'Reading log…');
-    await readLog(); lap('log');
+    // If the log read stops partway (rate limit, app switch, network), the newest entries are already saved, so receipts, PawnHub and Weaver still run on what has been read.
+    let logErr = null;
+    try { await readLog(); } catch (e) { logErr = e; }
+    lap('log');
     setProgress('Receipts…');
     try { if ((await inboxGet()).length) await processInbox(true); } catch (e) { /* receipts stay queued */ }
     lap('inbox');
@@ -841,6 +845,10 @@
     if (weaverErr) bits.push('Weaver: ' + weaverErr.slice(0, 90));
     if (pawnErr) bits.push('PawnHub: ' + pawnErr.slice(0, 70));
     const sec = x => Math.max(0, Math.round(x)) + 's', slow = tm.total > 8 ? ' · took ' + sec(tm.total) + ' (Torn log ' + sec(tm.log) + ', receipt inbox ' + sec(tm.inbox - tm.log) + ', PawnHub ' + sec(tm.phSecs) + ', Weaver ' + sec(tm.weaver - tm.inbox) + ')' : '';
+    if (logErr) {
+      if (opts.bg) throw logErr; // the background timer backs off after an error
+      return 'Log read stopped: ' + String(logErr.message || logErr).slice(0, 140) + (state.resume ? ' Tap Continue to finish it.' : '') + (bits.length ? ' · Meanwhile: ' + bits.join(' · ') : '') + slow;
+    }
     return (bits.length ? 'Synced · ' + bits.join(' · ') : 'Up to date.') + slow;
   }
   async function syncLog() {
@@ -903,7 +911,7 @@
           state.sendParts[e.id] = { ts: e.timestamp, kind: /send/i.test(title) ? 'send' : 'recv', cp: e.data.receiver != null ? e.data.receiver : (e.data.sender != null ? e.data.sender : null), items: pickItems(e.data).map(i => ({ id: i.id, qty: i.qty })), msg: String(e.data.message || '').slice(0, 80) };
           return;
         }
-        if (!/^Item (market|abroad|shop)/i.test(title)) {
+        if (!/^Item (market|abroad|shop)/i.test(title)) { // crime check only for titles that are not already item-trade rules
           const cr = crimeTx(e, byName);
           if (cr) {
             if (cr.tx && !state.txs[cr.tx.id]) { state.txs[cr.tx.id] = cr.tx; added++; }
@@ -1525,6 +1533,7 @@
       ['bazaar|buy', o => 'Bought ' + it(o) + ' from bazaars'],
       ['shop|buy', o => 'Bought ' + it(o) + ' from shops'],
       ['abroad|buy', o => 'Bought ' + it(o) + ' abroad'],
+      ['abroad|sell', o => 'Sold ' + it(o) + ' abroad'],
       ['crime|buy', o => 'Got ' + it(o) + ' from crimes']
     ];
     S.forEach(x => { if (m[x[0]]) L.push('<div class="tfp-act">' + x[1](m[x[0]]) + '</div>'); });

@@ -35,6 +35,14 @@ eq('unmatched sale has no profit and is flagged', [r.flips.find(f => f.tx.id ===
   eq('crime item sells with cost 0', [rc.flips[0].profit, rc.flips[0].unmatched], [1000, 0]);
 }
 
+// Item abroad sell is read as a sale
+{
+  const e = { id: 'ab1', timestamp: 7, details: { title: 'Item abroad sell' }, data: { item: 200, quantity: 27, value_each: 29153, total_value: 787131, area: 'in South Africa' } };
+  const rule = T.LOG_RULES.find(r => r.re.test('Item abroad sell'));
+  const tx = T.parseLogEntry(e, rule, id => 'Item ' + id);
+  eq('abroad sell parses as a sale with its total', [tx.channel, tx.dir, tx.items[0].qty, tx.amount], ['abroad', 'sell', 27, 787131]);
+}
+
 // multi-item sell with receipt prices, per-item lines
 const tx2 = {
   a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 384, qty: 13, price: null }, { id: 215, qty: 191, price: null }], amount: 13 * 60000 + 191 * 400 },
