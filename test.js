@@ -119,6 +119,17 @@ eq('pause between pages at 60/min', T.ratePause(60), 750);
   eq('found item sells at cost 0', r.flips[1].profit, 700);
 }
 
+// Watch list: real log types, none of them already read, none duplicated in the filter list
+{
+  const lt = require('./fixtures/logtypes.json').logtypes, ids = new Set(T.LOG_FILTER_IDS);
+  const bad = T.WATCH_IDS.filter(id => !lt.some(x => x.id === id));
+  const overlap = T.WATCH_IDS.filter(id => ids.has(id));
+  const readTitles = T.WATCH_IDS.filter(id => T.titleWanted((lt.find(x => x.id === id) || {}).title || ''));
+  eq('watch ids all exist in the log type list', bad, []);
+  eq('watch ids are not in the filter list', overlap, []);
+  eq('watch ids are not types the script already reads', readTitles, []);
+}
+
 // multi-item sell with receipt prices, per-item lines
 const tx2 = {
   a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 384, qty: 13, price: null }, { id: 215, qty: 191, price: null }], amount: 13 * 60000 + 191 * 400 },
