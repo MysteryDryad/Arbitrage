@@ -94,6 +94,29 @@ eq('pause between pages at 60/min', T.ratePause(60), 750);
   eq('every filter id exists in the log type list', unknownIds, []);
 }
 
+// Items used up and items found
+{
+  const u = T.useGainTx({ id: 'u1', timestamp: 9, details: { title: 'Item use xanax' }, data: { item: 206, faction: 0 } });
+  eq('item use takes one of the item out of stock', [u.dir, u.channel, u.items[0].id, u.items[0].qty], ['use', 'use', 206, 1]);
+  eq('item use without an item id is ignored', T.useGainTx({ id: 'u2', timestamp: 9, details: { title: 'Item use piggy bank deposit' }, data: { money: 5 } }), null);
+  const dsp = T.useGainTx({ id: 'u3', timestamp: 9, details: { title: 'Crime use items for disposal' }, data: { items_used: { '172': 3 } } });
+  eq('crime disposal uses the listed items', dsp.items.map(i => [i.id, i.qty]), [[172, 3]]);
+  const ocl = T.useGainTx({ id: 'u4', timestamp: 9, details: { title: 'Faction organized crimes lose items' }, data: { items_added: { '327': 1 } } });
+  eq('organized crime item loss uses the listed items', [ocl.dir, ocl.items[0].id], ['use', 327]);
+  const dump = T.useGainTx({ id: 'u5', timestamp: 9, details: { title: 'Dump find' }, data: { dumper: 1, item: [{ id: 933, uid: 0, qty: 1 }], energy_used: 5 } });
+  eq('dump find is free stock', [dump.dir, dump.channel, dump.free, dump.amount, dump.items[0].id], ['buy', 'find', true, 0, 933]);
+  // a use takes stock from the oldest lot; a found item sells at cost 0
+  const r = T.computeFlips({
+    a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 5, qty: 10, price: null }], amount: 1000 },
+    u: { id: 'u', ts: 2, dir: 'use', channel: 'use', items: [{ id: 5, qty: 4 }], amount: 0 },
+    s: { id: 's', ts: 3, dir: 'sell', channel: 'market', items: [{ id: 5, qty: 6, price: null }], amount: 900 },
+    d: Object.assign({}, dump, { id: 'd', ts: 4 }),
+    t: { id: 't', ts: 5, dir: 'sell', channel: 'market', items: [{ id: 933, qty: 1, price: null }], amount: 700 }
+  });
+  eq('items used up leave stock without profit, the sale gets the remaining cost', [r.flips[0].profit, r.pending.length], [900 - 600, 0]);
+  eq('found item sells at cost 0', r.flips[1].profit, 700);
+}
+
 // multi-item sell with receipt prices, per-item lines
 const tx2 = {
   a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 384, qty: 13, price: null }, { id: 215, qty: 191, price: null }], amount: 13 * 60000 + 191 * 400 },

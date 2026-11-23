@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.179-beta
+// @version      0.1.180-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.179-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.180-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -354,10 +354,10 @@
   const POINTS_ID = -1; // points are tracked like an item with this id
   // Log read filter. Torn's user/log accepts log=<type ids>, so the sync can ask only for the entry types it understands instead of every entry.
   // LOG_FILTER_IDS is derived from Torn's torn/logtypes list by running LOG_WANTED over every title (test.js re-checks it against fixtures/logtypes.json).
-  const LOG_FILTER_IDS = [1103, 1104, 1110, 1111, 1112, 1113, 1220, 1221, 1225, 1226, 4102, 4103, 4200, 4201, 4210, 4211, 4220, 4410, 4411, 4412, 4413, 4420, 4430, 4440, 4441, 4445, 4446, 4800, 4810, 4900, 4905, 4910, 4955, 5010, 5011, 5725, 7000, 9020];
+  const LOG_FILTER_IDS = [1103, 1104, 1110, 1111, 1112, 1113, 1220, 1221, 1225, 1226, 1404, 2010, 2020, 2030, 2040, 2050, 2060, 2070, 2080, 2090, 2100, 2101, 2102, 2105, 2110, 2120, 2121, 2130, 2140, 2150, 2160, 2170, 2180, 2190, 2200, 2201, 2210, 2211, 2220, 2221, 2230, 2231, 2240, 2241, 2250, 2251, 2260, 2261, 2270, 2271, 2280, 2281, 2290, 2291, 2295, 2300, 2301, 2310, 2311, 2320, 2321, 2325, 2330, 2340, 2350, 2360, 2370, 2375, 2380, 2381, 2390, 2400, 2405, 2406, 2407, 2410, 2420, 2430, 2440, 2441, 2442, 2450, 2460, 2470, 2480, 2490, 2500, 2501, 2510, 2520, 2525, 2530, 2531, 2535, 2600, 2605, 2610, 2611, 2612, 2613, 2615, 2620, 4102, 4103, 4200, 4201, 4210, 4211, 4220, 4410, 4411, 4412, 4413, 4420, 4430, 4440, 4441, 4445, 4446, 4800, 4810, 4900, 4905, 4910, 4955, 5010, 5011, 5725, 6769, 7000, 8981, 8982, 8983, 8984, 8985, 8986, 8987, 8988, 8989, 9020, 9304];
   const LOG_FILTER_SET = new Set(LOG_FILTER_IDS);
   const LOG_WANTED = () => [/^Money (receive|send)/i, /^Trade (completed|items (incoming|outgoing)|money (incoming|outgoing))/i, /^Trade (cancel|expire|decline)/i, /^Item market (add|remove)$/i, /^Item (send|receive)$/i]
-    .concat(LOG_RULES.map(r => r.re), [/^Museum exchange$/i, /^Points market (buy|sell)$/i, /^Points .*\buse$/i, /^Crime success item gain/i]);
+    .concat(LOG_RULES.map(r => r.re), [/^Museum exchange$/i, /^Points market (buy|sell)$/i, /^Points .*\buse$/i, /^Crime success item gain/i, /^Item use /i, /^Dump find$/i, /^Crime use items for disposal$/i, /^Faction organized crimes lose items$/i]);
   const titleWanted = title => LOG_WANTED().some(re => re.test(title));
   // Filtered reads are on unless switched off in Settings or paused for a day after a problem (see the fallbacks in syncLog and auditLogFilter).
   const filterActive = () => sget('logFilter', true) !== false && Math.floor(Date.now() / 1000) >= (state.filterOffUntil || 0);
@@ -556,6 +556,18 @@
     if (!r) r = parseCrimeItems(crimeText(e), byName);
     if (!r || (!r.items.length && !r.unknown.length)) return null;
     return { unknown: r.unknown, tx: r.items.length ? { id: 'crime:' + e.id, ts: e.timestamp, dir: 'buy', channel: 'crime', cp: null, tradeId: null, items: r.items, amount: 0, src: 'log', locked: true, free: true, title: title || 'Crime' } : null };
+  }
+  // Items that leave or enter stock outside a sale: "Item use ..." (data.item), crime disposal (items_used), organized crime item losses (items_added) and Dump finds (data.item list).
+  // Uses come out of stock oldest-first with no profit effect (like refills); finds are free stock.
+  function useGainTx(e) {
+    const title = (e.details && e.details.title) || e.title || '', d = e.data || {};
+    const mk = (dir, channel, items) => items.length ? { id: channel + ':' + e.id, ts: e.timestamp, dir, channel, cp: null, tradeId: null, items, amount: 0, src: 'log', locked: true, free: dir === 'buy', title } : null;
+    const fromMap = m => m && typeof m === 'object' ? Object.entries(m).filter(([id, q]) => Number(id) > 0 && Number(q) > 0).map(([id, q]) => ({ id: Number(id), qty: Number(q), name: null, price: null })) : [];
+    if (/^Item use /i.test(title) && Number(d.item) > 0) return mk('use', 'use', [{ id: Number(d.item), qty: 1, name: null, price: null }]);
+    if (/^Crime use items for disposal$/i.test(title)) return mk('use', 'use', fromMap(d.items_used));
+    if (/^Faction organized crimes lose items$/i.test(title)) return mk('use', 'use', fromMap(d.items_added));
+    if (/^Dump find$/i.test(title) && Array.isArray(d.item)) return mk('buy', 'find', d.item.filter(i => Number(i.id) > 0).map(i => ({ id: Number(i.id), qty: Number(i.qty) || 1, name: null, price: 0 })));
+    return null;
   }
   // Museum set exchanges and the points market. A set is one of each listed item; the log gives the number of sets and the points received.
   const MUSEUM_SETS = {
@@ -1015,7 +1027,9 @@
         { const mu = museumTx(e, byName);
           if (mu) { if (mu.tx) { if (!state.txs[mu.tx.id]) { state.txs[mu.tx.id] = mu.tx; added++; } } else if (mu.unknown) { state.museumUnknown = state.museumUnknown || {}; state.museumUnknown[mu.unknown] = (state.museumUnknown[mu.unknown] || 0) + 1; } return; }
           const pt = pointsTx(e);
-          if (pt) { if (!state.txs[pt.id]) { state.txs[pt.id] = pt; added++; } return; } }
+          if (pt) { if (!state.txs[pt.id]) { state.txs[pt.id] = pt; added++; } return; }
+          const ug = useGainTx(e);
+          if (ug) { if (!state.txs[ug.id]) { ug.items.forEach(i => { i.name = nameOf(i.id); }); state.txs[ug.id] = ug; added++; } return; } }
         if (!/^Item (market|abroad|shop)/i.test(title)) { // crime check only for titles that are not already item-trade rules
           const cr = crimeTx(e, byName);
           if (cr) {
@@ -1486,7 +1500,7 @@
   const fdate = ts => { const d = new Date(ts * 1000); return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }) + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' }) + ' TCT'; };
   const itemSummary = tx => tx.items.slice(0, 5).map(i => i.qty + '× ' + esc(i.name || nameOf(i.id))).join(', ') + (tx.items.length > 5 ? ' + ' + (tx.items.length - 5) + ' more' : '') + (tx.count > 1 ? ' · ' + tx.count + ' sends' : '');
   const tradeTag = tx => tx.tradeId ? ' · #' + tx.tradeId : '';
-  const chanLabel = c => ({ market: 'Market', bazaar: 'Bazaar', trade: 'Trade', send: 'Send', recv: 'Received', abroad: 'Abroad', shop: 'Shop', crime: 'Crime', museum: 'Museum', points: 'Points' }[c] || c);
+  const chanLabel = c => ({ market: 'Market', bazaar: 'Bazaar', trade: 'Trade', send: 'Send', recv: 'Received', abroad: 'Abroad', shop: 'Shop', crime: 'Crime', museum: 'Museum', points: 'Points', use: 'Used', find: 'Found' }[c] || c);
 
   // Profit ranges are in TCT (UTC) days, like the log. Presets, single days and a from-to range.
   const dayStr = ts => new Date(ts * 1000).toISOString().slice(0, 10);
@@ -1535,7 +1549,7 @@
   const dayLabel = ts => new Date(ts * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
   const sgn = n => (n >= 0 ? '+' : '−') + fmt(Math.abs(n));
   const dl = (a, b, sep) => `<div class="tfp-dl${sep ? ' sep' : ''}"><span>${a}</span><span>${b}</span></div>`;
-  const TAGCLS = { trade: 'trade', market: 'market', bazaar: 'market', abroad: 'market', send: 'sent', recv: 'sent', shop: 'sent', crime: 'sent', museum: 'sent', points: 'market' };
+  const TAGCLS = { trade: 'trade', market: 'market', bazaar: 'market', abroad: 'market', send: 'sent', recv: 'sent', shop: 'sent', crime: 'sent', museum: 'sent', points: 'market', use: 'sent', find: 'sent' };
   const rcSource = u => /weav3r/i.test(u || '') ? 'Weaver' : /tornexchange/i.test(u || '') ? 'TornExchange' : /z0cl/i.test(u || '') ? 'PawnHub' : 'Receipt';
   const safeUrl = u => /^https:\/\//i.test(u || '') ? u : null;
   const titleOf = (tx, verb) => verb + ' ' + ((tx.items || []).length === 1 ? tx.items[0].qty + '× ' + esc(tx.items[0].name || nameOf(tx.items[0].id)) : (tx.items || []).length + ' items');
@@ -2439,7 +2453,7 @@
   }
 
   if (typeof module !== 'undefined') {
-    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, LOG_FILTER_IDS, titleWanted, museumTx, pointsTx, rateEstimate, ratePause, clampRate, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
+    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, LOG_FILTER_IDS, useGainTx, titleWanted, museumTx, pointsTx, rateEstimate, ratePause, clampRate, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
   }
   if (typeof document !== 'undefined' && !globalThis.__TFP_TEST) init();
 })();
