@@ -105,6 +105,8 @@ eq('pause between pages at 60/min', T.ratePause(60), 750);
   eq('organized crime item loss uses the listed items', [ocl.dir, ocl.items[0].id], ['use', 327]);
   const dump = T.useGainTx({ id: 'u5', timestamp: 9, details: { title: 'Dump find' }, data: { dumper: 1, item: [{ id: 933, uid: 0, qty: 1 }], energy_used: 5 } });
   eq('dump find is free stock', [dump.dir, dump.channel, dump.free, dump.amount, dump.items[0].id], ['buy', 'find', true, 0, 933]);
+  const wheel = T.useGainTx({ id: 'w1', timestamp: 9, details: { title: 'Casino spin the wheel win item' }, data: { wheel: 'the Wheel of Mediocrity', item: 274 } });
+  eq('casino wheel item win is free stock', [wheel.dir, wheel.free, wheel.amount, wheel.items[0].id, wheel.items[0].qty], ['buy', true, 0, 274, 1]);
   // a use takes stock from the oldest lot; a found item sells at cost 0
   const r = T.computeFlips({
     a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 5, qty: 10, price: null }], amount: 1000 },
