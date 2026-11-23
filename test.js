@@ -139,6 +139,12 @@ eq('pause between pages at 60/min', T.ratePause(60), 750);
   eq('refresh copes with no list', T.extraIdsFromLogTypes(undefined), []);
 }
 
+// Selling items to a shop for points is not a cash sale
+{
+  const cash = T.LOG_RULES.find(r => r.re.test('Item shop sell'));
+  eq('item shop sell is still a cash sale', [cash.channel, cash.dir], ['shop', 'sell']);
+  eq('item shop sell points is not read as a cash sale', T.LOG_RULES.some(r => r.re.test('Item shop sell points')), false);
+}
 // multi-item sell with receipt prices, per-item lines
 const tx2 = {
   a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 384, qty: 13, price: null }, { id: 215, qty: 191, price: null }], amount: 13 * 60000 + 191 * 400 },

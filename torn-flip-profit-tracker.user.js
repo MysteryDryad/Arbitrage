@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.184-beta
+// @version      0.1.185-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.184-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.185-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -354,12 +354,12 @@
   const POINTS_ID = -1; // points are tracked like an item with this id
   // Log read filter. Torn's user/log accepts log=<type ids>, so the sync can ask only for the entry types it understands instead of every entry.
   // LOG_FILTER_IDS is derived from Torn's torn/logtypes list by running LOG_WANTED over every title (test.js re-checks it against fixtures/logtypes.json).
-  const LOG_FILTER_IDS = [1103, 1104, 1110, 1111, 1112, 1113, 1220, 1221, 1225, 1226, 1404, 2010, 2020, 2030, 2040, 2050, 2060, 2070, 2080, 2090, 2100, 2101, 2102, 2105, 2110, 2120, 2121, 2130, 2140, 2150, 2160, 2170, 2180, 2190, 2200, 2201, 2210, 2211, 2220, 2221, 2230, 2231, 2240, 2241, 2250, 2251, 2260, 2261, 2270, 2271, 2280, 2281, 2290, 2291, 2295, 2300, 2301, 2310, 2311, 2320, 2321, 2325, 2330, 2340, 2350, 2360, 2370, 2375, 2380, 2381, 2390, 2400, 2405, 2406, 2407, 2410, 2420, 2430, 2440, 2441, 2442, 2450, 2460, 2470, 2480, 2490, 2500, 2501, 2510, 2520, 2525, 2530, 2531, 2535, 2600, 2605, 2610, 2611, 2612, 2613, 2615, 2620, 4102, 4103, 4200, 4201, 4210, 4211, 4220, 4410, 4411, 4412, 4413, 4420, 4430, 4440, 4441, 4445, 4446, 4800, 4810, 4900, 4905, 4910, 4955, 5010, 5011, 5725, 6769, 7000, 8377, 8981, 8982, 8983, 8984, 8985, 8986, 8987, 8988, 8989, 9020, 9304];
+  const LOG_FILTER_IDS = [1103, 1104, 1110, 1111, 1112, 1113, 1220, 1221, 1225, 1226, 1404, 2010, 2020, 2030, 2040, 2050, 2060, 2070, 2080, 2090, 2100, 2101, 2102, 2105, 2110, 2120, 2121, 2130, 2140, 2150, 2160, 2170, 2180, 2190, 2200, 2201, 2210, 2211, 2220, 2221, 2230, 2231, 2240, 2241, 2250, 2251, 2260, 2261, 2270, 2271, 2280, 2281, 2290, 2291, 2295, 2300, 2301, 2310, 2311, 2320, 2321, 2325, 2330, 2340, 2350, 2360, 2370, 2375, 2380, 2381, 2390, 2400, 2405, 2406, 2407, 2410, 2420, 2430, 2440, 2441, 2442, 2450, 2460, 2470, 2480, 2490, 2500, 2501, 2510, 2520, 2525, 2530, 2531, 2535, 2600, 2605, 2610, 2611, 2612, 2613, 2615, 2620, 4102, 4103, 4200, 4201, 4210, 4211, 4410, 4411, 4412, 4413, 4420, 4430, 4440, 4441, 4445, 4446, 4800, 4810, 4900, 4905, 4910, 4955, 5010, 5011, 5725, 6769, 7000, 8377, 8981, 8982, 8983, 8984, 8985, 8986, 8987, 8988, 8989, 9020, 9304];
   const LOG_FILTER_SET = new Set(LOG_FILTER_IDS);
   // Log types the script does not read yet but that may move items or money outside a sale. They ride along in the same id request: each is only counted
   // (state.watched[title] = { n, first entry, last time }) so the debug sample shows which of them a user really has, with one raw entry to write the parser from.
   // Remove an id from here when its parser exists. Very frequent types with nothing to model (Halloween treats) are left out.
-  const WATCH_IDS = [1302, 1303, 1403, 1500, 1501, 4001, 4320, 4322, 4500, 4510, 5530, 5600, 6401, 6505, 6728, 6732, 6733, 6745, 6746, 6747, 6748, 6749, 6751, 6753, 6797, 7011, 7605, 7900, 8170, 8930, 8980];
+  const WATCH_IDS = [1302, 1303, 1403, 1500, 1501, 4001, 4220, 4320, 4322, 4500, 4510, 5530, 5600, 6401, 6505, 6728, 6732, 6733, 6745, 6746, 6747, 6748, 6749, 6751, 6753, 6797, 7011, 7605, 7900, 8170, 8930, 8980];
   const WATCH_SET = new Set(WATCH_IDS);
   // Ids found by the daily log type refresh: types whose title the script already reads but whose id is not in LOG_FILTER_IDS (for example a renumbered or new variant).
   const requestIds = () => { const x = (state.extraIds || []).filter(id => !LOG_FILTER_SET.has(id) && !WATCH_SET.has(id)); return LOG_FILTER_IDS.concat(x, WATCH_IDS); };
@@ -492,7 +492,7 @@
     { re: /^item abroad buy/i, channel: 'abroad', dir: 'buy' }, // flowers and plushies bought while travelling
     { re: /^item abroad sell/i, channel: 'abroad', dir: 'sell' }, // items sold abroad (item, quantity, value_each, total_value)
     { re: /^(item |city )?shop (buy|bought|purchase)/i, channel: 'shop', dir: 'buy' },
-    { re: /^(item |city )?shop (sell|sold|sale)|^(item )?sell.*(shop|npc)|^npc.*sell/i, channel: 'shop', dir: 'sell' }
+    { re: /^(item |city )?shop (sell|sold|sale)(?! points)|^(item )?sell.*(shop|npc)|^npc.*sell/i, channel: 'shop', dir: 'sell' } // "Item shop sell points" (4220) pays points, not money: watched until its entry shape is known
   ];
 
   function pickItems(d) {
