@@ -67,7 +67,7 @@
     const n = nat(); if (n) { try { return !!(await n.get('phkeyset', false)); } catch (e) { /* ignore */ } }
     return false;
   }
-  // TornW3B can refuse a key (HTTP 403, e.g. its trades list needs Premium). Until the key is changed the API is treated as off, so receipts opened in Torn are read directly again.
+  // TornW3B can refuse a key (HTTP 403: cause unknown). Until the key is changed the API is treated as off, so receipts opened in Torn are read directly again.
   const isW3bDenied = (denied, key) => !!denied && denied === key;
   async function w3bKeyOn() {
     if (isW3bDenied(sget('w3bDenied', ''), sget('w3bkey', ''))) return false;
