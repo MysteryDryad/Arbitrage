@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.179-beta
+// @version      0.1.180-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.179-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.180-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -736,7 +736,7 @@
   // The full copy lives in IndexedDB (shared by all Torn pages). Script storage only gets a small compressed backup, because the plain data outgrew it.
   const hasZ = typeof CompressionStream === 'function' && typeof DecompressionStream === 'function' && typeof Response === 'function' && typeof btoa === 'function';
   const gzip = async text => { const cs = new CompressionStream('gzip'), w = cs.writable.getWriter(); w.write(new TextEncoder().encode(text)); w.close(); const u = new Uint8Array(await new Response(cs.readable).arrayBuffer()); let b = ''; for (let i = 0; i < u.length; i += 0x8000) b += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(b); };
-  const gunzip = async b64 => { const bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); const ds = new DecompressionStream('gzip'), w = ds.writable.getWriter(); w.write(u); w.close(); return new Response(ds.readable).text(); };
+  const gunzip = async b64 => { const bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); const ds = new DecompressionStream('gzip'), w = ds.writable.getWriter(); w.write(u).catch(() => {}); w.close().catch(() => {}); return new Response(ds.readable).text(); }; // damaged data rejects the read below; the writer's own errors are already covered, so they must not surface as unhandled
   // Hand-off through the page address (the part after #), for when two tabs cannot share storage: nothing is sent to any server.
   const b64url = b => b.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   const unb64url = b => { b = b.replace(/-/g, '+').replace(/_/g, '/'); while (b.length % 4) b += '='; return b; };
@@ -748,6 +748,86 @@
   async function unpackReceipt(str) {
     const kind = str.slice(0, 2), body = unb64url(str.slice(2));
     return JSON.parse(kind === 'z.' ? await gunzip(body) : decodeURIComponent(escape(atob(body))));
+  }
+  /* ===================== moving data between devices ===================== */
+  // "Copy my data" makes one text; pasting it on another device checks it, shows a preview and then MERGES it. Nothing is ever replaced or deleted.
+  const PACK_PREFIX = 'TFPD1.';
+  const BAD_KEY = /^(__proto__|constructor|prototype)$/;
+  const fnv = str => { let h = 0x811c9dc5; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16); };
+  function exportPayload(st) {
+    return { app: 'arbitrage', fmt: 1, version: VERSION, at: Math.floor(Date.now() / 1000), me: st.me ? { id: st.me.id, name: st.me.name } : null,
+      startDays: Number(sget('startDays', 30)) || 30, lastSync: st.lastSync || 0, oldestLog: st.oldestLog || null, pawnhubSince: st.pawnhubSince || null,
+      txs: st.txs || {}, ack: st.ack || {}, names: st.names || {}, receipts: st.receipts || {}, tradeEnd: st.tradeEnd || {}, sendParts: st.sendParts || {}, moneyEvents: st.moneyEvents || {}, listEvents: st.listEvents || {},
+      w3b: st.w3b ? { done: st.w3b.done || {}, at: st.w3b.at || {} } : null };
+  }
+  async function packData(st) {
+    const json = JSON.stringify(exportPayload(st));
+    return PACK_PREFIX + fnv(json) + '.' + (hasZ ? 'z.' + b64url(await gzip(json)) : 'j.' + b64url(btoa(unescape(encodeURIComponent(json)))));
+  }
+  async function unpackData(text) {
+    text = String(text || '').replace(/\s+/g, '');
+    if (text.indexOf(PACK_PREFIX) !== 0) throw new Error('That is not data copied from Arbitrage. On your other device tap Copy my data, then paste it here.');
+    const m = text.slice(PACK_PREFIX.length).match(/^([0-9a-f]+)\.(z|j)\.(.+)$/);
+    if (!m) throw new Error('This data looks cut off. Copy it again on your other device.');
+    let json; try { json = m[2] === 'z' ? await gunzip(unb64url(m[3])) : decodeURIComponent(escape(atob(unb64url(m[3])))); } catch (e) { throw new Error('This data looks cut off or damaged. Copy it again on your other device.'); }
+    if (fnv(json) !== m[1]) throw new Error('This data does not match its check code, so it was probably cut off. Copy it again.');
+    let obj; try { obj = JSON.parse(json); } catch (e) { throw new Error('This data could not be read. Copy it again on your other device.'); }
+    return obj;
+  }
+  const TX_KEEP = ['cp', 'tradeId', 'amount', 'src', 'locked', 'gift', 'free', 'each', 'fee', 'anon', 'title', 'receiptUrl', 'count', 'msg', 'pointsOut', 'sets', 'setName', 'logAmount', 'zeroFixed'];
+  // One incoming record, copied field by field. Anything odd and the whole record is skipped (null).
+  function cleanTx(t) {
+    if (!t || typeof t !== 'object') return null;
+    const id = String(t.id == null ? '' : t.id); if (!id || id.length > 80 || BAD_KEY.test(id)) return null;
+    const ts = Number(t.ts); if (!(ts > 1e9 && ts < 4e9)) return null;
+    if (!Array.isArray(t.items) || !t.items.length || t.items.length > 300) return null;
+    const items = [];
+    for (const i of t.items) {
+      const iid = Number(i && i.id), q = Number(i && i.qty);
+      if (!Number.isFinite(iid) || !(q > 0) || q > 1e9) return null;
+      const pr = i.price == null ? null : Number(i.price);
+      items.push({ id: iid, qty: q, name: i.name ? String(i.name).slice(0, 80) : null, price: Number.isFinite(pr) ? pr : null });
+    }
+    const dir = t.dir == null ? null : String(t.dir); if (dir !== null && ['buy', 'sell', 'use', 'convert'].indexOf(dir) < 0) return null;
+    const out = { id, ts, dir, channel: String(t.channel || '').slice(0, 20), items };
+    TX_KEEP.forEach(k => { const v = t[k]; if (v === undefined) return; out[k] = typeof v === 'string' ? v.slice(0, 300) : typeof v === 'number' ? (Number.isFinite(v) ? v : null) : (typeof v === 'boolean' || v === null) ? v : undefined; if (out[k] === undefined) delete out[k]; });
+    if (out.amount != null && typeof out.amount !== 'number') return null;
+    return out;
+  }
+  const cleanMap = (m, f) => { const o = {}; if (m && typeof m === 'object' && !Array.isArray(m)) Object.keys(m).slice(0, 200000).forEach(k => { if (BAD_KEY.test(k)) return; const v = f(m[k]); if (v !== undefined) o[k] = v; }); return o; };
+  const plainObj = v => v && typeof v === 'object' && !Array.isArray(v) ? JSON.parse(JSON.stringify(v)) : undefined;
+  // Checks the shape of the unpacked data and returns a clean copy (or throws a plain-English reason).
+  function sanitizePackage(obj) {
+    if (!obj || obj.app !== 'arbitrage' || typeof obj.txs !== 'object' || !obj.txs) throw new Error('That is not data copied from Arbitrage.');
+    if (Number(obj.fmt) > 1) throw new Error('This data comes from a newer version of Arbitrage. Update this device first.');
+    const txs = {}; let skipped = 0, total = 0;
+    Object.keys(obj.txs).slice(0, 300000).forEach(k => { total++; const t = cleanTx(obj.txs[k]); if (t) txs[t.id] = t; else skipped++; });
+    if (!total) throw new Error('There are no records in this data.');
+    const num = v => Number.isFinite(Number(v)) ? Number(v) : null;
+    return { version: String(obj.version || '?').slice(0, 30), at: num(obj.at), me: obj.me && obj.me.id != null ? { id: String(obj.me.id).slice(0, 20), name: String(obj.me.name || '').slice(0, 40) } : null,
+      startDays: num(obj.startDays), lastSync: num(obj.lastSync) || 0, oldestLog: num(obj.oldestLog), pawnhubSince: num(obj.pawnhubSince), txs, skipped,
+      ack: cleanMap(obj.ack, v => (v === 0 || v === 1) ? v : undefined), names: cleanMap(obj.names, v => typeof v === 'string' ? v.slice(0, 40) : undefined),
+      receipts: cleanMap(obj.receipts, plainObj), tradeEnd: cleanMap(obj.tradeEnd, plainObj), sendParts: cleanMap(obj.sendParts, plainObj), moneyEvents: cleanMap(obj.moneyEvents, plainObj), listEvents: cleanMap(obj.listEvents, plainObj),
+      w3b: obj.w3b ? { done: cleanMap(obj.w3b.done, v => v ? 1 : undefined), at: cleanMap(obj.w3b.at, v => Number.isFinite(Number(v)) ? Number(v) : undefined) } : null };
+  }
+  const sameAccount = (mineMe, pkgMe) => (mineMe && pkgMe && String(mineMe.id) !== String(pkgMe.id)) ? 'This data is from a different Torn account (' + (pkgMe.name || pkgMe.id) + '), so it was not merged.' : null;
+  // Adds what this device lacks. A value you entered on the other device fills a gap here; where both have a value, this device keeps its own. dry = count only.
+  function mergeDevice(mine, pkg, dry) {
+    const r = { added: 0, filled: 0, same: 0, conflicts: 0 };
+    Object.keys(pkg.txs).forEach(k => {
+      const t = pkg.txs[k], m = mine.txs[k];
+      if (!m) { if (!dry) mine.txs[k] = t; r.added++; return; }
+      if (valued(t) && !valued(m)) { if (!dry) mine.txs[k] = Object.assign({}, m, { amount: t.amount, src: t.src, gift: t.gift, locked: t.locked, receiptUrl: t.receiptUrl, items: t.items.length === (m.items || []).length ? t.items : m.items }); r.filled++; }
+      else if (valued(t) && valued(m) && t.amount !== m.amount) r.conflicts++;
+      else r.same++;
+    });
+    if (dry) return r;
+    ['receipts', 'tradeEnd', 'sendParts', 'moneyEvents', 'listEvents', 'ack', 'names'].forEach(k => { mine[k] = Object.assign({}, pkg[k] || {}, mine[k] || {}); });
+    if (pkg.w3b) { const w = mine.w3b = mine.w3b || { done: {}, miss: {}, at: {} }; w.done = Object.assign({}, pkg.w3b.done, w.done || {}); w.at = Object.assign({}, pkg.w3b.at, w.at || {}); w.miss = w.miss || {}; }
+    if (pkg.pawnhubSince && (!mine.pawnhubSince || pkg.pawnhubSince < mine.pawnhubSince)) mine.pawnhubSince = pkg.pawnhubSince;
+    if (pkg.oldestLog && (!mine.oldestLog || pkg.oldestLog < mine.oldestLog)) mine.oldestLog = pkg.oldestLog;
+    if (!mine.me && pkg.me) mine.me = pkg.me;
+    return r; // lastSync and any half-done read are left alone: this device keeps reading forward from where it was
   }
   let backupT = null;
   function scheduleBackup() {
@@ -1909,7 +1989,7 @@
     const hasPH = !!sget('phkey', '');
     const phKey = usesPH() ? `<div class="tfp-sub" style="margin-top:8px">PawnHub key (optional). Paste the Torn API key you use to log in to PawnHub. It is stored only on this device and sent only to PawnHub (z0cl.eu), like logging in there. Leave it empty and nothing is sent to PawnHub. A key with just "user basic" ticked is enough.</div><input class="tfp-in" id="tfp-phkey" type="password" autocomplete="off" placeholder="${hasPH ? 'PawnHub key saved (hidden). Paste a new one to replace.' : 'Paste your PawnHub key'}"><div class="tfp-gap"></div><button class="tfp-b" data-act="savephkey">Save PawnHub key</button> ${hasPH ? '<button class="tfp-b" data-act="clearphkey">Remove</button> ' : ''}` : '';
     const phBox = `<div class="tfp-row"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-act="useph" ${usesPH() ? 'checked' : ''}> <b>I use PawnHub</b></label><div class="tfp-sub">${usesPH() ? 'Item sends are valued from PawnHub (Balance page, or your PawnHub key). Sends it can\'t value show under Needs attention.' : 'Item sends are left empty: they leave your stock but are not counted in profit and never show under Needs attention.'}</div>${phKey}</div>`;
-    return `<div class="tfp-sub"><a href="#" data-act="runsetup">Run setup again</a></div>${inboxHtml()}${keyBox}${phBox}<div class="tfp-row"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-act="logfilter" ${sget('logFilter', true) === false ? 'checked' : ''}> <b>Read every log type (slower)</b></label><div class="tfp-sub">Normally the sync asks Torn only for the entry types it uses (trades, market, bazaar, sends, shops, crimes, museum, points), which is much faster. Tick this to read everything, for troubleshooting.${state.filterWhy && sget('logFilter', true) !== false && Math.floor(Date.now() / 1000) < (state.filterOffUntil || 0) ? ' <span class="tfp-warn">Paused for now: ' + esc(state.filterWhy) + '</span>' : ''}</div></div><div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
+    return `<div class="tfp-sub"><a href="#" data-act="runsetup">Run setup again</a></div><div class="tfp-row"><b>This device's data</b>${dataSummaryHtml()}</div>${inboxHtml()}${keyBox}${phBox}<div class="tfp-row"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-act="logfilter" ${sget('logFilter', true) === false ? 'checked' : ''}> <b>Read every log type (slower)</b></label><div class="tfp-sub">Normally the sync asks Torn only for the entry types it uses (trades, market, bazaar, sends, shops, crimes, museum, points), which is much faster. Tick this to read everything, for troubleshooting.${state.filterWhy && sget('logFilter', true) !== false && Math.floor(Date.now() / 1000) < (state.filterOffUntil || 0) ? ' <span class="tfp-warn">Paused for now: ' + esc(state.filterWhy) + '</span>' : ''}</div></div><div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
       <input class="tfp-in" id="tfp-days" data-act="setting" inputmode="numeric" value="${esc(sget('startDays', 30))}">${rateBlockHtml()}
       <div class="tfp-sub">Sync from the Profit tab. Last sync: ${state.syncedAt || state.lastSync ? fdate(state.syncedAt || state.lastSync) : 'never'} · ${Object.keys(state.txs).length} records</div>
       <div class="tfp-gap"></div><div class="tfp-sub">TornW3B key (optional, for Weaver receipts). Use the key from TornW3B, not your Torn key.</div>
@@ -1941,9 +2021,36 @@
     }
     return out;
   }
+  // One line describing this device's data, so two devices are easy to compare.
+  function dataSummaryHtml() {
+    const txs = Object.values(state.txs || {}), n = txs.length, hand = txs.filter(t => t.src === 'manual').length;
+    const oldest = n ? txs.reduce((m, t) => Math.min(m, t.ts), Infinity) : null, last = state.syncedAt || state.lastSync;
+    const parts = ['v' + VERSION, IN_PDA ? 'Torn PDA' : 'browser', n.toLocaleString() + ' records', oldest ? 'from ' + fdate(oldest) : null, 'last sync ' + (last ? fdate(last) : 'never'), 'history setting ' + (Number(sget('startDays', 30)) || 30) + ' days', hand ? hand + ' amount' + (hand === 1 ? '' : 's') + ' entered by hand' : null].filter(Boolean);
+    return '<div class="tfp-sub">' + esc(parts.join(' · ')) + '</div>';
+  }
+  function moveDataHtml() {
+    let h = `<div class="tfp-row"><b>Move data between devices</b><div class="tfp-sub">Makes your phone and computer show the same results. It merges: nothing on this device is replaced or deleted.</div><div class="tfp-gap"></div>
+      <button class="tfp-b" data-act="mvcopy">Copy my data</button><div class="tfp-gap"></div>
+      <div class="tfp-sub">On the other device, paste it here:</div><textarea class="tfp-ta" id="tfp-mv" placeholder="Paste data copied from your other device"></textarea><div class="tfp-gap"></div>
+      <button class="tfp-b" data-act="mvcheck">Check pasted data</button>`;
+    if (ui.mv) {
+      const m = ui.mv.sum, r = m.r;
+      h += `<div class="tfp-msg"><div>From your other device (v${esc(m.version)}${m.at ? ', saved ' + fdate(m.at) : ''}): <b>${m.n.toLocaleString()}</b> records${m.from ? ' from ' + fdate(m.from) : ''}.</div><div class="tfp-gap"></div>
+        <div>Merging would add <b>${r.added.toLocaleString()}</b> records this device doesn't have, fill in <b>${r.filled.toLocaleString()}</b> amounts you entered on the other device, and keep <b>${r.same.toLocaleString()}</b> that already match${r.conflicts ? '. For ' + r.conflicts.toLocaleString() + ' that differ, this device keeps its own value' : ''}.</div>
+        ${m.skipped ? '<div class="tfp-sub">' + m.skipped.toLocaleString() + ' records in the data were skipped because they looked invalid.</div>' : ''}
+        <div class="tfp-sub">Nothing here is replaced or deleted, and you can undo the merge afterwards.</div><div class="tfp-gap"></div>
+        <button class="tfp-b" data-act="mvmerge">Merge into this device</button> <button class="tfp-b" data-act="mvcancel">Cancel</button></div>`;
+    }
+    if (sget('mvUndoAt', 0)) h += `<div class="tfp-gap"></div><button class="tfp-b" data-act="mvundo">Undo last merge (${fdate(sget('mvUndoAt', 0))})</button>`;
+    return h + '</div>';
+  }
+  async function saveUndo() {
+    const at = Math.floor(Date.now() / 1000), snap = JSON.parse(JSON.stringify(state));
+    if (hasIDB) await idb.set('statePrev', { at, state: snap }); else ui.undoSnap = { at, state: snap };
+    sset('mvUndoAt', at);
+  }
   function settingsMore() {
-    return `<div class="tfp-row"><b>Backup</b><div class="tfp-gap"></div><textarea class="tfp-ta" id="tfp-bk" placeholder="Export fills this box. Paste a backup here to import."></textarea><div class="tfp-gap"></div>
-      <button class="tfp-b" data-act="export">Export</button> <button class="tfp-b" data-act="import">Import</button></div>
+    return `${moveDataHtml()}
       <div class="tfp-row"><b>Troubleshooting</b><div class="tfp-gap"></div><input class="tfp-in" id="tfp-tq" inputmode="numeric" placeholder="Look up a trade number"><div class="tfp-gap"></div><button class="tfp-b" data-act="tradelookup">Look up trade</button> <button class="tfp-b" data-act="profitaudit">Check profit</button>${ui.audit ? ui.audit.map(l => '<div class="tfp-sub" style="color:#ccc">' + esc(l) + '</div>').join('') : ''}${ui.tradeInfo ? ui.tradeInfo.map(l => '<div class="tfp-sub" style="color:#ccc">' + esc(l) + '</div>').join('') : ''}<div class="tfp-gap"></div><button class="tfp-b" data-act="debug">Copy debug sample</button> <button class="tfp-b" data-act="resync">Re-sync from start</button></div>`;
   }
 
@@ -2313,12 +2420,36 @@
       else if (act === 'attach') { attachReceipt(ui.pendingReceipt, state.txs[id]); ui.pendingReceipt = null; ui.candidates = []; ui.msg = 'Receipt attached.'; }
       else if (act === 'newtrade') { createFromReceipt(ui.pendingReceipt); ui.pendingReceipt = null; ui.candidates = []; ui.msg = 'Added as a new trade.'; }
       else if (act === 'inbox') ui.msg = (await processInbox(true)) || 'Nothing new to add.';
-      else if (act === 'export') { const t = document.getElementById('tfp-bk'); t.value = JSON.stringify(state); await copyText(t.value); ui.msg = 'Exported (also copied).'; render(); document.getElementById('tfp-bk').value = JSON.stringify(state); return; }
-      else if (act === 'import') {
-        const incoming = JSON.parse(val('tfp-bk'));
-        if (!incoming || !incoming.txs) throw new Error('That does not look like a backup.');
-        if (!el.dataset.armed) { el.dataset.armed = '1'; el.textContent = 'Tap again to replace data'; return; }
-        state = incoming; save(); ui.msg = 'Backup imported.';
+      else if (act === 'mvcopy') {
+        const n = Object.keys(state.txs || {}).length; if (!n) throw new Error('There is no data on this device to copy yet.');
+        ui.msg = (await copyText(await packData(state))) ? 'Copied ' + n.toLocaleString() + ' records. On your other device open Settings, Move data between devices, and paste it.' : 'Could not copy. Try again.';
+      }
+      else if (act === 'mvcheck') {
+        const txt = val('tfp-mv'); if (!txt.trim()) throw new Error('Paste the data from your other device first.');
+        if (syncRunning) throw new Error('A sync is running. Try again when it has finished.');
+        const pkg = sanitizePackage(await unpackData(txt));
+        if (!getKey()) throw new Error('Add your Torn key first, so Arbitrage can check this data is from your account.');
+        await ensureMe();
+        const bad = sameAccount(state.me, pkg.me); if (bad) throw new Error(bad);
+        if (!pkg.me) throw new Error('This data does not say which account it is from, so it was not merged.');
+        const r = mergeDevice(state, pkg, true), ts = Object.values(pkg.txs).map(t => t.ts);
+        ui.mv = { pkg, sum: { r, version: pkg.version, at: pkg.at, n: Object.keys(pkg.txs).length, skipped: pkg.skipped, from: ts.length ? ts.reduce((m, x) => Math.min(m, x), Infinity) : null } };
+      }
+      else if (act === 'mvmerge') {
+        if (!ui.mv) return;
+        if (syncRunning) throw new Error('A sync is running. Try again when it has finished.');
+        await saveUndo();
+        const r = mergeDevice(state, ui.mv.pkg), cur = Number(sget('startDays', 30)) || 30, raised = ui.mv.pkg.startDays > cur;
+        if (raised) sset('startDays', ui.mv.pkg.startDays);
+        ui.mv = null; ui._res = null; save();
+        ui.msg = 'Merged: ' + r.added.toLocaleString() + ' records added, ' + r.filled.toLocaleString() + ' amounts filled in.' + (raised ? ' History setting is now ' + sget('startDays', 30) + ' days: use Re-sync from start to read that far back on this device.' : '');
+      }
+      else if (act === 'mvcancel') ui.mv = null;
+      else if (act === 'mvundo') {
+        const prev = hasIDB ? await idb.get('statePrev') : ui.undoSnap;
+        if (!prev || !prev.state) throw new Error('There is nothing to undo.');
+        state = Object.assign(STATE_DEFAULTS(), prev.state); sset('mvUndoAt', 0); ui._res = null; save();
+        ui.msg = 'The last merge was undone.';
       }
       else if (act === 'debug') {
         const tb = document.querySelector('#topHeaderBanner .toolbar, .header-buttons-wrapper');
@@ -2522,7 +2653,7 @@
   }
 
   if (typeof module !== 'undefined') {
-    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, autoSyncMode, migrateParsers, LOG_FILTER_IDS, WATCH_IDS, extraIdsFromLogTypes, useGainTx, titleWanted, museumTx, pointsTx, rateEstimate, ratePause, clampRate, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
+    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, dataSummaryHtml, moveDataHtml, packData, unpackData, sanitizePackage, mergeDevice, sameAccount, autoSyncMode, migrateParsers, LOG_FILTER_IDS, WATCH_IDS, extraIdsFromLogTypes, useGainTx, titleWanted, museumTx, pointsTx, rateEstimate, ratePause, clampRate, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
   }
   if (typeof document !== 'undefined' && !globalThis.__TFP_TEST) init();
 })();

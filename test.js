@@ -2,6 +2,7 @@ globalThis.__TFP_TEST = true;
 const { JSDOM } = require('jsdom');
 const T = require('./torn-flip-profit-tracker.user.js');
 let fail = 0;
+const pending = []; // async tests
 const eq = (name, a, b) => { const ok = JSON.stringify(a) === JSON.stringify(b); if (!ok) fail++; console.log(ok ? 'PASS' : 'FAIL', name, ok ? '' : JSON.stringify(a) + ' != ' + JSON.stringify(b)); };
 
 // FIFO
@@ -184,6 +185,46 @@ eq('pause between pages at 60/min', T.ratePause(60), 750);
   eq('background read stops after the key was refused', T.autoSyncMode(Object.assign({}, base, { keyBad: true })), null);
 }
 
+// Moving data between devices: copy, check, merge
+pending.push((async () => {
+  const mkTx = (id, extra) => Object.assign({ id, ts: 1790000000, dir: 'buy', channel: 'market', items: [{ id: 5, qty: 2, name: 'X', price: null }], amount: 100, src: 'log', locked: false }, extra || {});
+  const phone = { me: { id: 7, name: 'Me' }, lastSync: 1790000500, txs: { a: mkTx('a'), b: mkTx('b', { dir: 'sell', amount: null }), c: mkTx('c', { amount: 300, src: 'manual', locked: true }) }, ack: { b: 1 }, names: { 5: 'Bob' } };
+  const text = await T.packData(phone);
+  eq('copied data starts with the Arbitrage marker', text.indexOf('TFPD1.'), 0);
+  const pkg = T.sanitizePackage(await T.unpackData(text));
+  eq('copy then paste keeps every record', Object.keys(pkg.txs).sort(), ['a', 'b', 'c']);
+  // cut off, damaged, wrong kind of text
+  let msgs = [];
+  for (const bad of [text.slice(0, Math.floor(text.length / 2)), text.slice(0, 60) + 'AAAA' + text.slice(64), 'hello world', '']) { try { await T.unpackData(bad); msgs.push('accepted'); } catch (e) { msgs.push('refused'); } }
+  eq('cut off, damaged or foreign text is refused', msgs, ['refused', 'refused', 'refused', 'refused']);
+  eq('line breaks added by a messenger are tolerated', Object.keys(T.sanitizePackage(await T.unpackData(text.replace(/(.{60})/g, '$1\n')))).length > 0, true);
+  // bad records are skipped, not trusted
+  const dirty = T.sanitizePackage({ app: 'arbitrage', fmt: 1, txs: { good: mkTx('good'), noitems: { id: 'x', ts: 1790000000, items: [] }, badts: mkTx('badts', { ts: 5 }), proto: mkTx('__proto__'), strAmt: mkTx('strAmt', { amount: 'lots' }), negq: mkTx('negq', { items: [{ id: 1, qty: -4 }] }) } });
+  eq('invalid records are skipped', [Object.keys(dirty.txs), dirty.skipped], [['good'], 5]);
+  eq('data from a newer format is refused', (() => { try { T.sanitizePackage({ app: 'arbitrage', fmt: 9, txs: { a: mkTx('a') } }); return 'accepted'; } catch (e) { return 'refused'; } })(), 'refused');
+  eq('a different Torn account is refused', [T.sameAccount({ id: 7 }, { id: '7', name: 'Me' }), T.sameAccount({ id: 7 }, { id: 8, name: 'Other' }) !== null], [null, true]);
+  // merge: add what is missing, keep own values, fill gaps, never delete
+  const pc = { me: { id: 7 }, lastSync: 1790009000, txs: { a: mkTx('a'), b: mkTx('b', { dir: 'sell', amount: null }), z: mkTx('z') }, ack: {}, names: {} };
+  const dry = T.mergeDevice(pc, pkg, true);
+  eq('preview counts without changing anything', [dry, Object.keys(pc.txs).sort()], [{ added: 1, filled: 0, same: 2, conflicts: 0 }, ['a', 'b', 'z']]);
+  const r = T.mergeDevice(pc, pkg);
+  eq('merge adds the missing record and keeps the extra one', Object.keys(pc.txs).sort(), ['a', 'b', 'c', 'z']);
+  eq('merge keeps this device\'s own sync position', pc.lastSync, 1790009000);
+  eq('merge unions the dismissed list and names', [pc.ack.b, pc.names[5]], [1, 'Bob']);
+  const pc2 = { me: { id: 7 }, txs: { c: mkTx('c', { amount: 999, src: 'manual', locked: true }) }, ack: {}, names: {} };
+  eq('a value on both devices stays as this device has it', [T.mergeDevice(pc2, pkg).conflicts, pc2.txs.c.amount], [1, 999]);
+  const pc3 = { me: { id: 7 }, txs: { b: mkTx('b', { dir: 'sell', amount: null }) }, ack: {}, names: {} };
+  const pkg3 = T.sanitizePackage({ app: 'arbitrage', fmt: 1, me: { id: 7 }, txs: { b: mkTx('b', { dir: 'sell', amount: 777, src: 'manual', locked: true }) } });
+  T.mergeDevice(pc3, pkg3);
+  eq('an amount entered on the other device fills this device\'s gap', [pc3.txs.b.amount, pc3.txs.b.src], [777, 'manual']);
+})());
+
+// Settings pieces render without errors
+{
+  const sum = T.dataSummaryHtml(), mv = T.moveDataHtml();
+  eq('data summary line shows version and records', [/v0\.1\.\d+-beta/.test(sum), /records/.test(sum)], [true, true]);
+  eq('move data section has copy, paste, check and no replace button', [/data-act="mvcopy"/.test(mv), /id="tfp-mv"/.test(mv), /data-act="mvcheck"/.test(mv), /data-act="import"/.test(mv)], [true, true, true, false]);
+}
 // multi-item sell with receipt prices, per-item lines
 const tx2 = {
   a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 384, qty: 13, price: null }, { id: 215, qty: 191, price: null }], amount: 13 * 60000 + 191 * 400 },
@@ -273,5 +314,4 @@ eq('balance events match sends by item, qty and time', hits.map(h => [h.txId, h.
 { const stale = { txs: { s1: { id: 's1', amount: null, src: null, items: [{ id: 1, qty: 1 }] } }, receipts: {}, w3b: { done: {} } }, fresh = { txs: { s1: { id: 's1', amount: 500, src: 'receipt', locked: true, items: [{ id: 1, qty: 1, price: 500 }] }, s2: { id: 's2', amount: 7, src: 'manual', locked: true, items: [{ id: 2, qty: 1 }] } }, receipts: {}, w3b: { done: { x: 1 } }, lastSync: 9 };
   const m = T.mergeState(stale, fresh); eq('stale copy keeps values from the newer copy', [m.txs.s1.amount, m.txs.s1.locked, !!m.txs.s2, m.w3b.done.x, m.lastSync], [500, true, true, 1, 9]); }
 { const e = { id: 's1', timestamp: 5, details: { title: 'Item shop sell' }, data: { item: 8, quantity: 1, value_each: 3000, total_value: 3000, area: "to Big Al's Gun Shop" } }; const rule = T.LOG_RULES.find(r => r.re.test('Item shop sell')); const tx = T.parseLogEntry(e, rule, id => 'N' + id); eq('shop sell is read with its real fields', [tx.dir, tx.channel, tx.items[0].id, tx.items[0].qty, tx.amount], ['sell', 'shop', 8, 1, 3000]); }
-console.log(fail ? fail + ' FAILED' : 'ALL PASSED');
-process.exit(fail ? 1 : 0);
+Promise.all(pending).then(() => { console.log(fail ? fail + ' FAILED' : 'ALL PASSED'); process.exit(fail ? 1 : 0); }).catch(e => { console.log('FAIL async test error', e && e.message); process.exit(1); });
