@@ -354,12 +354,12 @@
   const POINTS_ID = -1; // points are tracked like an item with this id
   // Log read filter. Torn's user/log accepts log=<type ids>, so the sync can ask only for the entry types it understands instead of every entry.
   // LOG_FILTER_IDS is derived from Torn's torn/logtypes list by running LOG_WANTED over every title (test.js re-checks it against fixtures/logtypes.json).
-  const LOG_FILTER_IDS = [1103, 1104, 1110, 1111, 1112, 1113, 1220, 1221, 1225, 1226, 1404, 2010, 2020, 2030, 2040, 2050, 2060, 2070, 2080, 2090, 2100, 2101, 2102, 2105, 2110, 2120, 2121, 2130, 2140, 2150, 2160, 2170, 2180, 2190, 2200, 2201, 2210, 2211, 2220, 2221, 2230, 2231, 2240, 2241, 2250, 2251, 2260, 2261, 2270, 2271, 2280, 2281, 2290, 2291, 2295, 2300, 2301, 2310, 2311, 2320, 2321, 2325, 2330, 2340, 2350, 2360, 2370, 2375, 2380, 2381, 2390, 2400, 2405, 2406, 2407, 2410, 2420, 2430, 2440, 2441, 2442, 2450, 2460, 2470, 2480, 2490, 2500, 2501, 2510, 2520, 2525, 2530, 2531, 2535, 2600, 2605, 2610, 2611, 2612, 2613, 2615, 2620, 4102, 4103, 4200, 4201, 4210, 4211, 4410, 4411, 4412, 4413, 4420, 4430, 4440, 4441, 4445, 4446, 4800, 4810, 4900, 4905, 4910, 4955, 5010, 5011, 5725, 6769, 7000, 8377, 8981, 8982, 8983, 8984, 8985, 8986, 8987, 8988, 8989, 9020, 9304];
+  const LOG_FILTER_IDS = [1103, 1104, 1110, 1111, 1112, 1113, 1220, 1221, 1225, 1226, 1404, 2010, 2020, 2030, 2040, 2050, 2060, 2070, 2080, 2090, 2100, 2101, 2102, 2105, 2110, 2120, 2121, 2130, 2140, 2150, 2160, 2170, 2180, 2190, 2200, 2201, 2210, 2211, 2220, 2221, 2230, 2231, 2240, 2241, 2250, 2251, 2260, 2261, 2270, 2271, 2280, 2281, 2290, 2291, 2295, 2300, 2301, 2310, 2311, 2320, 2321, 2325, 2330, 2340, 2350, 2360, 2370, 2375, 2380, 2381, 2390, 2400, 2405, 2406, 2407, 2410, 2420, 2430, 2440, 2441, 2442, 2450, 2460, 2470, 2480, 2490, 2500, 2501, 2510, 2520, 2525, 2530, 2531, 2535, 2548, 2600, 2605, 2610, 2611, 2612, 2613, 2615, 2620, 4102, 4103, 4200, 4201, 4210, 4211, 4410, 4411, 4412, 4413, 4420, 4430, 4440, 4441, 4445, 4446, 4800, 4810, 4900, 4905, 4910, 4955, 5010, 5011, 5530, 5600, 5725, 6401, 6505, 6769, 7000, 7011, 7605, 7900, 8377, 8930, 8980, 8981, 8982, 8983, 8984, 8985, 8986, 8987, 8988, 8989, 9020, 9304];
   const LOG_FILTER_SET = new Set(LOG_FILTER_IDS);
   // Log types the script does not read yet but that may move items or money outside a sale. They ride along in the same id request: each is only counted
   // (state.watched[title] = { n, first entry, last time }) so the debug sample shows which of them a user really has, with one raw entry to write the parser from.
   // Remove an id from here when its parser exists. Very frequent types with nothing to model (Halloween treats) are left out.
-  const WATCH_IDS = [1302, 1303, 1403, 1500, 1501, 4001, 4220, 4320, 4322, 4500, 4510, 5530, 5600, 6401, 6505, 6728, 6732, 6733, 6745, 6746, 6747, 6748, 6749, 6751, 6753, 6797, 7011, 7605, 7900, 8170, 8930, 8980];
+  const WATCH_IDS = [1302, 1303, 1403, 1500, 1501, 4001, 4220, 4320, 4322, 4500, 4510, 6728, 6732, 6733, 6745, 6746, 6747, 6748, 6749, 6751, 6753, 6797, 8170];
   const WATCH_SET = new Set(WATCH_IDS);
   // Ids found by the daily log type refresh: types whose title the script already reads but whose id is not in LOG_FILTER_IDS (for example a renumbered or new variant).
   const requestIds = () => { const x = (state.extraIds || []).filter(id => !LOG_FILTER_SET.has(id) && !WATCH_SET.has(id)); return LOG_FILTER_IDS.concat(x, WATCH_IDS); };
@@ -369,7 +369,7 @@
     return extra.length <= 40 ? extra : null;
   }
   const LOG_WANTED = () => [/^Money (receive|send)/i, /^Trade (completed|items (incoming|outgoing)|money (incoming|outgoing))/i, /^Trade (cancel|expire|decline)/i, /^Item market (add|remove)$/i, /^Item (send|receive)$/i]
-    .concat(LOG_RULES.map(r => r.re), [/^Museum exchange$/i, /^Points market (buy|sell)$/i, /^Points .*\buse$/i, /^Crime success item gain/i, /^Item use /i, /^Dump find$/i, /^Casino spin the wheel win item$/i, /^Crime use items for disposal$/i, /^Faction organized crimes lose items$/i]);
+    .concat(LOG_RULES.map(r => r.re), [/^Museum exchange$/i, /^Points market (buy|sell)$/i, /^Points .*\buse$/i, /^Crime success item gain/i, /^Item use /i, /^Dump find$/i, GAIN_RE, /^Casino spin the wheel win item$/i, /^Crime use items for disposal$/i, /^Faction organized crimes lose items$/i]);
   const titleWanted = title => LOG_WANTED().some(re => re.test(title));
   // Filtered reads are on unless switched off in Settings or paused for a day after a problem (see the fallback in syncLog).
   const filterActive = () => sget('logFilter', true) !== false && Math.floor(Date.now() / 1000) >= (state.filterOffUntil || 0);
@@ -393,16 +393,14 @@
         let unit = null;
         if (allPriced) unit = i.price;
         else if (tx.amount != null) unit = tx.amount * w[idx] / wsum / (i.qty || 1);
-        (lots[i.id] = lots[i.id] || []).push({ qty: i.qty, unit, ts: tx.ts, bought: !tx.free }); // free = crime drops, finds and wins
+        (lots[i.id] = lots[i.id] || []).push({ qty: i.qty, unit, ts: tx.ts });
       });
     }
-    // boughtOnly: items used up (and points spent) only take stock that was bought, never free finds or drops.
-    function consume(itemId, qty, boughtOnly) {
+    function consume(itemId, qty) {
       const q = lots[itemId] || [];
       let need = qty, cost = 0, unknown = false, matched = 0;
       for (let i = 0; i < q.length && need > 0;) {
         const lot = q[i];
-        if (boughtOnly && !lot.bought) { i++; continue; }
         const take = Math.min(lot.qty, need);
         if (lot.unit == null) unknown = true; else cost += take * lot.unit;
         lot.qty -= take; need -= take; matched += take;
@@ -417,11 +415,11 @@
         const cons = tx.items.map(it => consume(it.id, it.qty));
         const known = cons.every(c => c.cost != null && c.unmatched === 0);
         const cost = known ? cons.reduce((a, c) => a + c.cost, 0) : null, pts = tx.pointsOut || 0;
-        if (pts > 0) (lots[POINTS_ID] = lots[POINTS_ID] || []).push({ qty: pts, unit: known ? cost / pts : null, ts: tx.ts, bought: true });
+        if (pts > 0) (lots[POINTS_ID] = lots[POINTS_ID] || []).push({ qty: pts, unit: known ? cost / pts : null, ts: tx.ts });
         converts.push({ tx, cost, unmatched: cons.reduce((a, c) => a + c.unmatched, 0), points: pts });
         continue;
       }
-      if (tx.dir === 'use') { tx.items.forEach(it => consume(it.id, it.qty, true)); continue; } // points spent on refills: leave stock, no profit effect
+      if (tx.dir === 'use') { tx.items.forEach(it => consume(it.id, it.qty)); continue; } // points spent on refills: leave stock, no profit effect
       if (tx.dir === 'buy') { if (isGift(tx)) continue; /* received as a gift: not stock, not a buy */ addLots(tx); if (tx.amount == null) pending.push(tx); continue; }
       if (tx.dir !== 'sell') { pending.push(tx); continue; }
 
@@ -573,6 +571,20 @@
   }
   // Items that leave or enter stock outside a sale: "Item use ..." (data.item), crime disposal (items_used), organized crime item losses (items_added), Dump finds (data.item list) and casino wheel item wins (data.item).
   // Uses come out of stock oldest-first with no profit effect (like refills); finds are free stock.
+  // Free item gains from the game (city finds, event finds, prizes, stock and job specials). Only clearly recognised shapes are accepted; anything else is counted as unparsed in state.watched.
+  const GAIN_RE = /^(City item find|Christmas town find item|Easter egg hunt pickup egg|Halloween basket receive item|Stock special item|Job special gain item|Company special gain item|Choose your prize item|Missions buy reward item|Seasonal gift items)$/i;
+  function gainItemsFromData(d) {
+    d = d || {};
+    const norm = x => ({ id: Number(x.id != null ? x.id : (x.item_id != null ? x.item_id : x.item)), qty: Number(x.qty != null ? x.qty : (x.quantity != null ? x.quantity : (x.amount != null ? x.amount : 1))) || 1, name: null, price: 0 });
+    const fromMap = m => m && typeof m === 'object' && !Array.isArray(m) ? Object.entries(m).filter(([id, q]) => Number(id) > 0 && Number(q) > 0).map(([id, q]) => ({ id: Number(id), qty: Number(q), name: null, price: 0 })) : [];
+    let out = [];
+    if (Array.isArray(d.items)) out = d.items.map(norm);
+    else if (Array.isArray(d.item)) out = d.item.map(norm);
+    else if (d.items && typeof d.items === 'object') out = fromMap(d.items);
+    else if (d.items_gained && typeof d.items_gained === 'object') out = fromMap(d.items_gained);
+    else if (Number(d.item) > 0) out = [norm({ id: d.item, qty: d.quantity != null ? d.quantity : d.qty })];
+    return out.filter(i => i.id > 0 && i.qty > 0);
+  }
   function useGainTx(e) {
     const title = (e.details && e.details.title) || e.title || '', d = e.data || {};
     const mk = (dir, channel, items) => items.length ? { id: channel + ':' + e.id, ts: e.timestamp, dir, channel, cp: null, tradeId: null, items, amount: 0, src: 'log', locked: true, free: dir === 'buy', title } : null;
@@ -580,6 +592,7 @@
     if (/^Item use /i.test(title) && Number(d.item) > 0) return mk('use', 'use', [{ id: Number(d.item), qty: 1, name: null, price: null }]);
     if (/^Crime use items for disposal$/i.test(title)) return mk('use', 'use', fromMap(d.items_used));
     if (/^Faction organized crimes lose items$/i.test(title)) return mk('use', 'use', fromMap(d.items_added));
+    if (GAIN_RE.test(title)) return mk('buy', 'find', gainItemsFromData(d));
     if (/^Casino spin the wheel win item$/i.test(title) && Number(d.item) > 0) return mk('buy', 'find', [{ id: Number(d.item), qty: 1, name: null, price: 0 }]);
     if (/^Dump find$/i.test(title) && Array.isArray(d.item)) return mk('buy', 'find', d.item.filter(i => Number(i.id) > 0).map(i => ({ id: Number(i.id), qty: Number(i.qty) || 1, name: null, price: 0 })));
     return null;
@@ -1059,7 +1072,8 @@
           const pt = pointsTx(e);
           if (pt) { if (!state.txs[pt.id]) { state.txs[pt.id] = pt; added++; } return; }
           const ug = useGainTx(e);
-          if (ug) { if (!state.txs[ug.id]) { ug.items.forEach(i => { i.name = nameOf(i.id); }); state.txs[ug.id] = ug; added++; } return; } }
+          if (ug) { if (!state.txs[ug.id]) { ug.items.forEach(i => { i.name = nameOf(i.id); }); state.txs[ug.id] = ug; added++; } return; }
+          if (GAIN_RE.test(title)) { const w = state.watched = state.watched || {}, o = w[title] = w[title] || { id: Number(e.details && e.details.id), n: 0, first: e, unparsed: true }; o.n++; o.last = e.timestamp; return; } }
         if (!/^Item (market|abroad|shop)/i.test(title)) { // crime check only for titles that are not already item-trade rules
           const cr = crimeTx(e, byName);
           if (cr) {

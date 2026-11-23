@@ -157,22 +157,25 @@ eq('pause between pages at 60/min', T.ratePause(60), 750);
   eq('nothing starts before setup or without a key', [T.autoSyncMode(Object.assign({}, base, { lastSync: 0, setup: false })), T.autoSyncMode(Object.assign({}, base, { lastSync: 0, key: false }))], [null, null]);
 }
 
-// Items used up only take stock that was bought, never free finds
+// Items used up take stock oldest-first, free finds and drops included
 {
   const r = T.computeFlips({
     f: { id: 'f', ts: 1, dir: 'buy', channel: 'find', free: true, amount: 0, items: [{ id: 7, qty: 5, price: 0 }] },
-    b: { id: 'b', ts: 2, dir: 'buy', channel: 'market', items: [{ id: 7, qty: 5, price: null }], amount: 500 },
     u: { id: 'u', ts: 3, dir: 'use', channel: 'use', items: [{ id: 7, qty: 3 }], amount: 0 },
-    s: { id: 's', ts: 4, dir: 'sell', channel: 'market', items: [{ id: 7, qty: 7, price: null }], amount: 1400 }
+    s: { id: 's', ts: 4, dir: 'sell', channel: 'market', items: [{ id: 7, qty: 2, price: null }], amount: 1000 },
+    t: { id: 't', ts: 5, dir: 'sell', channel: 'market', items: [{ id: 7, qty: 3, price: null }], amount: 900 }
   });
-  // the use took 3 of the 5 bought units, so selling 7 uses the 5 free finds plus only the 2 bought units left (cost 200)
-  eq('use took 3 from the bought lot, so the sale of 7 costs only the 2 bought units left', [r.flips[0].profit, r.flips[0].unmatched], [1400 - 200, 0]);
-  const r2 = T.computeFlips({
-    f: { id: 'f', ts: 1, dir: 'buy', channel: 'find', free: true, amount: 0, items: [{ id: 7, qty: 5, price: 0 }] },
-    u: { id: 'u', ts: 3, dir: 'use', channel: 'use', items: [{ id: 7, qty: 3 }], amount: 0 },
-    s: { id: 's', ts: 4, dir: 'sell', channel: 'market', items: [{ id: 7, qty: 5, price: null }], amount: 1000 }
-  });
-  eq('a use never takes free finds: all 5 found items are still there to sell', [r2.flips[0].profit, r2.flips[0].unmatched], [1000, 0]);
+  eq('a use takes 3 of the 5 free finds, so 2 are left to sell', [r.flips[0].profit, r.flips[0].unmatched], [1000, 0]);
+  eq('selling more than is left shows the shortfall', [r.flips[1].profit, r.flips[1].unmatched], [null, 3]);
+}
+// Free item gains from the game: recognised shapes only
+{
+  const mk = (title, data) => T.useGainTx({ id: 'g', timestamp: 1, details: { title }, data });
+  eq('city find with a single item id', mk('City item find', { item: 530, quantity: 2 }).items.map(i => [i.id, i.qty]), [[530, 2]]);
+  eq('event find with an item list', mk('Christmas town find item', { items: [{ id: 5, qty: 1 }, { id: 6, qty: 2 }] }).items.map(i => [i.id, i.qty]), [[5, 1], [6, 2]]);
+  eq('prize with an items_gained map', mk('Choose your prize item', { items_gained: { '77': 3 } }).items.map(i => [i.id, i.qty]), [[77, 3]]);
+  eq('a shape we do not recognise adds nothing', mk('City item find', { found: 'a thing' }), null);
+  eq('gain types are free stock', [mk('Stock special item', { item: 9 }).free, mk('Stock special item', { item: 9 }).amount], [true, 0]);
 }
 // A refused key stops background retries
 {
