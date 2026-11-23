@@ -145,6 +145,18 @@ eq('pause between pages at 60/min', T.ratePause(60), 750);
   eq('item shop sell is still a cash sale', [cash.channel, cash.dir], ['shop', 'sell']);
   eq('item shop sell points is not read as a cash sale', T.LOG_RULES.some(r => r.re.test('Item shop sell points')), false);
 }
+// Background tick: a first or half-done read continues by itself, even while hidden
+{
+  const base = { setup: true, key: true, running: false, busy: false, lastSync: 100, resume: null, hidden: false, now: 10000, syncedAt: 9000, failAt: 0 };
+  eq('normal refresh when due and visible', T.autoSyncMode(base), 'normal');
+  eq('normal refresh waits while hidden', T.autoSyncMode(Object.assign({}, base, { hidden: true })), null);
+  eq('first read continues by itself', T.autoSyncMode(Object.assign({}, base, { lastSync: 0 })), 'catchup');
+  eq('half-done read continues by itself, even hidden', T.autoSyncMode(Object.assign({}, base, { resume: { to: 5 }, hidden: true })), 'catchup');
+  eq('a read that just failed waits two minutes', T.autoSyncMode(Object.assign({}, base, { resume: { to: 5 }, failAt: 9950 })), null);
+  eq('nothing starts while a sync is running', T.autoSyncMode(Object.assign({}, base, { resume: { to: 5 }, running: true })), null);
+  eq('nothing starts before setup or without a key', [T.autoSyncMode(Object.assign({}, base, { lastSync: 0, setup: false })), T.autoSyncMode(Object.assign({}, base, { lastSync: 0, key: false }))], [null, null]);
+}
+
 // multi-item sell with receipt prices, per-item lines
 const tx2 = {
   a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 384, qty: 13, price: null }, { id: 215, qty: 191, price: null }], amount: 13 * 60000 + 191 * 400 },

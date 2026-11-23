@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.177-beta
+// @version      0.1.178-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.177-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.178-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -833,7 +833,25 @@
     } catch (e) { console.warn('[TFP] item names failed', e); }
   }
 
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  // Pauses between log pages. A hidden tab slows page timers to about one a minute, so while hidden the pause is timed inside a small background worker instead.
+  // If the worker cannot start (page rules), a normal timer is the fallback, so a pause never hangs.
+  let timerWorker = null, timerSeq = 0; const timerWait = {};
+  function workerSleep(ms) {
+    return new Promise(res => {
+      let done = false; const fin = () => { if (!done) { done = true; res(); } };
+      setTimeout(fin, ms + 2500); // fallback if the worker is not answering
+      try {
+        if (timerWorker === null) {
+          timerWorker = new Worker(URL.createObjectURL(new Blob(['onmessage=function(e){setTimeout(function(){postMessage(e.data.i)},e.data.ms)}'], { type: 'text/javascript' })));
+          timerWorker.onmessage = e => { const f = timerWait[e.data]; if (f) { delete timerWait[e.data]; f(); } };
+          timerWorker.onerror = () => { timerWorker = false; };
+        }
+        if (!timerWorker) return;
+        const i = ++timerSeq; timerWait[i] = fin; timerWorker.postMessage({ i, ms });
+      } catch (e) { timerWorker = false; }
+    });
+  }
+  const sleep = ms => (typeof document !== 'undefined' && document.hidden && typeof Worker !== 'undefined' && timerWorker !== false) ? workerSleep(ms) : new Promise(r => setTimeout(r, ms));
   // Download speed for the log read: calls per minute (Torn allows about 100 per account, shared with every tool using the key).
   const RATE_MIN = 20, RATE_MAX = 80, RATE_DEF = 60;
   const clampRate = v => { const n = Math.round((Number(v) || RATE_DEF) / 10) * 10; return Math.min(RATE_MAX, Math.max(RATE_MIN, n)); };
@@ -902,11 +920,13 @@
   // Leaving the tab (minimise, app switch) can freeze or kill the page: save the read position right away so Continue picks up exactly there.
   function flushNow() { if (syncRunning) { try { save(); } catch (e) { /* ignore */ } } }
   // Live text on the Sync buttons while a tap-started sync runs (a background sync does not touch the buttons).
-  function setProgress(t) { progressText = t; if (ui.busy) document.querySelectorAll('.tfp-fab,.tfp-hsync').forEach(b => { b.textContent = t || 'Syncing…'; }); }
+  let readPage = 0;
+  function setProgress(t) { progressText = t; try { if (syncRunning) localStorage.setItem(BG_LOCK, String(Math.floor(Date.now() / 1000))); } catch (e) { /* no shared storage */ } if (typeof document !== 'undefined') updateBtn(); if (ui.busy) document.querySelectorAll('.tfp-fab,.tfp-hsync').forEach(b => { b.textContent = t || 'Syncing…'; }); }
   async function syncAll(opts) {
     if (syncRunning) return 'A sync is already running, give it a moment.';
     syncRunning = true;
-    try { return await syncAllInner(opts || {}); } finally { syncRunning = false; setProgress(''); }
+    readPage = 0;
+    try { return await syncAllInner(opts || {}); } finally { syncRunning = false; readPage = 0; setProgress(''); }
   }
   async function syncAllInner(opts) {
     let added = 0, att = 0, last = null, weaverErr = '';
@@ -1064,7 +1084,7 @@
       const to = oldest === prevTo ? oldest - 1 : oldest;
       prevTo = oldest; curTo = to;
       state.resume = { from, to, newest, pages: pageBase + pages }; if (pages % 5 === 0) save(); // checkpoint: an interrupted import continues from here (a full save of the whole state is slow, so every 5 pages; leaving the tab saves it at once, see flushNow)
-      setProgress('Reading log, page ' + (pageBase + pages + 1) + '…');
+      readPage = pageBase + pages + 1; setProgress('Reading log, page ' + readPage + '…');
       await sleep(ratePause(rateNow()));
       j = await fetchPage(to);
     }
@@ -1974,7 +1994,7 @@
       foot = back + '<span><button class="tfp-b" data-act="swskip">Skip</button> ' + next(true) + '</span>';
     } else {
       title = "You're set";
-      body = `<p>Everything is saved on this device. Tap Sync to read your log.</p><div class="tfp-opt"><b class="tfp-pos">✓ Torn key</b></div>` + (usesPH() ? `<div class="tfp-opt"><b class="${sget('phkey', '') ? 'tfp-pos' : ''}">${sget('phkey', '') ? '✓ PawnHub key' : 'PawnHub on (no key yet: add it in Settings)'}</b></div>` : '') + `<div class="tfp-opt"><b>${esc(String(sget('startDays', 30)))} days</b> of history</div><p class="tfp-sub">Change any of this later in Settings. "Run setup again" is at the top of Settings.</p>`;
+      body = `<p>Everything is saved on this device. Tap Sync to read your log. The first sync can take a few minutes: you can minimise this window and keep using Torn, and it carries on in the background. If your phone pauses the app, it picks up where it stopped the next time you open Torn.</p><div class="tfp-opt"><b class="tfp-pos">✓ Torn key</b></div>` + (usesPH() ? `<div class="tfp-opt"><b class="${sget('phkey', '') ? 'tfp-pos' : ''}">${sget('phkey', '') ? '✓ PawnHub key' : 'PawnHub on (no key yet: add it in Settings)'}</b></div>` : '') + `<div class="tfp-opt"><b>${esc(String(sget('startDays', 30)))} days</b> of history</div><p class="tfp-sub">Change any of this later in Settings. "Run setup again" is at the top of Settings.</p>`;
       foot = back + '<button class="tfp-b tfp-pri" data-act="swdone">⟳ Sync now</button>';
     }
     return `<div class="tfp-hd"><span><b>💰 Arbitrage</b> <span class="tfp-sub">v${VERSION}</span></span><button class="tfp-b" data-act="close">✕</button></div><div class="tfp-body tfp-wiz">${dots}<h3 class="tfp-wt">${title}</h3>${body}</div><div class="tfp-wfoot">${foot}</div>`;
@@ -2117,22 +2137,29 @@
   // Quiet sync every 5 minutes while a Torn page is open (even with the panel closed). A userscript cannot run with no Torn page open.
   const BG_EVERY = 5 * 60, BG_LOCK = 'tfp_bglock';
   let bgFailAt = 0;
+  // Decides what a background tick should do: 'catchup' continues a first or half-done log read (also while the tab is hidden), 'normal' is the 5-minute refresh (visible tab only).
+  function autoSyncMode(c) {
+    if (!c.setup || !c.key || c.running || c.busy) return null;
+    if (!c.lastSync || c.resume) return c.now - c.failAt < 120 ? null : 'catchup';
+    if (c.hidden || c.now - c.syncedAt < BG_EVERY || c.now - c.failAt < 15 * 60) return null;
+    return 'normal';
+  }
   async function autoSync() {
-    if (!setupDone() || !getKey() || !state.lastSync || state.resume) return; // first read and half-done reads are started by hand
-    if (syncRunning || ui.busy || document.hidden) return;
     const now = Math.floor(Date.now() / 1000);
-    if (now - (state.syncedAt || 0) < BG_EVERY || now - bgFailAt < 15 * 60) return;
-    try { // another open Torn tab may be syncing: whoever claims the lock first goes
+    const mode = autoSyncMode({ setup: setupDone(), key: !!getKey(), running: syncRunning, busy: ui.busy, lastSync: state.lastSync, resume: state.resume, hidden: document.hidden, now, syncedAt: state.syncedAt || 0, failAt: bgFailAt });
+    if (!mode) return;
+    try { // another open Torn tab may be syncing: whoever claims the lock first goes (a running read refreshes the lock on every page)
       const t = Number(localStorage.getItem(BG_LOCK) || 0);
-      if (now - t < BG_EVERY - 30) return;
+      if (now - t < (mode === 'catchup' ? 90 : BG_EVERY - 30)) return;
       localStorage.setItem(BG_LOCK, String(now));
     } catch (e) { /* no shared storage: just go */ }
     try {
       const msg = await syncAll({ bg: true });
       state.bgAt = now;
-      if (/new record|receipt|matched/.test(msg || '')) { toast('Arbitrage: ' + msg.split(' · ').slice(1, 3).join(' · ')); }
+      if (mode === 'catchup' && state.lastSync && !state.resume) toast('Arbitrage: your history is up to date');
+      else if (/new record|receipt|matched/.test(msg || '')) { toast('Arbitrage: ' + msg.split(' · ').slice(1, 3).join(' · ')); }
       if (ui.open && !ui.busy) render();
-    } catch (e) { bgFailAt = now; } // quiet: tries again in 15 minutes
+    } catch (e) { bgFailAt = now; } // quiet: tries again shortly (2 minutes for a log read, 15 for a normal refresh)
   }
   async function autoInbox() {
     if (!setupDone()) return;
@@ -2320,6 +2347,10 @@
   const shortMoney = n => { const a = Math.abs(n); return a >= 1e9 ? (a / 1e9).toFixed(2) + 'B' : a >= 1e6 ? (a / 1e6).toFixed(a >= 1e7 ? 1 : 2).replace(/\.?0+$/, '') + 'M' : a >= 1e3 ? Math.round(a / 1e3) + 'k' : String(Math.round(a)); };
   function updateBtn() {
     if (typeof document === 'undefined') return; const b = document.getElementById('tfp-btn'); if (!b || !booted) return;
+    if (syncRunning && readPage > 1) { // during a long log read just show the page count (no profit maths on every page)
+      const t = '⟳ ' + readPage; if (b.textContent !== t) b.textContent = t;
+      b.title = 'Arbitrage · reading your log, page ' + readPage + '. You can minimise this and keep using Torn.'; return;
+    }
     try {
       const today = Math.floor(Date.now() / 86400000) * 86400, p = getRes().flips.filter(f => f.profit != null && f.tx.ts >= today).reduce((a, f) => a + f.profit, 0), at = attention();
       const t = Math.round(p) === 0 ? '$0' : (p < 0 ? '−$' : '+$') + shortMoney(p);
@@ -2450,6 +2481,8 @@
       document.addEventListener('visibilitychange', () => { if (!document.hidden) bootP.then(() => { // another page may have saved newer data while this one slept
         (hasIDB ? idb.get('state').catch(() => null) : Promise.resolve(sget('state', null))).then(st => { if (st && st.txs && (st.savedAt || 0) > lastWrite && !ui.busy) { const mine = state; state = mergeState(Object.assign(STATE_DEFAULTS(), st), mine); lastWrite = st.savedAt; if (ui.open) render(); } }).catch(() => {});
         autoInbox(); autoSync(); }); });
+      window.addEventListener('focus', () => bootP.then(autoSync));
+      window.addEventListener('pageshow', () => bootP.then(autoSync));
       // PDA keeps Torn in its own tab, and a tab you left may not report that it came back, so also look at the inbox every few seconds and when the page gets focus.
       setInterval(() => { if (!document.hidden) bootP.then(autoInbox); }, 4000);
       setInterval(() => bootP.then(autoSync), 60 * 1000); setTimeout(() => bootP.then(autoSync), 20000);
@@ -2460,7 +2493,7 @@
   }
 
   if (typeof module !== 'undefined') {
-    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, LOG_FILTER_IDS, WATCH_IDS, extraIdsFromLogTypes, useGainTx, titleWanted, museumTx, pointsTx, rateEstimate, ratePause, clampRate, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
+    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, autoSyncMode, LOG_FILTER_IDS, WATCH_IDS, extraIdsFromLogTypes, useGainTx, titleWanted, museumTx, pointsTx, rateEstimate, ratePause, clampRate, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
   }
   if (typeof document !== 'undefined' && !globalThis.__TFP_TEST) init();
 })();
