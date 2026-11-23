@@ -32,7 +32,7 @@
  * Privacy and safety
  * - Read-only: it never performs game actions, clicks or purchases for you.
  * - Your data (trade history, settings, keys) is stored only on this device (script storage / browser storage).
- * - Your Torn API key (a Custom key with just the selections this script reads: user basic and log, torn items and log types; Full Access also works but is not needed) is sent only to api.torn.com. A TornW3B key, if you add one, is sent only to weav3r.dev.
+ * - Your Torn API key (a Custom key with just the selections this script reads: user basic and log, torn items; Full Access also works but is not needed) is sent only to api.torn.com. A TornW3B key, if you add one, is sent only to weav3r.dev.
  * - Receipt pages (tornexchange.com, weav3r.dev, z0cl.eu) are read only in your own browser when you open them; nothing is uploaded anywhere.
  * - Backup/restore is in Settings > Backup & troubleshooting. Deleting the key in Torn settings revokes access at once.
  *
@@ -355,28 +355,15 @@
   // A send valued at $0 by hand is a gift too (covers gifts saved before the gift flag existed).
   const isGift = tx => !tx.free && (tx.dir === 'sell' && (tx.gift || (tx.channel === 'send' && tx.src === 'manual' && tx.amount === 0))) || (tx.dir === 'buy' && (tx.gift || (tx.channel === 'recv' && tx.src === 'manual' && tx.amount === 0)));
   const POINTS_ID = -1; // points are tracked like an item with this id
-  // Log read filter. Torn's user/log accepts log=<type ids>, so the sync can ask only for the entry types it understands instead of every entry.
-  // LOG_FILTER_IDS is derived from Torn's torn/logtypes list by running LOG_WANTED over every title (test.js re-checks it against fixtures/logtypes.json).
-  const LOG_FILTER_IDS = [1103, 1104, 1110, 1111, 1112, 1113, 1220, 1221, 1225, 1226, 1404, 2010, 2020, 2030, 2040, 2050, 2060, 2070, 2080, 2090, 2100, 2101, 2102, 2105, 2110, 2120, 2121, 2130, 2140, 2150, 2160, 2170, 2180, 2190, 2200, 2201, 2210, 2211, 2220, 2221, 2230, 2231, 2240, 2241, 2250, 2251, 2260, 2261, 2270, 2271, 2280, 2281, 2290, 2291, 2295, 2300, 2301, 2310, 2311, 2320, 2321, 2325, 2330, 2340, 2350, 2360, 2370, 2375, 2380, 2381, 2390, 2400, 2405, 2406, 2407, 2410, 2420, 2430, 2440, 2441, 2442, 2450, 2460, 2470, 2480, 2490, 2500, 2501, 2510, 2520, 2525, 2530, 2531, 2535, 2548, 2600, 2605, 2610, 2611, 2612, 2613, 2615, 2620, 4102, 4103, 4200, 4201, 4210, 4211, 4410, 4411, 4412, 4413, 4420, 4430, 4440, 4441, 4445, 4446, 4800, 4810, 4900, 4905, 4910, 4955, 5010, 5011, 5530, 5600, 5725, 6401, 6505, 6769, 7000, 7011, 7605, 7900, 8377, 8930, 8980, 8981, 8982, 8983, 8984, 8985, 8986, 8987, 8988, 8989, 9020, 9304];
-  const LOG_FILTER_SET = new Set(LOG_FILTER_IDS);
-  // Log types the script does not read yet but that may move items or money outside a sale. They ride along in the same id request: each is only counted
+  // NOTE: do NOT filter the log read by id (user/log log=<ids>). Torn accepts at most 10 ids there and, with more, silently returns an EMPTY list (no error),
+  // which made syncs read nothing in 0.1.177-0.1.178. Even in groups of 10 it saves little, and an idle sync would need 16 calls instead of 1. Every sync reads the full log.
+  // Log types the script does not read yet but that may move items or money outside a sale. The full read passes every entry by this list: each is only counted
   // (state.watched[title] = { n, first entry, last time }) so the debug sample shows which of them a user really has, with one raw entry to write the parser from.
   // Remove an id from here when its parser exists. Very frequent types with nothing to model (Halloween treats) are left out.
   const WATCH_IDS = [1302, 1303, 1403, 1500, 1501, 4001, 4220, 4320, 4322, 4500, 4510, 6728, 6732, 6733, 6745, 6746, 6747, 6748, 6749, 6751, 6753, 6797, 8170];
   const WATCH_SET = new Set(WATCH_IDS);
-  // Ids found by the daily log type refresh: types whose title the script already reads but whose id is not in LOG_FILTER_IDS (for example a renumbered or new variant).
-  const requestIds = () => { const x = (state.extraIds || []).filter(id => !LOG_FILTER_SET.has(id) && !WATCH_SET.has(id)); return LOG_FILTER_IDS.concat(x, WATCH_IDS); };
-  // Pure: from torn/logtypes, the ids the script should add. Refuses an absurdly large answer (a pattern gone too broad).
-  function extraIdsFromLogTypes(list) {
-    const extra = (list || []).filter(t => t && Number(t.id) > 0 && titleWanted(String(t.title || '')) && !LOG_FILTER_SET.has(Number(t.id))).map(t => Number(t.id));
-    return extra.length <= 40 ? extra : null;
-  }
-  const LOG_WANTED = () => [/^Money (receive|send)/i, /^Trade (completed|items (incoming|outgoing)|money (incoming|outgoing))/i, /^Trade (cancel|expire|decline)/i, /^Item market (add|remove)$/i, /^Item (send|receive)$/i]
-    .concat(LOG_RULES.map(r => r.re), [/^Museum exchange$/i, /^Points market (buy|sell)$/i, /^Points .*\buse$/i, /^Crime success item gain/i, /^Item use /i, /^Dump find$/i, GAIN_RE, /^Casino spin the wheel win item$/i, /^Crime use items for disposal$/i, /^Faction organized crimes lose items$/i]);
-  const titleWanted = title => LOG_WANTED().some(re => re.test(title));
-  // Filtered reads are on unless switched off in Settings or paused for a day after a problem (see the fallback in syncLog).
-  const filterActive = () => sget('logFilter', true) !== false && Math.floor(Date.now() / 1000) >= (state.filterOffUntil || 0);
-  function filterOff(why, hours) { state.filterOffUntil = Math.floor(Date.now() / 1000) + (hours || 24) * 3600; state.filterWhy = String(why).slice(0, 300); state.filterWhyAt = Math.floor(Date.now() / 1000); save(); }
+  // The request for one page of the log. Never add a log=<ids> filter here (see the note above).
+  const logParams = (from, to) => Object.assign({ from, limit: 100 }, to ? { to } : {});
   function computeFlips(txsObj, opts) {
     const fee = (opts && opts.marketFee) || 0;
     const vals = (opts && opts.values) || {};
@@ -888,13 +875,12 @@
   function getKey() { return (sget('apikey', '') || '') || (IN_PDA ? PDA_KEY : ''); }
   // What the key needs and why, shown as a collapsed dropdown next to the "Create the key" link (setup and Settings).
   const keyHelpHtml = () => `<details class="tfp-why"><summary>What does this key need, and why?</summary><div class="tfp-sub">
-    <p>The key is a Custom key with four things ticked. Nothing else is needed.</p>
+    <p>The key is a Custom key with three things ticked. Nothing else is needed.</p>
     <p><b>User basic:</b> your ID and name, so Arbitrage knows which log entries are yours and which side of a trade you were on.</p>
     <p><b>User log:</b> your activity log, which is where everything comes from. Trades, item market, bazaar, item sends, shops, crimes, museum exchanges and points sales are read from it. It is the one permission the script can't work without.</p>
     <p><b>Torn items:</b> the names, IDs and market prices of every item. Names are shown instead of numbers, and when a trade has several items and no receipt, the market prices are used to split the total fairly between them.</p>
-    <p><b>Torn log types:</b> the list of log entry types. Once a day Arbitrage checks it, so if Torn adds a new kind of trade or sale entry, it gets picked up. This one is optional. Without it, Arbitrage uses its built-in list.</p>
     <p>It only reads: it can't spend money, move items or act in the game. It stays on this device and is sent only to Torn. Full Access also works, but gives more than Arbitrage needs.</p></div></details>`;
-  const KEYURL = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Arbitrage&user=basic,log&torn=items,logtypes';
+  const KEYURL = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Arbitrage&user=basic,log&torn=items';
   async function apiUrl(url) {
     const key = getKey();
     if (!key && !/[?&]key=/.test(url)) throw new Error('No API key set (Settings tab).');
@@ -1005,15 +991,6 @@
     return added;
   }
   const now0 = () => Math.floor(Date.now() / 1000);
-  // Once a day (needs the key's torn log types selection; without it the call fails quietly and the built-in list stays in use).
-  async function refreshLogTypes() {
-    state.logTypesAt = now0();
-    try {
-      const extra = extraIdsFromLogTypes(((await api('torn/logtypes')) || {}).logtypes);
-      if (extra) { state.extraIds = extra; state.logTypesErr = null; } else state.logTypesErr = 'Log type list looked wrong, ignored.';
-    } catch (e) { state.logTypesErr = String(e.message || e).slice(0, 160); }
-    save();
-  }
   let syncRunning = false, progressText = '';
   // Leaving the tab (minimise, app switch) can freeze or kill the page: save the read position right away so Continue picks up exactly there.
   function flushNow() { if (syncRunning) { try { save(); } catch (e) { /* ignore */ } } }
@@ -1030,7 +1007,6 @@
     let added = 0, att = 0, last = null, weaverErr = '';
     const T0 = Date.now(), tm = {}, lap = k => { tm[k] = Math.round((Date.now() - T0) / 100) / 10; };
     const readLog = async () => { added += await readLogFully(); };
-    if (filterActive() && now0() - (state.logTypesAt || 0) > 86400) { try { await refreshLogTypes(); } catch (e) { /* optional */ } }
     setProgress(state.resume ? 'Continuing…' : 'Reading log…');
     // If the log read stops partway (rate limit, app switch, network), the newest entries are already saved, so receipts, PawnHub and Weaver still run on what has been read.
     let logErr = null;
@@ -1096,14 +1072,8 @@
     // Torn allows about 100 requests a minute: pause between pages and wait out a rate-limit reply a few times.
     const fetchPage = async to => {
       for (let t = 0; ; t++) {
-        const filt = filterActive();
-        try { return await api('user/log', Object.assign({ from, limit: 100 }, to ? { to } : {}, filt ? { log: requestIds().join(',') } : {})); }
-        catch (e) {
-          if (e.rate && t < 3) { await sleep(15000); continue; }
-          // Torn refused the filtered request (not a key or rate problem): read every entry instead and stay on full reads for a day.
-          if (filt && e.code && e.code !== 2 && e.code !== 16 && e.code !== 5) { filterOff('Torn refused the filtered read: ' + String(e.message || e), 24); continue; }
-          throw e;
-        }
+        try { return await api('user/log', logParams(from, to)); }
+        catch (e) { if (e.rate && t < 3) { await sleep(15000); continue; } throw e; }
       }
     };
     let j = await fetchPage(curTo);
@@ -1983,13 +1953,13 @@
   }
   function settingsHtml() {
     const own = !!sget('apikey', '');
-    const keyBox = `<div class="tfp-sub">${IN_PDA && !own ? 'Using your Torn PDA key by default.' : 'Torn API key.'} <a href="${esc(KEYURL)}">Create a custom key ↗</a> (read-only: your log, item names and log types), then paste it here. Limited keys don't work.</div>${keyHelpHtml()}
+    const keyBox = `<div class="tfp-sub">${IN_PDA && !own ? 'Using your Torn PDA key by default.' : 'Torn API key.'} <a href="${esc(KEYURL)}">Create a custom key ↗</a> (read-only: your log and item names), then paste it here. Limited keys don't work.</div>${keyHelpHtml()}
       <input class="tfp-in" id="tfp-key" type="password" autocomplete="off" placeholder="${own ? 'Key saved (hidden). Paste a new one to replace.' : 'Paste your key'}"><div class="tfp-gap"></div>
       <button class="tfp-b" data-act="savekey">Save key</button> ${own ? '<button class="tfp-b" data-act="clearkey">Remove key</button>' : ''}
       <table class="tfp-disc"><tr><td>Your data</td><td>Stays on this device. Not shared with anyone.</td></tr>
       <tr><td>What it does</td><td>Reads your own item log and item names to work out flip profit. Read-only; no game actions.</td></tr>
       <tr><td>Your key</td><td>Stored only on this device. Sent only to api.torn.com.</td></tr>
-      <tr><td>Key needs</td><td>Custom key: user basic, user log, torn items, torn log types (the last is optional: without it the script keeps its built-in list).</td></tr>
+      <tr><td>Key needs</td><td>Custom key: user basic, user log, torn items.</td></tr>
       <tr><td>Player names</td><td>Looked up once with your key when you open a row, then kept here.</td></tr>
       <tr><td>TornW3B key</td><td>Optional, for Weaver receipts. Stored here, sent only to weav3r.dev.</td></tr>
       <tr><td>PawnHub</td><td>Optional. Read when you open a receipt or the Balance page. If you add a PawnHub key (the Torn key you log in to PawnHub with), it is stored here and sent only to z0cl.eu. Without it, nothing is sent to PawnHub.</td></tr></table>
@@ -1997,7 +1967,7 @@
     const hasPH = !!sget('phkey', '');
     const phKey = usesPH() ? `<div class="tfp-sub" style="margin-top:8px">PawnHub key (optional). Paste the Torn API key you use to log in to PawnHub. It is stored only on this device and sent only to PawnHub (z0cl.eu), like logging in there. Leave it empty and nothing is sent to PawnHub. A key with just "user basic" ticked is enough.</div><input class="tfp-in" id="tfp-phkey" type="password" autocomplete="off" placeholder="${hasPH ? 'PawnHub key saved (hidden). Paste a new one to replace.' : 'Paste your PawnHub key'}"><div class="tfp-gap"></div><button class="tfp-b" data-act="savephkey">Save PawnHub key</button> ${hasPH ? '<button class="tfp-b" data-act="clearphkey">Remove</button> ' : ''}` : '';
     const phBox = `<div class="tfp-row"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-act="useph" ${usesPH() ? 'checked' : ''}> <b>I use PawnHub</b></label><div class="tfp-sub">${usesPH() ? 'Item sends are valued from PawnHub (Balance page, or your PawnHub key). Sends it can\'t value show under Needs attention.' : 'Item sends are left empty: they leave your stock but are not counted in profit and never show under Needs attention.'}</div>${phKey}</div>`;
-    return `<div class="tfp-sub"><a href="#" data-act="runsetup">Run setup again</a></div><div class="tfp-row"><b>This device's data</b>${dataSummaryHtml()}</div>${inboxHtml()}${keyBox}${phBox}<div class="tfp-row"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-act="logfilter" ${sget('logFilter', true) === false ? 'checked' : ''}> <b>Read every log type (slower)</b></label><div class="tfp-sub">Normally the sync asks Torn only for the entry types it uses (trades, market, bazaar, sends, shops, crimes, museum, points), which is much faster. Tick this to read everything, for troubleshooting.${state.filterWhy && sget('logFilter', true) !== false && Math.floor(Date.now() / 1000) < (state.filterOffUntil || 0) ? ' <span class="tfp-warn">Paused for now: ' + esc(state.filterWhy) + '</span>' : ''}</div></div><div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
+    return `<div class="tfp-sub"><a href="#" data-act="runsetup">Run setup again</a></div><div class="tfp-row"><b>This device's data</b>${dataSummaryHtml()}</div>${inboxHtml()}${keyBox}${phBox}<div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
       <input class="tfp-in" id="tfp-days" data-act="setting" inputmode="numeric" value="${esc(sget('startDays', 30))}">${rateBlockHtml()}
       <div class="tfp-sub">Sync from the Profit tab. Last sync: ${state.syncedAt || state.lastSync ? fdate(state.syncedAt || state.lastSync) : 'never'} · ${Object.keys(state.txs).length} records</div>
       <div class="tfp-gap"></div><div class="tfp-sub">TornW3B key (optional, for Weaver receipts). Use the key from TornW3B, not your Torn key.</div>${isW3bDenied(sget('w3bDenied', ''), sget('w3bkey', '')) ? '<div class="tfp-msg tfp-warn">TornW3B refused this key (HTTP 403: not accepted for the receipt list, or the request was blocked), so Weaver is paused. Receipts you open in Torn are read directly instead. Paste a different key to try again.</div>' : ''}
@@ -2102,7 +2072,7 @@
     } else if (cur === 'torn') {
       title = 'Your Torn API key';
       const custom = `<p>Arbitrage needs a key that can read your log. Make a <b>custom</b> key with only what it needs:</p><p><a href="${esc(KEYURL)}">Create the key for me ↗</a><br><span class="tfp-sub">Opens Torn already filled in. Tap Create, copy the key, then come back and paste it.</span></p>${keyHelpHtml()}<input class="tfp-in" id="tfp-swkey" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore style="-webkit-text-security:disc" placeholder="Paste your key"><div class="tfp-gap"></div><button class="tfp-b" data-act="swcheck">${S.busy ? 'Checking…' : 'Check key'}</button>`;
-      if (IN_PDA) body = `<p>You're in Torn PDA. Use PDA's key, or a custom one.</p>` + opt('swpda', 'pda', 'Use my PDA key', 'Nothing to paste.', S.torn === 'pda') + opt('swcustom', 'custom', 'Use a custom key instead', 'Safer: only your log, item names and the list of log types.', S.torn === 'custom') + (S.torn === 'custom' ? custom : '');
+      if (IN_PDA) body = `<p>You're in Torn PDA. Use PDA's key, or a custom one.</p>` + opt('swpda', 'pda', 'Use my PDA key', 'Nothing to paste.', S.torn === 'pda') + opt('swcustom', 'custom', 'Use a custom key instead', 'Safer: only your log and item names.', S.torn === 'custom') + (S.torn === 'custom' ? custom : '');
       else body = custom;
       body += S.msg ? `<div class="tfp-msg ${S.tornOk ? 'tfp-pos' : 'tfp-warn'}">${esc(S.msg)}</div>` : (S.tornOk ? `<div class="tfp-msg tfp-pos">✓ Key saved${S.tornName ? ' for ' + esc(S.tornName) : ''}.</div>` : '');
       body += '<div class="tfp-sub">Limited keys do not work.</div>';
@@ -2341,7 +2311,6 @@
       else if (act === 'itemsby') { ui.itemsBy = v; ui.ilimit = 25; }
       else if (act === 'itemlogclose') ui.itemLog = null;
       else if (act === 'clearval') { const tx = state.txs[id]; tx.amount = null; tx.gift = false; tx.src = null; tx.locked = false; ui.editing = null; save(); }
-      else if (act === 'logfilter') { sset('logFilter', !el.checked); if (!el.checked) state.filterOffUntil = 0; save(); ui.msg = el.checked ? 'Reading every log type from now on (slower).' : 'Filtered reads are on again.'; }
       else if (act === 'useph') { sset('usePH', !!el.checked); ui.msg = el.checked ? 'PawnHub on: sends are valued from PawnHub.' : 'PawnHub off: item sends are left empty.'; }
       else if (act === 'savephkey') {
         const k = val('tfp-phkey').trim();
@@ -2461,7 +2430,7 @@
       }
       else if (act === 'debug') {
         const tb = document.querySelector('#topHeaderBanner .toolbar, .header-buttons-wrapper');
-        const sample = { version: VERSION, logFilter: { on: filterActive(), setting: sget('logFilter', true), offUntil: state.filterOffUntil || 0, why: state.filterWhy || null, ids: LOG_FILTER_IDS.length, watchIds: WATCH_IDS.length, extraIds: state.extraIds || [], logTypesAt: state.logTypesAt || 0, logTypesErr: state.logTypesErr || null }, watched: state.watched || null, itemSample: state.itemSample || null, nameSample: state.nameSample || null, phApiSample: state.phApiSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, lastSyncDetail: state.lastSyncDetail || null, inboxWaiting: ui.inboxN || 0, nativeStorage: !!nat(), lastInbox: state.lastInbox || null, lastInboxDetail: state.lastInboxDetail || null, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
+        const sample = { version: VERSION, watched: state.watched || null, itemSample: state.itemSample || null, nameSample: state.nameSample || null, phApiSample: state.phApiSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, lastSyncDetail: state.lastSyncDetail || null, inboxWaiting: ui.inboxN || 0, nativeStorage: !!nat(), lastInbox: state.lastInbox || null, lastInboxDetail: state.lastInboxDetail || null, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
         const ok = await copyText(JSON.stringify(sample, null, 1));
         ui.msg = ok ? 'Debug sample copied. Paste it to Claude.' : 'Could not copy. Sync first, then try again.';
       }
@@ -2661,7 +2630,7 @@
   }
 
   if (typeof module !== 'undefined') {
-    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, isW3bDenied, dataSummaryHtml, moveDataHtml, packData, unpackData, sanitizePackage, mergeDevice, sameAccount, autoSyncMode, migrateParsers, LOG_FILTER_IDS, WATCH_IDS, extraIdsFromLogTypes, useGainTx, titleWanted, museumTx, pointsTx, rateEstimate, ratePause, clampRate, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
+    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, syncLog, getStateForTest: () => state, resetStateForTest: () => { state = STATE_DEFAULTS(); }, isW3bDenied, dataSummaryHtml, moveDataHtml, packData, unpackData, sanitizePackage, mergeDevice, sameAccount, autoSyncMode, migrateParsers, WATCH_IDS, logParams, useGainTx, museumTx, pointsTx, rateEstimate, ratePause, clampRate, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
   }
   if (typeof document !== 'undefined' && !globalThis.__TFP_TEST) init();
 })();

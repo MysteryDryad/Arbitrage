@@ -84,61 +84,17 @@ eq('pause between pages at 60/min', T.ratePause(60), 750);
   eq('bought points sell at their cost', r3.flips[0].profit, 200);
 }
 
-// Log filter list covers exactly the titles the script reads (checked against Torn's logtypes list)
-{
-  const lt = require('./fixtures/logtypes.json').logtypes, ids = new Set(T.LOG_FILTER_IDS);
-  const wantedNotListed = lt.filter(x => T.titleWanted(x.title) && !ids.has(x.id)).map(x => x.id + ' ' + x.title);
-  const listedNotWanted = lt.filter(x => ids.has(x.id) && !T.titleWanted(x.title)).map(x => x.id + ' ' + x.title);
-  const unknownIds = [...ids].filter(id => !lt.some(x => x.id === id));
-  eq('every title the script reads is in LOG_FILTER_IDS', wantedNotListed, []);
-  eq('LOG_FILTER_IDS holds nothing the script ignores', listedNotWanted, []);
-  eq('every filter id exists in the log type list', unknownIds, []);
-}
-
-// Items used up and items found
-{
-  const u = T.useGainTx({ id: 'u1', timestamp: 9, details: { title: 'Item use xanax' }, data: { item: 206, faction: 0 } });
-  eq('item use takes one of the item out of stock', [u.dir, u.channel, u.items[0].id, u.items[0].qty], ['use', 'use', 206, 1]);
-  eq('item use without an item id is ignored', T.useGainTx({ id: 'u2', timestamp: 9, details: { title: 'Item use piggy bank deposit' }, data: { money: 5 } }), null);
-  const dsp = T.useGainTx({ id: 'u3', timestamp: 9, details: { title: 'Crime use items for disposal' }, data: { items_used: { '172': 3 } } });
-  eq('crime disposal uses the listed items', dsp.items.map(i => [i.id, i.qty]), [[172, 3]]);
-  const ocl = T.useGainTx({ id: 'u4', timestamp: 9, details: { title: 'Faction organized crimes lose items' }, data: { items_added: { '327': 1 } } });
-  eq('organized crime item loss uses the listed items', [ocl.dir, ocl.items[0].id], ['use', 327]);
-  const dump = T.useGainTx({ id: 'u5', timestamp: 9, details: { title: 'Dump find' }, data: { dumper: 1, item: [{ id: 933, uid: 0, qty: 1 }], energy_used: 5 } });
-  eq('dump find is free stock', [dump.dir, dump.channel, dump.free, dump.amount, dump.items[0].id], ['buy', 'find', true, 0, 933]);
-  const wheel = T.useGainTx({ id: 'w1', timestamp: 9, details: { title: 'Casino spin the wheel win item' }, data: { wheel: 'the Wheel of Mediocrity', item: 274 } });
-  eq('casino wheel item win is free stock', [wheel.dir, wheel.free, wheel.amount, wheel.items[0].id, wheel.items[0].qty], ['buy', true, 0, 274, 1]);
-  // a use takes stock from the oldest lot; a found item sells at cost 0
-  const r = T.computeFlips({
-    a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 5, qty: 10, price: null }], amount: 1000 },
-    u: { id: 'u', ts: 2, dir: 'use', channel: 'use', items: [{ id: 5, qty: 4 }], amount: 0 },
-    s: { id: 's', ts: 3, dir: 'sell', channel: 'market', items: [{ id: 5, qty: 6, price: null }], amount: 900 },
-    d: Object.assign({}, dump, { id: 'd', ts: 4 }),
-    t: { id: 't', ts: 5, dir: 'sell', channel: 'market', items: [{ id: 933, qty: 1, price: null }], amount: 700 }
-  });
-  eq('items used up leave stock without profit, the sale gets the remaining cost', [r.flips[0].profit, r.pending.length], [900 - 600, 0]);
-  eq('found item sells at cost 0', r.flips[1].profit, 700);
-}
-
-// Watch list: real log types, none of them already read, none duplicated in the filter list
-{
-  const lt = require('./fixtures/logtypes.json').logtypes, ids = new Set(T.LOG_FILTER_IDS);
-  const bad = T.WATCH_IDS.filter(id => !lt.some(x => x.id === id));
-  const overlap = T.WATCH_IDS.filter(id => ids.has(id));
-  const readTitles = T.WATCH_IDS.filter(id => T.titleWanted((lt.find(x => x.id === id) || {}).title || ''));
-  eq('watch ids all exist in the log type list', bad, []);
-  eq('watch ids are not in the filter list', overlap, []);
-  eq('watch ids are not types the script already reads', readTitles, []);
-}
-
-// Daily log type refresh: finds ids for titles the script reads that the built-in list lacks
+// Watch list: real log types that the rules do not already read
 {
   const lt = require('./fixtures/logtypes.json').logtypes;
-  eq('refresh finds nothing new on the current Torn list', T.extraIdsFromLogTypes(lt), []);
-  eq('refresh picks up a new id for a title the script reads', T.extraIdsFromLogTypes(lt.concat([{ id: 99991, title: 'Bazaar buy (v3)' }, { id: 99992, title: 'Brand new unrelated type' }])), [99991]);
-  eq('refresh ignores a broken answer', T.extraIdsFromLogTypes(lt.concat(Array.from({ length: 50 }, (_, i) => ({ id: 90000 + i, title: 'Item use thing ' + i })))), null);
-  eq('refresh copes with no list', T.extraIdsFromLogTypes(undefined), []);
+  const bad = T.WATCH_IDS.filter(id => !lt.some(x => x.id === id));
+  const modelled = T.WATCH_IDS.filter(id => T.LOG_RULES.some(r => r.re.test((lt.find(x => x.id === id) || {}).title || '')));
+  eq('watch ids all exist in the log type list', bad, []);
+  eq('watch ids are not types the main rules already read', modelled, []);
 }
+// The log request must never carry a log=<ids> filter: Torn accepts 10 ids at most and silently returns nothing for more
+eq('a log page request has no id filter', [Object.keys(T.logParams(100, null)).sort(), Object.keys(T.logParams(100, 50)).sort()], [['from', 'limit'], ['from', 'limit', 'to']]);
+
 
 // Selling items to a shop for points is not a cash sale
 {
