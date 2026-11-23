@@ -83,6 +83,17 @@ eq('pause between pages at 60/min', T.ratePause(60), 750);
   eq('bought points sell at their cost', r3.flips[0].profit, 200);
 }
 
+// Log filter list covers exactly the titles the script reads (checked against Torn's logtypes list)
+{
+  const lt = require('./fixtures/logtypes.json').logtypes, ids = new Set(T.LOG_FILTER_IDS);
+  const wantedNotListed = lt.filter(x => T.titleWanted(x.title) && !ids.has(x.id)).map(x => x.id + ' ' + x.title);
+  const listedNotWanted = lt.filter(x => ids.has(x.id) && !T.titleWanted(x.title)).map(x => x.id + ' ' + x.title);
+  const unknownIds = [...ids].filter(id => !lt.some(x => x.id === id));
+  eq('every title the script reads is in LOG_FILTER_IDS', wantedNotListed, []);
+  eq('LOG_FILTER_IDS holds nothing the script ignores', listedNotWanted, []);
+  eq('every filter id exists in the log type list', unknownIds, []);
+}
+
 // multi-item sell with receipt prices, per-item lines
 const tx2 = {
   a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 384, qty: 13, price: null }, { id: 215, qty: 191, price: null }], amount: 13 * 60000 + 191 * 400 },

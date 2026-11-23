@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.178-beta
+// @version      0.1.179-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.178-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.179-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -352,6 +352,16 @@
   // A send valued at $0 by hand is a gift too (covers gifts saved before the gift flag existed).
   const isGift = tx => !tx.free && (tx.dir === 'sell' && (tx.gift || (tx.channel === 'send' && tx.src === 'manual' && tx.amount === 0))) || (tx.dir === 'buy' && (tx.gift || (tx.channel === 'recv' && tx.src === 'manual' && tx.amount === 0)));
   const POINTS_ID = -1; // points are tracked like an item with this id
+  // Log read filter. Torn's user/log accepts log=<type ids>, so the sync can ask only for the entry types it understands instead of every entry.
+  // LOG_FILTER_IDS is derived from Torn's torn/logtypes list by running LOG_WANTED over every title (test.js re-checks it against fixtures/logtypes.json).
+  const LOG_FILTER_IDS = [1103, 1104, 1110, 1111, 1112, 1113, 1220, 1221, 1225, 1226, 4102, 4103, 4200, 4201, 4210, 4211, 4220, 4410, 4411, 4412, 4413, 4420, 4430, 4440, 4441, 4445, 4446, 4800, 4810, 4900, 4905, 4910, 4955, 5010, 5011, 5725, 7000, 9020];
+  const LOG_FILTER_SET = new Set(LOG_FILTER_IDS);
+  const LOG_WANTED = () => [/^Money (receive|send)/i, /^Trade (completed|items (incoming|outgoing)|money (incoming|outgoing))/i, /^Trade (cancel|expire|decline)/i, /^Item market (add|remove)$/i, /^Item (send|receive)$/i]
+    .concat(LOG_RULES.map(r => r.re), [/^Museum exchange$/i, /^Points market (buy|sell)$/i, /^Points .*\buse$/i, /^Crime success item gain/i]);
+  const titleWanted = title => LOG_WANTED().some(re => re.test(title));
+  // Filtered reads are on unless switched off in Settings or paused for a day after a problem (see the fallbacks in syncLog and auditLogFilter).
+  const filterActive = () => sget('logFilter', true) !== false && Math.floor(Date.now() / 1000) >= (state.filterOffUntil || 0);
+  function filterOff(why, hours) { state.filterOffUntil = Math.floor(Date.now() / 1000) + (hours || 24) * 3600; state.filterWhy = String(why).slice(0, 300); state.filterWhyAt = Math.floor(Date.now() / 1000); save(); }
   function computeFlips(txsObj, opts) {
     const fee = (opts && opts.marketFee) || 0;
     const vals = (opts && opts.values) || {};
@@ -845,6 +855,29 @@
     }
     return added;
   }
+  // Self-check, at most once a day: read the newest 100 entries unfiltered and make sure nothing the script would parse is missing from the filter list.
+  // If something is, the filter is paused for a day and the last two days are read again in full.
+  async function auditLogFilter() {
+    const now = Math.floor(Date.now() / 1000);
+    state.filterAuditAt = now;
+    const arr = normalizeLog((await api('user/log', { limit: 100 })).log);
+    const miss = arr.filter(e => { const title = (e.details && e.details.title) || e.title || ''; return titleWanted(title) && !LOG_FILTER_SET.has(Number(e.details && e.details.id)); });
+    if (miss.length) {
+      const e = miss[0];
+      filterOff('Filter list is missing a type the script reads: ' + ((e.details && e.details.title) || '?') + ' (id ' + (e.details && e.details.id) + '). Update LOG_FILTER_IDS.', 24);
+      state.lastSync = Math.min(state.lastSync || now, now - 2 * 86400);
+      return true;
+    }
+    // The filtered request itself must also return every wanted entry the full read just showed (catches Torn ignoring or truncating the id list).
+    const wantedIds = arr.filter(e => titleWanted((e.details && e.details.title) || e.title || '')).map(e => e.id);
+    if (wantedIds.length) {
+      const got = new Set(normalizeLog((await api('user/log', { limit: 100, log: LOG_FILTER_IDS.join(',') })).log).map(e => e.id));
+      const lost = wantedIds.filter(id => !got.has(id));
+      if (lost.length) { filterOff('The filtered read left out ' + lost.length + ' of ' + wantedIds.length + ' entries the full read had.', 24); state.lastSync = Math.min(state.lastSync || now, now - 2 * 86400); return true; }
+    }
+    save(); return false;
+  }
+  const now0 = () => Math.floor(Date.now() / 1000);
   let syncRunning = false, progressText = '';
   // Leaving the tab (minimise, app switch) can freeze or kill the page: save the read position right away so Continue picks up exactly there.
   function flushNow() { if (syncRunning) { try { save(); } catch (e) { /* ignore */ } } }
@@ -864,6 +897,9 @@
     let logErr = null;
     try { await readLog(); } catch (e) { logErr = e; }
     lap('log');
+    if (!logErr && filterActive() && now0() - (state.filterAuditAt || 0) > 86400) {
+      try { if (await auditLogFilter()) { setProgress('Re-reading the log in full…'); await readLog(); } } catch (e) { /* the audit is a bonus: try again tomorrow */ }
+    }
     setProgress('Receipts…');
     try { if ((await inboxGet()).length) await processInbox(true); } catch (e) { /* receipts stay queued */ }
     lap('inbox');
@@ -919,8 +955,14 @@
     // Torn allows about 100 requests a minute: pause between pages and wait out a rate-limit reply a few times.
     const fetchPage = async to => {
       for (let t = 0; ; t++) {
-        try { return await api('user/log', Object.assign({ from, limit: 100 }, to ? { to } : {})); }
-        catch (e) { if (e.rate && t < 3) { await sleep(15000); continue; } throw e; }
+        const filt = filterActive();
+        try { return await api('user/log', Object.assign({ from, limit: 100 }, to ? { to } : {}, filt ? { log: LOG_FILTER_IDS.join(',') } : {})); }
+        catch (e) {
+          if (e.rate && t < 3) { await sleep(15000); continue; }
+          // Torn refused the filtered request (not a key or rate problem): read every entry instead and stay on full reads for a day.
+          if (filt && e.code && e.code !== 2 && e.code !== 16 && e.code !== 5) { filterOff('Torn refused the filtered read: ' + String(e.message || e), 24); continue; }
+          throw e;
+        }
       }
     };
     let j = await fetchPage(curTo);
@@ -1809,7 +1851,7 @@
     const hasPH = !!sget('phkey', '');
     const phKey = usesPH() ? `<div class="tfp-sub" style="margin-top:8px">PawnHub key (optional). Paste the Torn API key you use to log in to PawnHub. It is stored only on this device and sent only to PawnHub (z0cl.eu), like logging in there. Leave it empty and nothing is sent to PawnHub. A key with just "user basic" ticked is enough.</div><input class="tfp-in" id="tfp-phkey" type="password" autocomplete="off" placeholder="${hasPH ? 'PawnHub key saved (hidden). Paste a new one to replace.' : 'Paste your PawnHub key'}"><div class="tfp-gap"></div><button class="tfp-b" data-act="savephkey">Save PawnHub key</button> ${hasPH ? '<button class="tfp-b" data-act="clearphkey">Remove</button> ' : ''}` : '';
     const phBox = `<div class="tfp-row"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-act="useph" ${usesPH() ? 'checked' : ''}> <b>I use PawnHub</b></label><div class="tfp-sub">${usesPH() ? 'Item sends are valued from PawnHub (Balance page, or your PawnHub key). Sends it can\'t value show under Needs attention.' : 'Item sends are left empty: they leave your stock but are not counted in profit and never show under Needs attention.'}</div>${phKey}</div>`;
-    return `<div class="tfp-sub"><a href="#" data-act="runsetup">Run setup again</a></div>${inboxHtml()}${keyBox}${phBox}<div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
+    return `<div class="tfp-sub"><a href="#" data-act="runsetup">Run setup again</a></div>${inboxHtml()}${keyBox}${phBox}<div class="tfp-row"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-act="logfilter" ${sget('logFilter', true) === false ? 'checked' : ''}> <b>Read every log type (slower)</b></label><div class="tfp-sub">Normally the sync asks Torn only for the entry types it uses (trades, market, bazaar, sends, shops, crimes, museum, points), which is much faster. Tick this to read everything, for troubleshooting.${state.filterWhy && sget('logFilter', true) !== false && Math.floor(Date.now() / 1000) < (state.filterOffUntil || 0) ? ' <span class="tfp-warn">Paused for now: ' + esc(state.filterWhy) + '</span>' : ''}</div></div><div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
       <input class="tfp-in" id="tfp-days" data-act="setting" inputmode="numeric" value="${esc(sget('startDays', 30))}">${rateBlockHtml()}
       <div class="tfp-sub">Sync from the Profit tab. Last sync: ${state.syncedAt || state.lastSync ? fdate(state.syncedAt || state.lastSync) : 'never'} · ${Object.keys(state.txs).length} records</div>
       <div class="tfp-gap"></div><div class="tfp-sub">TornW3B key (optional, for Weaver receipts). Use the key from TornW3B, not your Torn key.</div>
@@ -2115,6 +2157,7 @@
       else if (act === 'itemsby') { ui.itemsBy = v; ui.ilimit = 25; }
       else if (act === 'itemlogclose') ui.itemLog = null;
       else if (act === 'clearval') { const tx = state.txs[id]; tx.amount = null; tx.gift = false; tx.src = null; tx.locked = false; ui.editing = null; save(); }
+      else if (act === 'logfilter') { sset('logFilter', !el.checked); if (!el.checked) { state.filterOffUntil = 0; state.filterAuditAt = 0; } save(); ui.msg = el.checked ? 'Reading every log type from now on (slower).' : 'Filtered reads are on again.'; }
       else if (act === 'useph') { sset('usePH', !!el.checked); ui.msg = el.checked ? 'PawnHub on: sends are valued from PawnHub.' : 'PawnHub off: item sends are left empty.'; }
       else if (act === 'savephkey') {
         const k = val('tfp-phkey').trim();
@@ -2211,7 +2254,7 @@
       else if (act === 'debug') {
         const tb = document.querySelector('#topHeaderBanner .toolbar, .header-buttons-wrapper');
         let cats = null; try { cats = await api('torn/logcategories'); } catch (e) { cats = String(e.message || e); }
-        const sample = { version: VERSION, itemSample: state.itemSample || null, nameSample: state.nameSample || null, phApiSample: state.phApiSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, lastSyncDetail: state.lastSyncDetail || null, inboxWaiting: ui.inboxN || 0, nativeStorage: !!nat(), lastInbox: state.lastInbox || null, lastInboxDetail: state.lastInboxDetail || null, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
+        const sample = { version: VERSION, logFilter: { on: filterActive(), setting: sget('logFilter', true), offUntil: state.filterOffUntil || 0, why: state.filterWhy || null, auditAt: state.filterAuditAt || 0, ids: LOG_FILTER_IDS.length }, itemSample: state.itemSample || null, nameSample: state.nameSample || null, phApiSample: state.phApiSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, lastSyncDetail: state.lastSyncDetail || null, inboxWaiting: ui.inboxN || 0, nativeStorage: !!nat(), lastInbox: state.lastInbox || null, lastInboxDetail: state.lastInboxDetail || null, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
         const ok = await copyText(JSON.stringify(sample, null, 1));
         ui.msg = ok ? 'Debug sample copied. Paste it to Claude.' : 'Could not copy. Sync first, then try again.';
       }
@@ -2396,7 +2439,7 @@
   }
 
   if (typeof module !== 'undefined') {
-    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, museumTx, pointsTx, rateEstimate, ratePause, clampRate, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
+    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, LOG_FILTER_IDS, titleWanted, museumTx, pointsTx, rateEstimate, ratePause, clampRate, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
   }
   if (typeof document !== 'undefined' && !globalThis.__TFP_TEST) init();
 })();
