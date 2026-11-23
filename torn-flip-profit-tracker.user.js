@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.183-beta
+// @version      0.1.184-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.183-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.184-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -788,6 +788,14 @@
 
   /* ===================== Torn API ===================== */
   function getKey() { return (sget('apikey', '') || '') || (IN_PDA ? PDA_KEY : ''); }
+  // What the key needs and why, shown as a collapsed dropdown next to the "Create the key" link (setup and Settings).
+  const keyHelpHtml = () => `<details class="tfp-why"><summary>What does this key need, and why?</summary><div class="tfp-sub">
+    <p>The key is a Custom key with four things ticked. Nothing else is needed.</p>
+    <p><b>User basic:</b> your ID and name, so Arbitrage knows which log entries are yours and which side of a trade you were on.</p>
+    <p><b>User log:</b> your activity log, which is where everything comes from. Trades, item market, bazaar, item sends, shops, crimes, museum exchanges and points sales are read from it. It is the one permission the script can't work without.</p>
+    <p><b>Torn items:</b> the names, IDs and market prices of every item. Names are shown instead of numbers, and when a trade has several items and no receipt, the market prices are used to split the total fairly between them.</p>
+    <p><b>Torn log types:</b> the list of log entry types. Once a day Arbitrage checks it, so if Torn adds a new kind of trade or sale entry, it gets picked up. This one is optional. Without it, Arbitrage uses its built-in list.</p>
+    <p>It only reads: it can't spend money, move items or act in the game. It stays on this device and is sent only to Torn. Full Access also works, but gives more than Arbitrage needs.</p></div></details>`;
   const KEYURL = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Arbitrage&user=basic,log&torn=items,logtypes';
   async function apiUrl(url) {
     const key = getKey();
@@ -1851,7 +1859,7 @@
   }
   function settingsHtml() {
     const own = !!sget('apikey', '');
-    const keyBox = `<div class="tfp-sub">${IN_PDA && !own ? 'Using your Torn PDA key by default.' : 'Torn API key.'} <a href="${esc(KEYURL)}">Create a custom key ↗</a> (read-only: just your log and item names), then paste it here. Limited keys don't work.</div>
+    const keyBox = `<div class="tfp-sub">${IN_PDA && !own ? 'Using your Torn PDA key by default.' : 'Torn API key.'} <a href="${esc(KEYURL)}">Create a custom key ↗</a> (read-only: your log, item names and log types), then paste it here. Limited keys don't work.</div>${keyHelpHtml()}
       <input class="tfp-in" id="tfp-key" type="password" autocomplete="off" placeholder="${own ? 'Key saved (hidden). Paste a new one to replace.' : 'Paste your key'}"><div class="tfp-gap"></div>
       <button class="tfp-b" data-act="savekey">Save key</button> ${own ? '<button class="tfp-b" data-act="clearkey">Remove key</button>' : ''}
       <table class="tfp-disc"><tr><td>Your data</td><td>Stays on this device. Not shared with anyone.</td></tr>
@@ -1942,7 +1950,7 @@
       foot = `<span class="tfp-sub">Step 1 of ${n}</span>` + next(true, 'Start ▸');
     } else if (cur === 'torn') {
       title = 'Your Torn API key';
-      const custom = `<p>Arbitrage needs a key that can read your log. Make a <b>custom</b> key with only what it needs:</p><p><a href="${esc(KEYURL)}">Create the key for me ↗</a><br><span class="tfp-sub">Opens Torn already filled in. Tap Create, copy the key, then come back and paste it.</span></p><input class="tfp-in" id="tfp-swkey" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore style="-webkit-text-security:disc" placeholder="Paste your key"><div class="tfp-gap"></div><button class="tfp-b" data-act="swcheck">${S.busy ? 'Checking…' : 'Check key'}</button>`;
+      const custom = `<p>Arbitrage needs a key that can read your log. Make a <b>custom</b> key with only what it needs:</p><p><a href="${esc(KEYURL)}">Create the key for me ↗</a><br><span class="tfp-sub">Opens Torn already filled in. Tap Create, copy the key, then come back and paste it.</span></p>${keyHelpHtml()}<input class="tfp-in" id="tfp-swkey" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore style="-webkit-text-security:disc" placeholder="Paste your key"><div class="tfp-gap"></div><button class="tfp-b" data-act="swcheck">${S.busy ? 'Checking…' : 'Check key'}</button>`;
       if (IN_PDA) body = `<p>You're in Torn PDA. Use PDA's key, or a custom one.</p>` + opt('swpda', 'pda', 'Use my PDA key', 'Nothing to paste.', S.torn === 'pda') + opt('swcustom', 'custom', 'Use a custom key instead', 'Safer: only your log, item names and the list of log types.', S.torn === 'custom') + (S.torn === 'custom' ? custom : '');
       else body = custom;
       body += S.msg ? `<div class="tfp-msg ${S.tornOk ? 'tfp-pos' : 'tfp-warn'}">${esc(S.msg)}</div>` : (S.tornOk ? `<div class="tfp-msg tfp-pos">✓ Key saved${S.tornName ? ' for ' + esc(S.tornName) : ''}.</div>` : '');
