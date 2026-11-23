@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.182-beta
+// @version      0.1.183-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -32,7 +32,7 @@
  * Privacy and safety
  * - Read-only: it never performs game actions, clicks or purchases for you.
  * - Your data (trade history, settings, keys) is stored only on this device (script storage / browser storage).
- * - Your Torn API key (a Custom key with just the selections this script reads: user basic and log, torn items; Full Access also works but is not needed) is sent only to api.torn.com. A TornW3B key, if you add one, is sent only to weav3r.dev.
+ * - Your Torn API key (a Custom key with just the selections this script reads: user basic and log, torn items and log types; Full Access also works but is not needed) is sent only to api.torn.com. A TornW3B key, if you add one, is sent only to weav3r.dev.
  * - Receipt pages (tornexchange.com, weav3r.dev, z0cl.eu) are read only in your own browser when you open them; nothing is uploaded anywhere.
  * - Backup/restore is in Settings > Backup & troubleshooting. Deleting the key in Torn settings revokes access at once.
  *
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.182-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.183-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -361,7 +361,13 @@
   // Remove an id from here when its parser exists. Very frequent types with nothing to model (Halloween treats) are left out.
   const WATCH_IDS = [1302, 1303, 1403, 1500, 1501, 4001, 4320, 4322, 4500, 4510, 5530, 5600, 6401, 6505, 6728, 6732, 6733, 6745, 6746, 6747, 6748, 6749, 6751, 6753, 6797, 7011, 7605, 7900, 8170, 8930, 8980];
   const WATCH_SET = new Set(WATCH_IDS);
-  const requestIds = () => LOG_FILTER_IDS.concat(WATCH_IDS);
+  // Ids found by the daily log type refresh: types whose title the script already reads but whose id is not in LOG_FILTER_IDS (for example a renumbered or new variant).
+  const requestIds = () => { const x = (state.extraIds || []).filter(id => !LOG_FILTER_SET.has(id) && !WATCH_SET.has(id)); return LOG_FILTER_IDS.concat(x, WATCH_IDS); };
+  // Pure: from torn/logtypes, the ids the script should add. Refuses an absurdly large answer (a pattern gone too broad).
+  function extraIdsFromLogTypes(list) {
+    const extra = (list || []).filter(t => t && Number(t.id) > 0 && titleWanted(String(t.title || '')) && !LOG_FILTER_SET.has(Number(t.id))).map(t => Number(t.id));
+    return extra.length <= 40 ? extra : null;
+  }
   const LOG_WANTED = () => [/^Money (receive|send)/i, /^Trade (completed|items (incoming|outgoing)|money (incoming|outgoing))/i, /^Trade (cancel|expire|decline)/i, /^Item market (add|remove)$/i, /^Item (send|receive)$/i]
     .concat(LOG_RULES.map(r => r.re), [/^Museum exchange$/i, /^Points market (buy|sell)$/i, /^Points .*\buse$/i, /^Crime success item gain/i, /^Item use /i, /^Dump find$/i, /^Casino spin the wheel win item$/i, /^Crime use items for disposal$/i, /^Faction organized crimes lose items$/i]);
   const titleWanted = title => LOG_WANTED().some(re => re.test(title));
@@ -782,7 +788,7 @@
 
   /* ===================== Torn API ===================== */
   function getKey() { return (sget('apikey', '') || '') || (IN_PDA ? PDA_KEY : ''); }
-  const KEYURL = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Arbitrage&user=basic,log&torn=items,logcategories';
+  const KEYURL = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Arbitrage&user=basic,log&torn=items,logtypes';
   async function apiUrl(url) {
     const key = getKey();
     if (!key && !/[?&]key=/.test(url)) throw new Error('No API key set (Settings tab).');
@@ -875,6 +881,15 @@
     return added;
   }
   const now0 = () => Math.floor(Date.now() / 1000);
+  // Once a day (needs the key's torn log types selection; without it the call fails quietly and the built-in list stays in use).
+  async function refreshLogTypes() {
+    state.logTypesAt = now0();
+    try {
+      const extra = extraIdsFromLogTypes(((await api('torn/logtypes')) || {}).logtypes);
+      if (extra) { state.extraIds = extra; state.logTypesErr = null; } else state.logTypesErr = 'Log type list looked wrong, ignored.';
+    } catch (e) { state.logTypesErr = String(e.message || e).slice(0, 160); }
+    save();
+  }
   let syncRunning = false, progressText = '';
   // Leaving the tab (minimise, app switch) can freeze or kill the page: save the read position right away so Continue picks up exactly there.
   function flushNow() { if (syncRunning) { try { save(); } catch (e) { /* ignore */ } } }
@@ -889,6 +904,7 @@
     let added = 0, att = 0, last = null, weaverErr = '';
     const T0 = Date.now(), tm = {}, lap = k => { tm[k] = Math.round((Date.now() - T0) / 100) / 10; };
     const readLog = async () => { added += await readLogFully(); };
+    if (filterActive() && now0() - (state.logTypesAt || 0) > 86400) { try { await refreshLogTypes(); } catch (e) { /* optional */ } }
     setProgress(state.resume ? 'Continuing…' : 'Reading log…');
     // If the log read stops partway (rate limit, app switch, network), the newest entries are already saved, so receipts, PawnHub and Weaver still run on what has been read.
     let logErr = null;
@@ -1841,7 +1857,7 @@
       <table class="tfp-disc"><tr><td>Your data</td><td>Stays on this device. Not shared with anyone.</td></tr>
       <tr><td>What it does</td><td>Reads your own item log and item names to work out flip profit. Read-only; no game actions.</td></tr>
       <tr><td>Your key</td><td>Stored only on this device. Sent only to api.torn.com.</td></tr>
-      <tr><td>Key needs</td><td>Custom key: user basic, user log, torn items.</td></tr>
+      <tr><td>Key needs</td><td>Custom key: user basic, user log, torn items, torn log types (the last is optional: without it the script keeps its built-in list).</td></tr>
       <tr><td>Player names</td><td>Looked up once with your key when you open a row, then kept here.</td></tr>
       <tr><td>TornW3B key</td><td>Optional, for Weaver receipts. Stored here, sent only to weav3r.dev.</td></tr>
       <tr><td>PawnHub</td><td>Optional. Read when you open a receipt or the Balance page. If you add a PawnHub key (the Torn key you log in to PawnHub with), it is stored here and sent only to z0cl.eu. Without it, nothing is sent to PawnHub.</td></tr></table>
@@ -1927,7 +1943,7 @@
     } else if (cur === 'torn') {
       title = 'Your Torn API key';
       const custom = `<p>Arbitrage needs a key that can read your log. Make a <b>custom</b> key with only what it needs:</p><p><a href="${esc(KEYURL)}">Create the key for me ↗</a><br><span class="tfp-sub">Opens Torn already filled in. Tap Create, copy the key, then come back and paste it.</span></p><input class="tfp-in" id="tfp-swkey" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore style="-webkit-text-security:disc" placeholder="Paste your key"><div class="tfp-gap"></div><button class="tfp-b" data-act="swcheck">${S.busy ? 'Checking…' : 'Check key'}</button>`;
-      if (IN_PDA) body = `<p>You're in Torn PDA. Use PDA's key, or a custom one.</p>` + opt('swpda', 'pda', 'Use my PDA key', 'Nothing to paste.', S.torn === 'pda') + opt('swcustom', 'custom', 'Use a custom key instead', 'Safer: only your log and item names.', S.torn === 'custom') + (S.torn === 'custom' ? custom : '');
+      if (IN_PDA) body = `<p>You're in Torn PDA. Use PDA's key, or a custom one.</p>` + opt('swpda', 'pda', 'Use my PDA key', 'Nothing to paste.', S.torn === 'pda') + opt('swcustom', 'custom', 'Use a custom key instead', 'Safer: only your log, item names and the list of log types.', S.torn === 'custom') + (S.torn === 'custom' ? custom : '');
       else body = custom;
       body += S.msg ? `<div class="tfp-msg ${S.tornOk ? 'tfp-pos' : 'tfp-warn'}">${esc(S.msg)}</div>` : (S.tornOk ? `<div class="tfp-msg tfp-pos">✓ Key saved${S.tornName ? ' for ' + esc(S.tornName) : ''}.</div>` : '');
       body += '<div class="tfp-sub">Limited keys do not work.</div>';
@@ -2251,8 +2267,7 @@
       }
       else if (act === 'debug') {
         const tb = document.querySelector('#topHeaderBanner .toolbar, .header-buttons-wrapper');
-        let cats = null; try { cats = await api('torn/logcategories'); } catch (e) { cats = String(e.message || e); }
-        const sample = { version: VERSION, logFilter: { on: filterActive(), setting: sget('logFilter', true), offUntil: state.filterOffUntil || 0, why: state.filterWhy || null, ids: LOG_FILTER_IDS.length, watchIds: WATCH_IDS.length }, watched: state.watched || null, itemSample: state.itemSample || null, nameSample: state.nameSample || null, phApiSample: state.phApiSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, lastSyncDetail: state.lastSyncDetail || null, inboxWaiting: ui.inboxN || 0, nativeStorage: !!nat(), lastInbox: state.lastInbox || null, lastInboxDetail: state.lastInboxDetail || null, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, logCategories: cats, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
+        const sample = { version: VERSION, logFilter: { on: filterActive(), setting: sget('logFilter', true), offUntil: state.filterOffUntil || 0, why: state.filterWhy || null, ids: LOG_FILTER_IDS.length, watchIds: WATCH_IDS.length, extraIds: state.extraIds || [], logTypesAt: state.logTypesAt || 0, logTypesErr: state.logTypesErr || null }, watched: state.watched || null, itemSample: state.itemSample || null, nameSample: state.nameSample || null, phApiSample: state.phApiSample || null, itemValueCount: Object.keys(itemValues).length, storage: { hasGM, hasIDB, idbErr, boot: bootInfo, lastSaveOk, stateBytes: JSON.stringify(state).length, gmBytes: hasGM ? String((() => { try { return GM_getValue(NS + 'state') || ''; } catch (e) { return 'err'; } })()).length : null, lsBytes: (() => { try { return (localStorage.getItem(NS + 'state') || '').length; } catch (e) { return 'err'; } })() }, syncInfo: lastSyncInfo, lastSyncDetail: state.lastSyncDetail || null, inboxWaiting: ui.inboxN || 0, nativeStorage: !!nat(), lastInbox: state.lastInbox || null, lastInboxDetail: state.lastInboxDetail || null, lastError: state.lastError || null, resume: state.resume || null, txCount: Object.keys(state.txs).length, pendingCount: computeFlips(state.txs, flipOpts()).pending.length, rawEntries: lastRaw, seenTitles: state.seenTitles, seenExamples: state.seenExamples, lastSync: state.lastSync, sampleTxs: Object.values(state.txs).slice(-5), headerPath: tb ? [tb.tagName, tb.id, tb.className, tb.parentElement && tb.parentElement.className].join(' | ') : null };
         const ok = await copyText(JSON.stringify(sample, null, 1));
         ui.msg = ok ? 'Debug sample copied. Paste it to Claude.' : 'Could not copy. Sync first, then try again.';
       }
@@ -2437,7 +2452,7 @@
   }
 
   if (typeof module !== 'undefined') {
-    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, LOG_FILTER_IDS, WATCH_IDS, useGainTx, titleWanted, museumTx, pointsTx, rateEstimate, ratePause, clampRate, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
+    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, LOG_FILTER_IDS, WATCH_IDS, extraIdsFromLogTypes, useGainTx, titleWanted, museumTx, pointsTx, rateEstimate, ratePause, clampRate, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
   }
   if (typeof document !== 'undefined' && !globalThis.__TFP_TEST) init();
 })();

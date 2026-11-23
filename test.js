@@ -130,6 +130,15 @@ eq('pause between pages at 60/min', T.ratePause(60), 750);
   eq('watch ids are not types the script already reads', readTitles, []);
 }
 
+// Daily log type refresh: finds ids for titles the script reads that the built-in list lacks
+{
+  const lt = require('./fixtures/logtypes.json').logtypes;
+  eq('refresh finds nothing new on the current Torn list', T.extraIdsFromLogTypes(lt), []);
+  eq('refresh picks up a new id for a title the script reads', T.extraIdsFromLogTypes(lt.concat([{ id: 99991, title: 'Bazaar buy (v3)' }, { id: 99992, title: 'Brand new unrelated type' }])), [99991]);
+  eq('refresh ignores a broken answer', T.extraIdsFromLogTypes(lt.concat(Array.from({ length: 50 }, (_, i) => ({ id: 90000 + i, title: 'Item use thing ' + i })))), null);
+  eq('refresh copes with no list', T.extraIdsFromLogTypes(undefined), []);
+}
+
 // multi-item sell with receipt prices, per-item lines
 const tx2 = {
   a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 384, qty: 13, price: null }, { id: 215, qty: 191, price: null }], amount: 13 * 60000 + 191 * 400 },
