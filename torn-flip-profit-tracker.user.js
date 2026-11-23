@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.181-beta
+// @version      0.1.180-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.181-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.180-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -356,11 +356,6 @@
   // LOG_FILTER_IDS is derived from Torn's torn/logtypes list by running LOG_WANTED over every title (test.js re-checks it against fixtures/logtypes.json).
   const LOG_FILTER_IDS = [1103, 1104, 1110, 1111, 1112, 1113, 1220, 1221, 1225, 1226, 1404, 2010, 2020, 2030, 2040, 2050, 2060, 2070, 2080, 2090, 2100, 2101, 2102, 2105, 2110, 2120, 2121, 2130, 2140, 2150, 2160, 2170, 2180, 2190, 2200, 2201, 2210, 2211, 2220, 2221, 2230, 2231, 2240, 2241, 2250, 2251, 2260, 2261, 2270, 2271, 2280, 2281, 2290, 2291, 2295, 2300, 2301, 2310, 2311, 2320, 2321, 2325, 2330, 2340, 2350, 2360, 2370, 2375, 2380, 2381, 2390, 2400, 2405, 2406, 2407, 2410, 2420, 2430, 2440, 2441, 2442, 2450, 2460, 2470, 2480, 2490, 2500, 2501, 2510, 2520, 2525, 2530, 2531, 2535, 2600, 2605, 2610, 2611, 2612, 2613, 2615, 2620, 4102, 4103, 4200, 4201, 4210, 4211, 4220, 4410, 4411, 4412, 4413, 4420, 4430, 4440, 4441, 4445, 4446, 4800, 4810, 4900, 4905, 4910, 4955, 5010, 5011, 5725, 6769, 7000, 8981, 8982, 8983, 8984, 8985, 8986, 8987, 8988, 8989, 9020, 9304];
   const LOG_FILTER_SET = new Set(LOG_FILTER_IDS);
-  // Types the script does not read yet. They are requested only so the first raw entry of each lands in the debug sample (state.seenExamples), then ignored.
-  // Remove an id once its parser exists. Types you have none of simply return nothing.
-  const SAMPLE_IDS = [7011, 8377, 5530, 6505, 6401, 2536, 2548, 6728, 6732, 6733, 6745, 6746, 6747, 6748, 6749, 6797, 4500, 4510, 1500, 1501, 7605];
-  const SAMPLE_SET = new Set(SAMPLE_IDS);
-  const requestIds = () => LOG_FILTER_IDS.concat(SAMPLE_IDS);
   const LOG_WANTED = () => [/^Money (receive|send)/i, /^Trade (completed|items (incoming|outgoing)|money (incoming|outgoing))/i, /^Trade (cancel|expire|decline)/i, /^Item market (add|remove)$/i, /^Item (send|receive)$/i]
     .concat(LOG_RULES.map(r => r.re), [/^Museum exchange$/i, /^Points market (buy|sell)$/i, /^Points .*\buse$/i, /^Crime success item gain/i, /^Item use /i, /^Dump find$/i, /^Crime use items for disposal$/i, /^Faction organized crimes lose items$/i]);
   const titleWanted = title => LOG_WANTED().some(re => re.test(title));
@@ -888,7 +883,7 @@
     // The filtered request itself must also return every wanted entry the full read just showed (catches Torn ignoring or truncating the id list).
     const wantedIds = arr.filter(e => titleWanted((e.details && e.details.title) || e.title || '')).map(e => e.id);
     if (wantedIds.length) {
-      const got = new Set(normalizeLog((await api('user/log', { limit: 100, log: requestIds().join(',') })).log).map(e => e.id));
+      const got = new Set(normalizeLog((await api('user/log', { limit: 100, log: LOG_FILTER_IDS.join(',') })).log).map(e => e.id));
       const lost = wantedIds.filter(id => !got.has(id));
       if (lost.length) { filterOff('The filtered read left out ' + lost.length + ' of ' + wantedIds.length + ' entries the full read had.', 24); state.lastSync = Math.min(state.lastSync || now, now - 2 * 86400); return true; }
     }
@@ -973,7 +968,7 @@
     const fetchPage = async to => {
       for (let t = 0; ; t++) {
         const filt = filterActive();
-        try { return await api('user/log', Object.assign({ from, limit: 100 }, to ? { to } : {}, filt ? { log: requestIds().join(',') } : {})); }
+        try { return await api('user/log', Object.assign({ from, limit: 100 }, to ? { to } : {}, filt ? { log: LOG_FILTER_IDS.join(',') } : {})); }
         catch (e) {
           if (e.rate && t < 3) { await sleep(15000); continue; }
           // Torn refused the filtered request (not a key or rate problem): read every entry instead and stay on full reads for a day.
@@ -1007,8 +1002,6 @@
           state.moneyEvents = state.moneyEvents || {};
           state.moneyEvents[e.id] = { ts: e.timestamp, dir: /receive/i.test(title) ? 'in' : 'out', cp: e.data.sender != null ? e.data.sender : (e.data.receiver != null ? e.data.receiver : (e.data.user != null ? e.data.user : null)), amount: e.data.money };
         }
-        { const did = Number(e.details && e.details.id);
-          if (SAMPLE_SET.has(did)) { state.seenExamples = state.seenExamples || {}; if (title && !state.seenExamples[title]) state.seenExamples[title] = e; return; } }
         if (/^Trade /i.test(title)) {
           const tid = /^Trade (completed|items (incoming|outgoing)|money (incoming|outgoing))/i.test(title) ? tradeIdOf(e) : null;
           if (tid) {
