@@ -1062,7 +1062,7 @@
       } catch (e) {
         if (e && e.status === 403) { // refused: stop asking, and let receipt pages opened in Torn be read directly again
           sset('w3bDenied', sget('w3bkey', '')); await w3bFlagSet(false);
-          weaverErr = 'TornW3B refused your key (HTTP 403: its receipt list may need TornW3B Premium). Weaver is paused. Receipts you open in Torn are now read directly; replace the key in Settings to try again.';
+          weaverErr = 'TornW3B refused the request (HTTP 403: the key was not accepted for the receipt list, or the request was blocked). Weaver is paused. Receipts you open in Torn are now read directly; replace the key in Settings to try again.';
         } else weaverErr = String(e.message || e);
       }
     };
@@ -1293,7 +1293,7 @@
     const r = await httpRetry(url, { 'X-API-Key': sget('w3bkey', ''), Accept: 'application/json' });
     if (r && r.status === 401) throw new Error('TornW3B did not accept your key (HTTP 401). Check it in Settings.');
     if (r && r.status === 429) throw new Error('TornW3B is limiting requests. Wait a minute and tap again.');
-    if (!r || r.status >= 400) throw Object.assign(new Error('TornW3B answered HTTP ' + (r && r.status) + (r && r.status === 403 ? ' (access denied: the trades endpoint may need Premium)' : '')), { status: r && r.status });
+    if (!r || r.status >= 400) throw Object.assign(new Error('TornW3B answered HTTP ' + (r && r.status) + (r && r.status === 403 ? ' (access denied: the key was not accepted for this list, or the request was blocked)' : '')), { status: r && r.status });
     try { return JSON.parse(r.text); } catch (e) { throw new Error('TornW3B sent something I could not read.'); }
   }
   // A read-only health check of the Weaver import: is the API answering, does what it lists match your trades, do the amounts agree with your log.
@@ -2000,7 +2000,7 @@
     return `<div class="tfp-sub"><a href="#" data-act="runsetup">Run setup again</a></div><div class="tfp-row"><b>This device's data</b>${dataSummaryHtml()}</div>${inboxHtml()}${keyBox}${phBox}<div class="tfp-row"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-act="logfilter" ${sget('logFilter', true) === false ? 'checked' : ''}> <b>Read every log type (slower)</b></label><div class="tfp-sub">Normally the sync asks Torn only for the entry types it uses (trades, market, bazaar, sends, shops, crimes, museum, points), which is much faster. Tick this to read everything, for troubleshooting.${state.filterWhy && sget('logFilter', true) !== false && Math.floor(Date.now() / 1000) < (state.filterOffUntil || 0) ? ' <span class="tfp-warn">Paused for now: ' + esc(state.filterWhy) + '</span>' : ''}</div></div><div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
       <input class="tfp-in" id="tfp-days" data-act="setting" inputmode="numeric" value="${esc(sget('startDays', 30))}">${rateBlockHtml()}
       <div class="tfp-sub">Sync from the Profit tab. Last sync: ${state.syncedAt || state.lastSync ? fdate(state.syncedAt || state.lastSync) : 'never'} · ${Object.keys(state.txs).length} records</div>
-      <div class="tfp-gap"></div><div class="tfp-sub">TornW3B key (optional, for Weaver receipts). Use the key from TornW3B, not your Torn key.</div>${isW3bDenied(sget('w3bDenied', ''), sget('w3bkey', '')) ? '<div class="tfp-msg tfp-warn">TornW3B refused this key (HTTP 403, its receipt list may need TornW3B Premium), so Weaver is paused. Receipts you open in Torn are read directly instead. Paste a different key to try again.</div>' : ''}
+      <div class="tfp-gap"></div><div class="tfp-sub">TornW3B key (optional, for Weaver receipts). Use the key from TornW3B, not your Torn key.</div>${isW3bDenied(sget('w3bDenied', ''), sget('w3bkey', '')) ? '<div class="tfp-msg tfp-warn">TornW3B refused this key (HTTP 403: not accepted for the receipt list, or the request was blocked), so Weaver is paused. Receipts you open in Torn are read directly instead. Paste a different key to try again.</div>' : ''}
       <input class="tfp-in" id="tfp-w3b" type="password" autocomplete="off" placeholder="${sget('w3bkey', '') ? 'TornW3B key saved (hidden). Paste a new one to replace.' : 'Paste your TornW3B key'}"><div class="tfp-gap"></div>
       <button class="tfp-b" data-act="savew3b">Save TornW3B key</button> ${sget('w3bkey', '') ? '<button class="tfp-b" data-act="clearw3b">Remove</button> <button class="tfp-b" data-act="w3bcheck">' + (ui.busy ? 'Checking…' : 'Check Weaver') + '</button>' : ''}
       ${ui.w3bReport ? '<div class="tfp-msg">' + ui.w3bReport.map(l => '<div class="tfp-sub" style="color:#ccc">' + esc(l) + '</div>').join('') + '</div>' : ''}
