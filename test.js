@@ -50,6 +50,39 @@ eq('rate estimate at 20/min', T.rateEstimate(20), '5 min');
 eq('rate is clamped to 20..80 in steps of 10', [T.clampRate(5), T.clampRate(100), T.clampRate(64), T.clampRate(undefined)], [20, 80, 60, 60]);
 eq('pause between pages at 60/min', T.ratePause(60), 750);
 
+// Museum exchange and points market
+{
+  const names = ['Jaguar Plushie', 'Lion Plushie', 'Panda Plushie', 'Monkey Plushie', 'Chamois Plushie', 'Wolverine Plushie', 'Nessie Plushie', 'Red Fox Plushie', 'Camel Plushie', 'Kitten Plushie', 'Teddy Bear Plushie', 'Sheep Plushie', 'Stingray Plushie'];
+  const by = {}; names.forEach((n, i) => { by[n.toLowerCase()] = 100 + i; });
+  const ex = { id: 'M1', timestamp: 1795428718, details: { title: 'Museum exchange' }, data: { set: 'Plushie Set', quantity: 592, points_received: 5920 } };
+  const m = T.museumTx(ex, by);
+  eq('plushie set uses one of each of 13 items per set', [m.tx.items.length, m.tx.items[0].qty, m.tx.pointsOut, m.tx.sets], [13, 592, 5920, 592]);
+  eq('unknown set is reported', T.museumTx({ id: 'M2', timestamp: 1, details: { title: 'Museum exchange' }, data: { set: 'Coin Set', quantity: 1, points_received: 10 } }, by).unknown, 'set: Coin Set');
+  eq('missing item names are reported, not guessed', !!T.museumTx(ex, {}).unknown, true);
+  const sell = T.pointsTx({ id: 'P1', timestamp: 1795441292, details: { title: 'Points market sell' }, data: { buyer: 2784250, quantity: 5000, cost_each: 33350, cost_total: 166750000, listing_id: 1 } });
+  eq('points sale parses', [sell.dir, sell.channel, sell.items[0].qty, sell.amount], ['sell', 'points', 5000, 166750000]);
+  const use = T.pointsTx({ id: 'P2', timestamp: 5, details: { title: 'Points energy refill use' }, data: { points_used: 30, energy_increased: 150 } });
+  eq('refill use parses as points used', [use.dir, use.items[0].qty], ['use', 30]);
+  eq('other points titles are ignored', T.pointsTx({ id: 'P3', timestamp: 5, details: { title: 'Points market add' }, data: { quantity: 5 } }), null);
+  // cost carries from items to points, refills use points without profit, sale gets the carried cost
+  const tx = {
+    a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 1, qty: 2, price: null }], amount: 200 },
+    b: { id: 'b', ts: 2, dir: 'buy', items: [{ id: 2, qty: 2, price: null }], amount: 400 },
+    c: { id: 'c', ts: 3, dir: 'convert', channel: 'museum', items: [{ id: 1, qty: 2 }, { id: 2, qty: 2 }], pointsOut: 20, sets: 2, setName: 'x', amount: null },
+    u: { id: 'u', ts: 4, dir: 'use', channel: 'points', items: [{ id: -1, qty: 5 }], amount: 0 },
+    s: { id: 's', ts: 5, dir: 'sell', channel: 'points', items: [{ id: -1, qty: 15, price: null }], amount: 900 }
+  };
+  const r = T.computeFlips(tx);
+  eq('exchange row carries the item cost', [r.converts[0].cost, r.converts[0].points], [600, 20]);
+  eq('points sale profit uses the carried cost', r.flips[0].profit, 900 - 15 * 30);
+  eq('refill use is not a pending item or a flip', [r.pending.length, r.flips.length], [0, 1]);
+  const r2 = T.computeFlips({ c: tx.c, s: { id: 's', ts: 5, dir: 'sell', channel: 'points', items: [{ id: -1, qty: 10, price: null }], amount: 500 } });
+  eq('exchange with no earlier buys has unknown cost and its sale is not counted', [r2.converts[0].cost, r2.flips[0].profit], [null, null]);
+  // bought points join the same stock
+  const r3 = T.computeFlips({ b: { id: 'b', ts: 1, dir: 'buy', channel: 'points', items: [{ id: -1, qty: 10, price: null }], amount: 300 }, s: { id: 's', ts: 2, dir: 'sell', channel: 'points', items: [{ id: -1, qty: 10, price: null }], amount: 500 } });
+  eq('bought points sell at their cost', r3.flips[0].profit, 200);
+}
+
 // multi-item sell with receipt prices, per-item lines
 const tx2 = {
   a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 384, qty: 13, price: null }, { id: 215, qty: 191, price: null }], amount: 13 * 60000 + 191 * 400 },

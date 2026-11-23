@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.177-beta
+// @version      0.1.178-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.177-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.178-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -351,6 +351,7 @@
   /* ===================== ledger engine (pure) ===================== */
   // A send valued at $0 by hand is a gift too (covers gifts saved before the gift flag existed).
   const isGift = tx => !tx.free && (tx.dir === 'sell' && (tx.gift || (tx.channel === 'send' && tx.src === 'manual' && tx.amount === 0))) || (tx.dir === 'buy' && (tx.gift || (tx.channel === 'recv' && tx.src === 'manual' && tx.amount === 0)));
+  const POINTS_ID = -1; // points are tracked like an item with this id
   function computeFlips(txsObj, opts) {
     const fee = (opts && opts.marketFee) || 0;
     const vals = (opts && opts.values) || {};
@@ -358,7 +359,7 @@
     const net = tx => (tx.channel === 'market' && tx.dir === 'sell' && tx.src === 'log') ? tx.amount * (1 - fee) : tx.amount;
     const txs = Object.values(txsObj).sort((a, b) => (a.ts - b.ts) || String(a.id).localeCompare(String(b.id)));
     const lots = {};
-    const flips = [], pending = [];
+    const flips = [], pending = [], converts = [];
 
     function addLots(tx) {
       const allPriced = tx.items.every(i => i.price != null);
@@ -388,6 +389,15 @@
 
     for (const tx of txs) {
       if (!tx.items || !tx.items.length) continue;
+      if (tx.dir === 'convert') { // museum set exchange: the items leave stock and become points that carry their cost
+        const cons = tx.items.map(it => consume(it.id, it.qty));
+        const known = cons.every(c => c.cost != null && c.unmatched === 0);
+        const cost = known ? cons.reduce((a, c) => a + c.cost, 0) : null, pts = tx.pointsOut || 0;
+        if (pts > 0) (lots[POINTS_ID] = lots[POINTS_ID] || []).push({ qty: pts, unit: known ? cost / pts : null, ts: tx.ts });
+        converts.push({ tx, cost, unmatched: cons.reduce((a, c) => a + c.unmatched, 0), points: pts });
+        continue;
+      }
+      if (tx.dir === 'use') { tx.items.forEach(it => consume(it.id, it.qty)); continue; } // points spent on refills: leave stock, no profit effect
       if (tx.dir === 'buy') { if (isGift(tx)) continue; /* received as a gift: not stock, not a buy */ addLots(tx); if (tx.amount == null) pending.push(tx); continue; }
       if (tx.dir !== 'sell') { pending.push(tx); continue; }
 
@@ -417,7 +427,7 @@
       flips.push({ tx, lines, profit, costUnknown, unmatched });
     }
     const total = flips.reduce((s, f) => s + (f.profit || 0), 0);
-    return { flips, pending, total, open: lots };
+    return { flips, pending, converts, total, open: lots };
   }
 
   /* ===================== receipt <-> trade matching (pure) ===================== */
@@ -536,6 +546,34 @@
     if (!r) r = parseCrimeItems(crimeText(e), byName);
     if (!r || (!r.items.length && !r.unknown.length)) return null;
     return { unknown: r.unknown, tx: r.items.length ? { id: 'crime:' + e.id, ts: e.timestamp, dir: 'buy', channel: 'crime', cp: null, tradeId: null, items: r.items, amount: 0, src: 'log', locked: true, free: true, title: title || 'Crime' } : null };
+  }
+  // Museum set exchanges and the points market. A set is one of each listed item; the log gives the number of sets and the points received.
+  const MUSEUM_SETS = {
+    'plushie set': { word: 'plushie set', names: ['Jaguar Plushie', 'Lion Plushie', 'Panda Plushie', 'Monkey Plushie', 'Chamois Plushie', 'Wolverine Plushie', 'Nessie Plushie', 'Red Fox Plushie', 'Camel Plushie', 'Kitten Plushie', 'Teddy Bear Plushie', 'Sheep Plushie', 'Stingray Plushie'] },
+    'exotic flower set': { word: 'exotic flower set', names: ['Dahlia', 'Orchid', 'African Violet', 'Cherry Blossom', 'Peony', 'Ceibo Flower', 'Edelweiss', 'Crocus', 'Heather', 'Tribulus Omanense', 'Banana Orchid'] }
+  };
+  // Returns { tx } for a recognised exchange, { unknown } for a set or item name we cannot resolve, or null for any other entry.
+  function museumTx(e, byName) {
+    const title = (e.details && e.details.title) || e.title || '';
+    if (!/^Museum exchange$/i.test(title) || !e.data) return null;
+    const d = e.data, def = MUSEUM_SETS[String(d.set || '').toLowerCase()], sets = Number(d.quantity), pts = Number(d.points_received);
+    if (!def) return { unknown: 'set: ' + (d.set || '?') };
+    if (!(sets > 0) || !(pts > 0)) return null;
+    const ids = def.names.map(n => byName[n.toLowerCase()]), missing = def.names.filter((n, i) => !ids[i]);
+    if (missing.length) return { unknown: 'items not in the item list: ' + missing.join(', ') };
+    return { tx: { id: 'museum:' + e.id, ts: e.timestamp, dir: 'convert', channel: 'museum', cp: null, tradeId: null, items: ids.map((id, i) => ({ id, qty: sets, name: def.names[i], price: null })), pointsOut: pts, sets, setName: def.word, amount: null, src: 'log', locked: true, title: 'Museum exchange' } };
+  }
+  // Points market buy/sell become buys/sells of the "Points" item; points spent on refills leave stock without affecting profit.
+  function pointsTx(e) {
+    const title = (e.details && e.details.title) || e.title || '', d = e.data || {};
+    const it = qty => [{ id: POINTS_ID, qty, name: 'Points', price: null }];
+    let m = title.match(/^Points market (buy|sell)$/i);
+    if (m && Number(d.quantity) > 0) {
+      const qty = Number(d.quantity), amount = typeof d.cost_total === 'number' ? d.cost_total : (typeof d.cost_each === 'number' ? d.cost_each * qty : null);
+      return { id: 'pts:' + e.id, ts: e.timestamp, dir: m[1].toLowerCase(), channel: 'points', cp: d.buyer != null ? d.buyer : (d.seller != null ? d.seller : null), tradeId: null, items: it(qty), amount, src: amount != null ? 'log' : null, locked: false, each: typeof d.cost_each === 'number' ? d.cost_each : null, title };
+    }
+    if (/^Points .*\buse$/i.test(title) && Number(d.points_used) > 0) return { id: 'pts:' + e.id, ts: e.timestamp, dir: 'use', channel: 'points', cp: null, tradeId: null, items: it(Number(d.points_used)), amount: 0, src: 'log', locked: true, title };
+    return null;
   }
   function normalizeLog(log) {
     if (!log) return [];
@@ -711,7 +749,7 @@
   // PawnHub users get their sends valued from PawnHub; everyone else leaves plain sends empty (they leave stock but are not counted and never nag).
   const usesPH = () => { const v = sget('usePH', null); return v == null ? !!state.pawnhubSince : !!v; };
   const flipOpts = () => ({ marketFee: 0, values: itemValues, skipUnvaluedSends: !usesPH() }); // Torn's market-sale log amount is already after the fee
-  const nameOf = id => itemNames[id] || ('Item ' + id);
+  const nameOf = id => id === POINTS_ID ? 'Points' : (itemNames[id] || ('Item ' + id));
 
   /* ===================== Torn API ===================== */
   function getKey() { return (sget('apikey', '') || '') || (IN_PDA ? PDA_KEY : ''); }
@@ -932,6 +970,10 @@
           state.sendParts[e.id] = { ts: e.timestamp, kind: /send/i.test(title) ? 'send' : 'recv', cp: e.data.receiver != null ? e.data.receiver : (e.data.sender != null ? e.data.sender : null), items: pickItems(e.data).map(i => ({ id: i.id, qty: i.qty })), msg: String(e.data.message || '').slice(0, 80) };
           return;
         }
+        { const mu = museumTx(e, byName);
+          if (mu) { if (mu.tx) { if (!state.txs[mu.tx.id]) { state.txs[mu.tx.id] = mu.tx; added++; } } else if (mu.unknown) { state.museumUnknown = state.museumUnknown || {}; state.museumUnknown[mu.unknown] = (state.museumUnknown[mu.unknown] || 0) + 1; } return; }
+          const pt = pointsTx(e);
+          if (pt) { if (!state.txs[pt.id]) { state.txs[pt.id] = pt; added++; } return; } }
         if (!/^Item (market|abroad|shop)/i.test(title)) { // crime check only for titles that are not already item-trade rules
           const cr = crimeTx(e, byName);
           if (cr) {
@@ -1402,7 +1444,7 @@
   const fdate = ts => { const d = new Date(ts * 1000); return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' }) + ' ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' }) + ' TCT'; };
   const itemSummary = tx => tx.items.slice(0, 5).map(i => i.qty + '× ' + esc(i.name || nameOf(i.id))).join(', ') + (tx.items.length > 5 ? ' + ' + (tx.items.length - 5) + ' more' : '') + (tx.count > 1 ? ' · ' + tx.count + ' sends' : '');
   const tradeTag = tx => tx.tradeId ? ' · #' + tx.tradeId : '';
-  const chanLabel = c => ({ market: 'Market', bazaar: 'Bazaar', trade: 'Trade', send: 'Send', recv: 'Received', abroad: 'Abroad', shop: 'Shop', crime: 'Crime' }[c] || c);
+  const chanLabel = c => ({ market: 'Market', bazaar: 'Bazaar', trade: 'Trade', send: 'Send', recv: 'Received', abroad: 'Abroad', shop: 'Shop', crime: 'Crime', museum: 'Museum', points: 'Points' }[c] || c);
 
   // Profit ranges are in TCT (UTC) days, like the log. Presets, single days and a from-to range.
   const dayStr = ts => new Date(ts * 1000).toISOString().slice(0, 10);
@@ -1451,7 +1493,7 @@
   const dayLabel = ts => new Date(ts * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
   const sgn = n => (n >= 0 ? '+' : '−') + fmt(Math.abs(n));
   const dl = (a, b, sep) => `<div class="tfp-dl${sep ? ' sep' : ''}"><span>${a}</span><span>${b}</span></div>`;
-  const TAGCLS = { trade: 'trade', market: 'market', bazaar: 'market', abroad: 'market', send: 'sent', recv: 'sent', shop: 'sent', crime: 'sent' };
+  const TAGCLS = { trade: 'trade', market: 'market', bazaar: 'market', abroad: 'market', send: 'sent', recv: 'sent', shop: 'sent', crime: 'sent', museum: 'sent', points: 'market' };
   const rcSource = u => /weav3r/i.test(u || '') ? 'Weaver' : /tornexchange/i.test(u || '') ? 'TornExchange' : /z0cl/i.test(u || '') ? 'PawnHub' : 'Receipt';
   const safeUrl = u => /^https:\/\//i.test(u || '') ? u : null;
   const titleOf = (tx, verb) => verb + ' ' + ((tx.items || []).length === 1 ? tx.items[0].qty + '× ' + esc(tx.items[0].name || nameOf(tx.items[0].id)) : (tx.items || []).length + ' items');
@@ -1477,7 +1519,17 @@
       if (got) { save(); if (ui.open) render(); }
     } finally { namesBusy = false; }
   }
+  function convertHtml(e) {
+    const tx = e.tx, c = e.c, k = 'tx_' + tx.id, open = !!ui[k];
+    const amt = c.cost != null ? `<span class="tfp-amt tfp-sub" style="margin:0">cost ${fmt(c.cost)}</span>` : '<span class="tfp-amt tfp-warn" style="margin:0">cost unknown</span>';
+    let h = `<a href="#" class="tfp-tl" data-act="toggle" data-v="${esc(k)}"><div class="tm">${hhmm(tx.ts)}</div><div class="gr"><div class="tt"><span class="tfp-tag sent">${esc(chanLabel(tx.channel))}</span>Converted ${tx.sets.toLocaleString()} ${esc(tx.setName)}${tx.sets === 1 ? '' : 's'} into ${c.points.toLocaleString()} points</div><div class="tfp-sub">${open ? 'tap to close' : 'tap for details'}</div></div>${amt}</a>`;
+    if (!open) return h;
+    let d = dl('Sets handed in', tx.sets.toLocaleString()) + dl('Points received', c.points.toLocaleString()) + dl('Cost of the items', c.cost != null ? '<b>' + fmt(c.cost) + '</b>' : '?') + (c.cost != null && c.points ? dl('Cost per point', fmt(Math.round(c.cost / c.points))) : '');
+    d += '<div class="tfp-sub">' + (c.cost != null ? 'No profit yet: the cost moves onto the points and counts when you sell them.' : c.unmatched + ' item(s) had no earlier buy in your data, so these points have no known cost and their sale will show as not counted. A longer look-back (Settings, then Re-sync from start) may find the buys.') + '</div>';
+    return h + '<div class="tfp-det">' + d + '</div>';
+  }
   function entryHtml(e) {
+    if (e.kind === 'convert') return convertHtml(e);
     const tx = e.tx, k = 'tx_' + tx.id, open = !!ui[k], f = e.f;
     const amt = { sale: `<span class="tfp-amt ${pnlCls(f && f.profit)}">${f && f.profit != null ? sgn(f.profit) : ''}</span>`, skip: '<span class="tfp-amt tfp-warn">not counted</span>', pend: `<span class="tfp-amt tfp-warn">${tx.dir ? 'needs value' : 'both ways'}</span>`, buy: `<span class="tfp-amt tfp-sub" style="margin:0">−${fmt(tx.amount)}</span>`, gift: '<span class="tfp-amt tfp-sub" style="margin:0">gift</span>' }[e.kind];
     const verb = e.kind === 'buy' ? 'Bought' : e.kind === 'gift' ? (tx.dir === 'buy' ? 'Got' : 'Gave') : tx.dir === 'buy' ? 'Bought' : tx.dir ? 'Sold' : 'Items moved';
@@ -1556,6 +1608,9 @@
       ['shop|buy', o => 'Bought ' + it(o) + ' from shops'],
       ['abroad|buy', o => 'Bought ' + it(o) + ' abroad'],
       ['abroad|sell', o => 'Sold ' + it(o) + ' abroad'],
+      ['museum|convert', o => 'Converted sets into points in ' + cnt(o, 'exchange')],
+      ['points|sell', o => 'Sold ' + b(o.q.toLocaleString()) + ' points on the points market'],
+      ['points|buy', o => 'Bought ' + b(o.q.toLocaleString()) + ' points on the points market'],
       ['crime|buy', o => 'Got ' + it(o) + ' from crimes']
     ];
     S.forEach(x => { if (m[x[0]]) L.push('<div class="tfp-act">' + x[1](m[x[0]]) + '</div>'); });
@@ -1577,6 +1632,7 @@
     const entries = [];
     flips.forEach(f => { if (f.profit != null) entries.push({ tx: f.tx, kind: 'sale', f }); else if (!ack[f.tx.id]) entries.push({ tx: f.tx, kind: 'skip', f }); });
     res.pending.filter(t => inR(t.ts) && !ack[t.id]).forEach(tx => entries.push({ tx, kind: 'pend' }));
+    (res.converts || []).filter(c => inR(c.tx.ts)).forEach(c => entries.push({ tx: c.tx, kind: 'convert', c }));
     Object.values(state.txs).forEach(t => {
       if (!inR(t.ts) || !t.items || !t.items.length) return;
       if (isGift(t)) { if (!ack[t.id]) entries.push({ tx: t, kind: 'gift' }); }
@@ -2340,7 +2396,7 @@
   }
 
   if (typeof module !== 'undefined') {
-    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, rateEstimate, ratePause, clampRate, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
+    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, museumTx, pointsTx, rateEstimate, ratePause, clampRate, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
   }
   if (typeof document !== 'undefined' && !globalThis.__TFP_TEST) init();
 })();
