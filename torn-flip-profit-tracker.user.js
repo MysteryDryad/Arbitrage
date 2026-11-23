@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.178-beta
+// @version      0.1.179-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.178-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.179-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -393,18 +393,20 @@
         let unit = null;
         if (allPriced) unit = i.price;
         else if (tx.amount != null) unit = tx.amount * w[idx] / wsum / (i.qty || 1);
-        (lots[i.id] = lots[i.id] || []).push({ qty: i.qty, unit, ts: tx.ts });
+        (lots[i.id] = lots[i.id] || []).push({ qty: i.qty, unit, ts: tx.ts, bought: !tx.free }); // free = crime drops, finds and wins
       });
     }
-    function consume(itemId, qty) {
+    // boughtOnly: items used up (and points spent) only take stock that was bought, never free finds or drops.
+    function consume(itemId, qty, boughtOnly) {
       const q = lots[itemId] || [];
       let need = qty, cost = 0, unknown = false, matched = 0;
-      while (need > 0 && q.length) {
-        const lot = q[0];
+      for (let i = 0; i < q.length && need > 0;) {
+        const lot = q[i];
+        if (boughtOnly && !lot.bought) { i++; continue; }
         const take = Math.min(lot.qty, need);
         if (lot.unit == null) unknown = true; else cost += take * lot.unit;
         lot.qty -= take; need -= take; matched += take;
-        if (lot.qty <= 0) q.shift();
+        if (lot.qty <= 0) q.splice(i, 1);
       }
       return { cost: unknown ? null : cost, matched, unmatched: need };
     }
@@ -415,11 +417,11 @@
         const cons = tx.items.map(it => consume(it.id, it.qty));
         const known = cons.every(c => c.cost != null && c.unmatched === 0);
         const cost = known ? cons.reduce((a, c) => a + c.cost, 0) : null, pts = tx.pointsOut || 0;
-        if (pts > 0) (lots[POINTS_ID] = lots[POINTS_ID] || []).push({ qty: pts, unit: known ? cost / pts : null, ts: tx.ts });
+        if (pts > 0) (lots[POINTS_ID] = lots[POINTS_ID] || []).push({ qty: pts, unit: known ? cost / pts : null, ts: tx.ts, bought: true });
         converts.push({ tx, cost, unmatched: cons.reduce((a, c) => a + c.unmatched, 0), points: pts });
         continue;
       }
-      if (tx.dir === 'use') { tx.items.forEach(it => consume(it.id, it.qty)); continue; } // points spent on refills: leave stock, no profit effect
+      if (tx.dir === 'use') { tx.items.forEach(it => consume(it.id, it.qty, true)); continue; } // points spent on refills: leave stock, no profit effect
       if (tx.dir === 'buy') { if (isGift(tx)) continue; /* received as a gift: not stock, not a buy */ addLots(tx); if (tx.amount == null) pending.push(tx); continue; }
       if (tx.dir !== 'sell') { pending.push(tx); continue; }
 
@@ -803,8 +805,8 @@
     const u = url + (url.includes('?') ? '&' : '?') + (/[?&]key=/.test(url) ? '' : 'key=' + encodeURIComponent(key));
     const r = await httpRetry(u);
     let j; try { j = JSON.parse(r.text); } catch (e) { throw new Error('Bad API response (HTTP ' + (r && r.status) + ')'); }
-    if (j && j.error && j.error.code === 16) throw new Error('Your API key does not have enough access. Reading your log needs a Custom key with the user log ticked (Settings > Create the key for me), or a Full Access key; a Limited Access key is refused.');
-    if (j && j.error && j.error.code === 2) throw new Error('Torn rejected the API key as incorrect. Check it in Settings.');
+    if (j && j.error && j.error.code === 16) throw Object.assign(new Error('Your API key does not have enough access. Reading your log needs a Custom key with the user log ticked (Settings > Create the key for me), or a Full Access key; a Limited Access key is refused.'), { code: 16 });
+    if (j && j.error && j.error.code === 2) throw Object.assign(new Error('Torn rejected the API key as incorrect. Check it in Settings.'), { code: 2 });
     if (j && j.error && j.error.code === 5) { const er = new Error('Torn is limiting requests (too many in one minute). Progress is saved and will continue on the next sync.'); er.rate = true; throw er; }
     if (j && j.error) { const er = new Error('Torn API: ' + (j.error.error || j.error.code) + ' (code ' + j.error.code + ')'); er.code = j.error.code; throw er; }
     return j;
@@ -2136,17 +2138,18 @@
   }
   // Quiet sync every 5 minutes while a Torn page is open (even with the panel closed). A userscript cannot run with no Torn page open.
   const BG_EVERY = 5 * 60, BG_LOCK = 'tfp_bglock';
-  let bgFailAt = 0;
+  let bgFailAt = 0, keyBadFor = ''; // keyBadFor: the key Torn last refused; background syncs stop until the key changes or a manual sync works
+  const KEY_ERRORS = [1, 2, 10, 13, 16, 18];
   // Decides what a background tick should do: 'catchup' continues a first or half-done log read (also while the tab is hidden), 'normal' is the 5-minute refresh (visible tab only).
   function autoSyncMode(c) {
-    if (!c.setup || !c.key || c.running || c.busy) return null;
+    if (!c.setup || !c.key || c.running || c.busy || c.keyBad) return null;
     if (!c.lastSync || c.resume) return c.now - c.failAt < 120 ? null : 'catchup';
     if (c.hidden || c.now - c.syncedAt < BG_EVERY || c.now - c.failAt < 15 * 60) return null;
     return 'normal';
   }
   async function autoSync() {
     const now = Math.floor(Date.now() / 1000);
-    const mode = autoSyncMode({ setup: setupDone(), key: !!getKey(), running: syncRunning, busy: ui.busy, lastSync: state.lastSync, resume: state.resume, hidden: document.hidden, now, syncedAt: state.syncedAt || 0, failAt: bgFailAt });
+    const mode = autoSyncMode({ setup: setupDone(), key: !!getKey(), running: syncRunning, busy: ui.busy, lastSync: state.lastSync, resume: state.resume, hidden: document.hidden, now, syncedAt: state.syncedAt || 0, failAt: bgFailAt, keyBad: !!keyBadFor && keyBadFor === getKey() });
     if (!mode) return;
     try { // another open Torn tab may be syncing: whoever claims the lock first goes (a running read refreshes the lock on every page)
       const t = Number(localStorage.getItem(BG_LOCK) || 0);
@@ -2159,7 +2162,10 @@
       if (mode === 'catchup' && state.lastSync && !state.resume) toast('Arbitrage: your history is up to date');
       else if (/new record|receipt|matched/.test(msg || '')) { toast('Arbitrage: ' + msg.split(' · ').slice(1, 3).join(' · ')); }
       if (ui.open && !ui.busy) render();
-    } catch (e) { bgFailAt = now; } // quiet: tries again shortly (2 minutes for a log read, 15 for a normal refresh)
+    } catch (e) {
+      bgFailAt = now; // quiet: tries again shortly (2 minutes for a log read, 15 for a normal refresh)
+      if (e && KEY_ERRORS.indexOf(e.code) >= 0) { keyBadFor = getKey(); toast('Arbitrage: Torn refused your key. Open Settings to fix it.'); } // a refused key never works on retry: stop and say so once
+    }
   }
   async function autoInbox() {
     if (!setupDone()) return;
@@ -2286,7 +2292,7 @@
         if (ui.busy) return;
         { const d = document.getElementById('tfp-days'); if (d) sset('startDays', Number(d.value) || 30); }
         ui.busy = true; render();
-        try { ui.msg = await syncAll(); }
+        try { ui.msg = await syncAll(); if (!/stopped|refused|rejected|not have enough/i.test(ui.msg || '')) keyBadFor = ''; }
         finally { ui.busy = false; }
       }
       else if (act === 'addrc') { ui.msg = await addReceiptInput(val('tfp-rc')); }
@@ -2311,7 +2317,16 @@
     if (act === 'toggle' && /^tx_/.test(v || '') && ui[v]) fetchNames();
   }
 
-  bootP.then(() => { migrateSetup(); booted = true; updateBtn(); if (typeof document !== 'undefined') setInterval(updateBtn, 30000); if (ui.open) render(); });
+  // Releases that start reading new kinds of log entries (museum, points, items used, finds, abroad sales) only see entries newer than the last sync.
+  // Once per release, re-read the history window in the background so old and new data agree. Records and entered values are kept; only missing records are added.
+  const PARSERS_V = 2;
+  function migrateParsers() {
+    if ((state.parsersV || 0) >= PARSERS_V) return;
+    state.parsersV = PARSERS_V;
+    if (state.lastSync) { state.lastSync = 0; state.resume = null; state.rereadAt = Math.floor(Date.now() / 1000); }
+    save();
+  }
+  bootP.then(() => { migrateSetup(); migrateParsers(); booted = true; updateBtn(); if (typeof document !== 'undefined') setInterval(updateBtn, 30000); if (ui.open) render(); });
   function openPanel() { ui.open = true; document.getElementById('tfp-wrap').classList.add('open'); render(); bootP.then(() => render()); }
   function placeBtn(b, pos) {
     const de = document.documentElement;
@@ -2493,7 +2508,7 @@
   }
 
   if (typeof module !== 'undefined') {
-    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, autoSyncMode, LOG_FILTER_IDS, WATCH_IDS, extraIdsFromLogTypes, useGainTx, titleWanted, museumTx, pointsTx, rateEstimate, ratePause, clampRate, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
+    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, autoSyncMode, migrateParsers, LOG_FILTER_IDS, WATCH_IDS, extraIdsFromLogTypes, useGainTx, titleWanted, museumTx, pointsTx, rateEstimate, ratePause, clampRate, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
   }
   if (typeof document !== 'undefined' && !globalThis.__TFP_TEST) init();
 })();

@@ -157,6 +157,30 @@ eq('pause between pages at 60/min', T.ratePause(60), 750);
   eq('nothing starts before setup or without a key', [T.autoSyncMode(Object.assign({}, base, { lastSync: 0, setup: false })), T.autoSyncMode(Object.assign({}, base, { lastSync: 0, key: false }))], [null, null]);
 }
 
+// Items used up only take stock that was bought, never free finds
+{
+  const r = T.computeFlips({
+    f: { id: 'f', ts: 1, dir: 'buy', channel: 'find', free: true, amount: 0, items: [{ id: 7, qty: 5, price: 0 }] },
+    b: { id: 'b', ts: 2, dir: 'buy', channel: 'market', items: [{ id: 7, qty: 5, price: null }], amount: 500 },
+    u: { id: 'u', ts: 3, dir: 'use', channel: 'use', items: [{ id: 7, qty: 3 }], amount: 0 },
+    s: { id: 's', ts: 4, dir: 'sell', channel: 'market', items: [{ id: 7, qty: 7, price: null }], amount: 1400 }
+  });
+  // the use took 3 of the 5 bought units, so selling 7 uses the 5 free finds plus only the 2 bought units left (cost 200)
+  eq('use took 3 from the bought lot, so the sale of 7 costs only the 2 bought units left', [r.flips[0].profit, r.flips[0].unmatched], [1400 - 200, 0]);
+  const r2 = T.computeFlips({
+    f: { id: 'f', ts: 1, dir: 'buy', channel: 'find', free: true, amount: 0, items: [{ id: 7, qty: 5, price: 0 }] },
+    u: { id: 'u', ts: 3, dir: 'use', channel: 'use', items: [{ id: 7, qty: 3 }], amount: 0 },
+    s: { id: 's', ts: 4, dir: 'sell', channel: 'market', items: [{ id: 7, qty: 5, price: null }], amount: 1000 }
+  });
+  eq('a use never takes free finds: all 5 found items are still there to sell', [r2.flips[0].profit, r2.flips[0].unmatched], [1000, 0]);
+}
+// A refused key stops background retries
+{
+  const base = { setup: true, key: true, running: false, busy: false, lastSync: 0, resume: null, hidden: false, now: 10000, syncedAt: 0, failAt: 0 };
+  eq('background read retries normally', T.autoSyncMode(base), 'catchup');
+  eq('background read stops after the key was refused', T.autoSyncMode(Object.assign({}, base, { keyBad: true })), null);
+}
+
 // multi-item sell with receipt prices, per-item lines
 const tx2 = {
   a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 384, qty: 13, price: null }, { id: 215, qty: 191, price: null }], amount: 13 * 60000 + 191 * 400 },
