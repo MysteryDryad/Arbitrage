@@ -225,6 +225,8 @@ pending.push((async () => {
   eq('data summary line shows version and records', [/v0\.1\.\d+-beta/.test(sum), /records/.test(sum)], [true, true]);
   eq('move data section has copy, paste, check and no replace button', [/data-act="mvcopy"/.test(mv), /id="tfp-mv"/.test(mv), /data-act="mvcheck"/.test(mv), /data-act="import"/.test(mv)], [true, true, true, false]);
 }
+// A TornW3B key that was refused is treated as off until it changes
+eq('refused key is off, a new key is on again', [T.isW3bDenied('abc', 'abc'), T.isW3bDenied('abc', 'def'), T.isW3bDenied('', 'abc'), T.isW3bDenied('abc', '')], [true, false, false, false]);
 // multi-item sell with receipt prices, per-item lines
 const tx2 = {
   a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 384, qty: 13, price: null }, { id: 215, qty: 191, price: null }], amount: 13 * 60000 + 191 * 400 },

@@ -67,7 +67,10 @@
     const n = nat(); if (n) { try { return !!(await n.get('phkeyset', false)); } catch (e) { /* ignore */ } }
     return false;
   }
+  // TornW3B can refuse a key (HTTP 403, e.g. its trades list needs Premium). Until the key is changed the API is treated as off, so receipts opened in Torn are read directly again.
+  const isW3bDenied = (denied, key) => !!denied && denied === key;
   async function w3bKeyOn() {
+    if (isW3bDenied(sget('w3bDenied', ''), sget('w3bkey', ''))) return false;
     if (sget('w3bkey', '')) return true;
     const n = nat(); if (n) { try { return !!(await n.get('w3bkeyset', false)); } catch (e) { /* ignore */ } }
     return false;
@@ -1046,7 +1049,7 @@
       if (usesPH() && sget('phkey', '')) { try { pawn = await readPawnHubApi(); } catch (e) { pawnErr = String(e.message || e).slice(0, 120); } }
     };
     const doWeaver = async () => {
-      if (!sget('w3bkey', '')) return;
+      if (!sget('w3bkey', '') || isW3bDenied(sget('w3bDenied', ''), sget('w3bkey', ''))) return; // no key, or TornW3B already refused this one
       try {
         for (let round = 0; round < 15; round++) { last = await weaverImport(); att += last.attached; if (!last.left) break; }
         // A receipt whose trade is not in your data may have been missed (log read cut short, or an older copy of your data saved over it): read the log again from a bit before it, once per receipt.
@@ -1056,7 +1059,12 @@
           await readLog();
           last = await weaverImport(); att += last.attached;
         }
-      } catch (e) { weaverErr = String(e.message || e); }
+      } catch (e) {
+        if (e && e.status === 403) { // refused: stop asking, and let receipt pages opened in Torn be read directly again
+          sset('w3bDenied', sget('w3bkey', '')); await w3bFlagSet(false);
+          weaverErr = 'TornW3B refused your key (HTTP 403: its receipt list may need TornW3B Premium). Weaver is paused. Receipts you open in Torn are now read directly; replace the key in Settings to try again.';
+        } else weaverErr = String(e.message || e);
+      }
     };
     setProgress('PawnHub and Weaver…');
     await Promise.all([doPawn().then(() => { lap('pawnhub'); tm.phSecs = Math.round((Date.now() - phStart) / 100) / 10; }), doWeaver().then(() => lap('weaver'))]);
@@ -1070,7 +1078,7 @@
     if (pawn && pawn.short) bits.push(pawn.short);
     if (pawn && pawn.preview) bits.push('PawnHub is ready: check the box at the top of the screen');
     if (pawn && pawn.valued) bits.push(pawn.valued + ' PawnHub payment' + (pawn.valued === 1 ? '' : 's') + ' matched');
-    if (weaverErr) bits.push('Weaver: ' + weaverErr.slice(0, 90));
+    if (weaverErr) bits.push('Weaver: ' + weaverErr.slice(0, 220));
     if (pawnErr) bits.push('PawnHub: ' + pawnErr.slice(0, 70));
     const sec = x => Math.max(0, Math.round(x)) + 's', slow = tm.total > 8 ? ' · took ' + sec(tm.total) + ' (Torn log ' + sec(tm.log) + ', receipt inbox ' + sec(tm.inbox - tm.log) + ', PawnHub ' + sec(tm.phSecs) + ', Weaver ' + sec(tm.weaver - tm.inbox) + ')' : '';
     if (logErr) {
@@ -1285,7 +1293,7 @@
     const r = await httpRetry(url, { 'X-API-Key': sget('w3bkey', ''), Accept: 'application/json' });
     if (r && r.status === 401) throw new Error('TornW3B did not accept your key (HTTP 401). Check it in Settings.');
     if (r && r.status === 429) throw new Error('TornW3B is limiting requests. Wait a minute and tap again.');
-    if (!r || r.status >= 400) throw new Error('TornW3B answered HTTP ' + (r && r.status) + (r && r.status === 403 ? ' (access denied: the trades endpoint may need Premium)' : ''));
+    if (!r || r.status >= 400) throw Object.assign(new Error('TornW3B answered HTTP ' + (r && r.status) + (r && r.status === 403 ? ' (access denied: the trades endpoint may need Premium)' : '')), { status: r && r.status });
     try { return JSON.parse(r.text); } catch (e) { throw new Error('TornW3B sent something I could not read.'); }
   }
   // A read-only health check of the Weaver import: is the API answering, does what it lists match your trades, do the amounts agree with your log.
@@ -1992,7 +2000,7 @@
     return `<div class="tfp-sub"><a href="#" data-act="runsetup">Run setup again</a></div><div class="tfp-row"><b>This device's data</b>${dataSummaryHtml()}</div>${inboxHtml()}${keyBox}${phBox}<div class="tfp-row"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-act="logfilter" ${sget('logFilter', true) === false ? 'checked' : ''}> <b>Read every log type (slower)</b></label><div class="tfp-sub">Normally the sync asks Torn only for the entry types it uses (trades, market, bazaar, sends, shops, crimes, museum, points), which is much faster. Tick this to read everything, for troubleshooting.${state.filterWhy && sget('logFilter', true) !== false && Math.floor(Date.now() / 1000) < (state.filterOffUntil || 0) ? ' <span class="tfp-warn">Paused for now: ' + esc(state.filterWhy) + '</span>' : ''}</div></div><div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
       <input class="tfp-in" id="tfp-days" data-act="setting" inputmode="numeric" value="${esc(sget('startDays', 30))}">${rateBlockHtml()}
       <div class="tfp-sub">Sync from the Profit tab. Last sync: ${state.syncedAt || state.lastSync ? fdate(state.syncedAt || state.lastSync) : 'never'} · ${Object.keys(state.txs).length} records</div>
-      <div class="tfp-gap"></div><div class="tfp-sub">TornW3B key (optional, for Weaver receipts). Use the key from TornW3B, not your Torn key.</div>
+      <div class="tfp-gap"></div><div class="tfp-sub">TornW3B key (optional, for Weaver receipts). Use the key from TornW3B, not your Torn key.</div>${isW3bDenied(sget('w3bDenied', ''), sget('w3bkey', '')) ? '<div class="tfp-msg tfp-warn">TornW3B refused this key (HTTP 403, its receipt list may need TornW3B Premium), so Weaver is paused. Receipts you open in Torn are read directly instead. Paste a different key to try again.</div>' : ''}
       <input class="tfp-in" id="tfp-w3b" type="password" autocomplete="off" placeholder="${sget('w3bkey', '') ? 'TornW3B key saved (hidden). Paste a new one to replace.' : 'Paste your TornW3B key'}"><div class="tfp-gap"></div>
       <button class="tfp-b" data-act="savew3b">Save TornW3B key</button> ${sget('w3bkey', '') ? '<button class="tfp-b" data-act="clearw3b">Remove</button> <button class="tfp-b" data-act="w3bcheck">' + (ui.busy ? 'Checking…' : 'Check Weaver') + '</button>' : ''}
       ${ui.w3bReport ? '<div class="tfp-msg">' + ui.w3bReport.map(l => '<div class="tfp-sub" style="color:#ccc">' + esc(l) + '</div>').join('') + '</div>' : ''}
@@ -2349,9 +2357,9 @@
       else if (act === 'savew3b') {
         const k = val('tfp-w3b').trim();
         if (!/^[A-Za-z0-9_-]{8,64}$/.test(k)) throw new Error('That does not look like a TornW3B key.');
-        sset('w3bkey', k); w3bFlagSet(true); ui.msg = 'TornW3B key saved on this device.';
+        sset('w3bkey', k); sset('w3bDenied', ''); w3bFlagSet(true); ui.msg = 'TornW3B key saved on this device.';
       }
-      else if (act === 'clearw3b') { sset('w3bkey', ''); w3bFlagSet(false); ui.msg = 'TornW3B key removed from this device.'; }
+      else if (act === 'clearw3b') { sset('w3bkey', ''); sset('w3bDenied', ''); w3bFlagSet(false); ui.msg = 'TornW3B key removed from this device.'; }
       else if (act === 'pawnhub') {
         if (ui.busy) return;
         ui.busy = true; render();
@@ -2653,7 +2661,7 @@
   }
 
   if (typeof module !== 'undefined') {
-    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, dataSummaryHtml, moveDataHtml, packData, unpackData, sanitizePackage, mergeDevice, sameAccount, autoSyncMode, migrateParsers, LOG_FILTER_IDS, WATCH_IDS, extraIdsFromLogTypes, useGainTx, titleWanted, museumTx, pointsTx, rateEstimate, ratePause, clampRate, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
+    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, isW3bDenied, dataSummaryHtml, moveDataHtml, packData, unpackData, sanitizePackage, mergeDevice, sameAccount, autoSyncMode, migrateParsers, LOG_FILTER_IDS, WATCH_IDS, extraIdsFromLogTypes, useGainTx, titleWanted, museumTx, pointsTx, rateEstimate, ratePause, clampRate, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
   }
   if (typeof document !== 'undefined' && !globalThis.__TFP_TEST) init();
 })();
