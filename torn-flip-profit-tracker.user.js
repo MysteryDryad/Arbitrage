@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.176-beta
+// @version      0.1.177-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.176-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.177-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -753,6 +753,27 @@
   }
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  // Download speed for the log read: calls per minute (Torn allows about 100 per account, shared with every tool using the key).
+  const RATE_MIN = 20, RATE_MAX = 80, RATE_DEF = 60;
+  const clampRate = v => { const n = Math.round((Number(v) || RATE_DEF) / 10) * 10; return Math.min(RATE_MAX, Math.max(RATE_MIN, n)); };
+  const rateNow = () => clampRate(sget('syncRate', RATE_DEF));
+  const ratePause = rate => Math.max(100, Math.round(60000 / clampRate(rate)) - 250); // a request itself takes about a quarter of a second
+  function rateEstimate(rate) { const sec = Math.round(6000 / clampRate(rate)), m = Math.floor(sec / 60), r = sec % 60; return (m ? m + ' min' : '') + (m && r ? ' ' : '') + (r || !m ? r + ' s' : ''); } // 100 calls = 10,000 log entries
+  function rateBlockHtml() {
+    const r = rateNow();
+    return `<div class="tfp-gap"></div><div class="tfp-sub"><b>Download speed</b></div>
+      <input type="range" id="tfp-rate" min="${RATE_MIN}" max="${RATE_MAX}" step="10" value="${r}" style="width:100%">
+      <div class="tfp-sub" id="tfp-ratelbl">${r} calls per minute</div>
+      <div class="tfp-sub" id="tfp-rateest">At this speed, every 10,000 log entries takes about ${rateEstimate(r)}.</div>
+      <details class="tfp-why"><summary>Why is there a speed setting?</summary><div class="tfp-sub">Torn lets your account make about 100 requests a minute, shared by every script and site using your key. The first sync has to download your whole log, 100 entries at a time. A faster setting finishes sooner, but if another tool is also using your key you may hit Torn's limit. If that happens the sync simply pauses and carries on from where it stopped, so nothing is lost. A busy trader's first 30 days is roughly 85 requests. If you're unsure, leave it at ${RATE_DEF}.</div></details>
+      <details class="tfp-why"><summary>What happens after the first sync?</summary><div class="tfp-sub">Almost nothing. Staying up to date costs 1 or 2 Torn requests every 5 minutes, about 300 to 600 a day, which is far below the limit. This slider only affects the first big download and any later catch-up after a long gap. Weaver and PawnHub use their own sites and don't count against Torn's limit.</div></details>`;
+  }
+  function setRate(v) {
+    const r = clampRate(v); sset('syncRate', r);
+    const a = document.getElementById('tfp-ratelbl'), b = document.getElementById('tfp-rateest');
+    if (a) a.textContent = r + ' calls per minute';
+    if (b) b.textContent = 'At this speed, every 10,000 log entries takes about ' + rateEstimate(r) + '.';
+  }
   // Rebuild the per-entry send/receive records from the stored log entries (no network needed).
   function rebuildSendTxs() {
     let added = 0;
@@ -938,7 +959,7 @@
       prevTo = oldest; curTo = to;
       state.resume = { from, to, newest, pages: pageBase + pages }; if (pages % 5 === 0) save(); // checkpoint: an interrupted import continues from here (a full save of the whole state is slow, so every 5 pages; leaving the tab saves it at once, see flushNow)
       setProgress('Reading log, page ' + (pageBase + pages + 1) + '…');
-      await sleep(500);
+      await sleep(ratePause(rateNow()));
       j = await fetchPage(to);
     }
     } catch (e) { state.resume = { from, to: curTo, newest, pages: pageBase + pages }; state.lastError = { at: Math.floor(Date.now() / 1000), msg: String(e.message || e), page: pages }; save(); throw e; }
@@ -1290,6 +1311,7 @@
   #tfp-card.tfp-setup .tfp-hd{flex:none}
   .tfp-wiz{padding:8px 16px 16px}.tfp-wt{margin:4px 0 6px;font-size:18px}
   .tfp-dots{display:flex;gap:6px;margin:6px 0 12px}.tfp-dots i{height:5px;flex:1;border-radius:3px;background:#34383f}.tfp-dots i.on{background:#4d8dff}
+  .tfp-why{margin:8px 0}.tfp-why summary{cursor:pointer;color:#8fb4ff;font-size:13px;padding:4px 0}.tfp-why .tfp-sub{margin-top:4px}
   .tfp-opt{display:block;border:1px solid #3a3f49;background:#242830;border-radius:12px;padding:11px 12px;margin:8px 0;color:inherit!important;text-decoration:none}
   .tfp-opt b{display:block;font-size:14px}.tfp-opt span{font-size:12px;color:#99a}
   a.tfp-opt.sel{border-color:#4d8dff;background:#1f2a40}
@@ -1732,7 +1754,7 @@
     const phKey = usesPH() ? `<div class="tfp-sub" style="margin-top:8px">PawnHub key (optional). Paste the Torn API key you use to log in to PawnHub. It is stored only on this device and sent only to PawnHub (z0cl.eu), like logging in there. Leave it empty and nothing is sent to PawnHub. A key with just "user basic" ticked is enough.</div><input class="tfp-in" id="tfp-phkey" type="password" autocomplete="off" placeholder="${hasPH ? 'PawnHub key saved (hidden). Paste a new one to replace.' : 'Paste your PawnHub key'}"><div class="tfp-gap"></div><button class="tfp-b" data-act="savephkey">Save PawnHub key</button> ${hasPH ? '<button class="tfp-b" data-act="clearphkey">Remove</button> ' : ''}` : '';
     const phBox = `<div class="tfp-row"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" data-act="useph" ${usesPH() ? 'checked' : ''}> <b>I use PawnHub</b></label><div class="tfp-sub">${usesPH() ? 'Item sends are valued from PawnHub (Balance page, or your PawnHub key). Sends it can\'t value show under Needs attention.' : 'Item sends are left empty: they leave your stock but are not counted in profit and never show under Needs attention.'}</div>${phKey}</div>`;
     return `<div class="tfp-sub"><a href="#" data-act="runsetup">Run setup again</a></div>${inboxHtml()}${keyBox}${phBox}<div class="tfp-gap"></div><div class="tfp-sub">First sync looks back this many days</div>
-      <input class="tfp-in" id="tfp-days" data-act="setting" inputmode="numeric" value="${esc(sget('startDays', 30))}">
+      <input class="tfp-in" id="tfp-days" data-act="setting" inputmode="numeric" value="${esc(sget('startDays', 30))}">${rateBlockHtml()}
       <div class="tfp-sub">Sync from the Profit tab. Last sync: ${state.syncedAt || state.lastSync ? fdate(state.syncedAt || state.lastSync) : 'never'} · ${Object.keys(state.txs).length} records</div>
       <div class="tfp-gap"></div><div class="tfp-sub">TornW3B key (optional, for Weaver receipts). Use the key from TornW3B, not your Torn key.</div>
       <input class="tfp-in" id="tfp-w3b" type="password" autocomplete="off" placeholder="${sget('w3bkey', '') ? 'TornW3B key saved (hidden). Paste a new one to replace.' : 'Paste your TornW3B key'}"><div class="tfp-gap"></div>
@@ -1823,8 +1845,8 @@
       body = `<p>Paste the Torn API key you use to log in to PawnHub.</p><input class="tfp-in" id="tfp-swph" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore style="-webkit-text-security:disc" placeholder="Paste your PawnHub key"><div class="tfp-gap"></div><button class="tfp-b" data-act="swphcheck">${S.busy ? 'Checking…' : 'Check key'}</button>` + (S.phMsg ? `<div class="tfp-msg ${S.phOk ? 'tfp-pos' : 'tfp-warn'}">${esc(S.phMsg)}</div>` : (S.phOk ? '<div class="tfp-msg tfp-pos">✓ PawnHub key saved.</div>' : '')) + `<p class="tfp-sub">Stored only on this device and sent only to PawnHub (z0cl.eu), like logging in there. A key with just "user basic" ticked is enough. You can skip this and add it later in Settings.</p>`;
       foot = back + (S.phOk ? next(true) : '<span><button class="tfp-b" data-act="swskip">Skip</button></span>');
     } else if (cur === 'days') {
-      title = 'How far back?';
-      body = `<p>The first sync reads your Torn log back this far. Longer takes longer.</p>` + opt('swdays', 30, '30 days', 'Fast. Good to try it out.', S.days === 30) + opt('swdays', 90, '90 days', 'A few minutes. Recommended.', S.days === 90) + opt('swdays', 365, '1 year', 'Slower. Best if you flip a lot.', S.days === 365) + `<p class="tfp-sub">Change it any time in Settings.</p>`;
+      title = 'How far back, and how fast?';
+      body = `<p>The first sync reads your Torn log back this far, at the speed you choose below. Longer history takes longer.</p>` + opt('swdays', 30, '30 days', 'Fast. Good to try it out.', S.days === 30) + opt('swdays', 90, '90 days', 'A few minutes. Recommended.', S.days === 90) + opt('swdays', 365, '1 year', 'Slower. Best if you flip a lot.', S.days === 365) + rateBlockHtml() + `<p class="tfp-sub">Change both any time in Settings.</p>`;
       foot = back + next(true);
     } else if (cur === 'weaver') {
       title = 'Weaver receipts (optional)';
@@ -2203,6 +2225,7 @@
         if (cap) cap.textContent = g.l[i] + ' · running profit ' + (g.v[i] < 0 ? '−' : '+') + fmt(Math.abs(g.v[i]));
       };
       ['pointermove', 'pointerdown'].forEach(t => w.addEventListener(t, gprobe));
+      w.addEventListener('input', ev => { if (ev.target && ev.target.id === 'tfp-rate') setRate(ev.target.value); });
       ['change', 'input'].forEach(t => w.addEventListener(t, ev => { if (ev.target.matches('select[data-act]') || (t === 'change' && ev.target.matches('input[data-act]'))) onAction(ev); }));
       document.body.appendChild(w);
     }
@@ -2317,7 +2340,7 @@
   }
 
   if (typeof module !== 'undefined') {
-    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
+    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, rateEstimate, ratePause, clampRate, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
   }
   if (typeof document !== 'undefined' && !globalThis.__TFP_TEST) init();
 })();

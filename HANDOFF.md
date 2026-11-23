@@ -19,6 +19,8 @@ All work and pushes go to `claude/torn-flip-tracker-handoff-0o79ga` (the main br
 
 - v0.1.176: "Item abroad sell" (item, quantity, value_each, total_value) is read as an abroad sale. If the log read stops partway, `syncAll` still runs the receipt inbox, PawnHub and Weaver on what was read, then reports "Log read stopped … Tap Continue" (a background sync rethrows so it backs off). Crime item gains use `data.items_gained` (map of item id to quantity), confirmed from a real entry.
 
+- v0.1.177 (committed locally, not pushed yet): download-speed slider (20 to 80 calls per minute, step 10, default 60, `syncRate`) in the setup "How far back, and how fast?" step and in Settings, with collapsed "Why is there a speed setting?" and "What happens after the first sync?" explanations. It sets the pause between log pages (`ratePause`: 60000/rate minus 250ms).
+
 ## UI (v0.1.131)
 Full-screen panel (`#tfp-card`: header, scrolling `.tfp-body`, floating Sync, bottom nav). Tabs: Profit (range chips, running-profit graph you can touch, timeline newest first, 10 rows then "Show more", trade number/receipt link/player name only in a row's details, market rows show listing, Torn fee and received), Receipts (status, waiting list, add, recent), Items (by item/day/channel, item history opens under the item), Settings (Needs attention inbox with "Got it"/Dismissed, keys, backup, troubleshooting). `state.ack` holds dismissed ids (1 = dismissed, 0 = restored); `state.names` caches player names (looked up one at a time for visible rows). Market sale records gained `each`, `fee`, `anon` (older ones fill in after Re-sync from start).
 

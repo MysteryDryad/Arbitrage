@@ -43,6 +43,13 @@ eq('unmatched sale has no profit and is flagged', [r.flips.find(f => f.tx.id ===
   eq('abroad sell parses as a sale with its total', [tx.channel, tx.dir, tx.items[0].qty, tx.amount], ['abroad', 'sell', 27, 787131]);
 }
 
+// Download speed slider helpers
+eq('rate estimate at 60/min', T.rateEstimate(60), '1 min 40 s');
+eq('rate estimate at 80/min', T.rateEstimate(80), '1 min 15 s');
+eq('rate estimate at 20/min', T.rateEstimate(20), '5 min');
+eq('rate is clamped to 20..80 in steps of 10', [T.clampRate(5), T.clampRate(100), T.clampRate(64), T.clampRate(undefined)], [20, 80, 60, 60]);
+eq('pause between pages at 60/min', T.ratePause(60), 750);
+
 // multi-item sell with receipt prices, per-item lines
 const tx2 = {
   a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 384, qty: 13, price: null }, { id: 215, qty: 191, price: null }], amount: 13 * 60000 + 191 * 400 },
