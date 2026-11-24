@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.180-beta
+// @version      0.1.181-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.180-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.181-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -423,8 +423,11 @@
       if (!weights.some(w => w > 0)) weights = tx.items.map(i => i.qty);
       const wsum = weights.reduce((s, w) => s + w, 0) || 1;
 
+      // A cost typed in by hand for this sale replaces the matched cost. The stock is still used up as normal, so the stock count stays right.
+      const manualCost = tx.costOverride != null && Number.isFinite(Number(tx.costOverride)) ? Number(tx.costOverride) : null;
       const lines = consumed.map((c, idx) => {
         const share = net(tx) * weights[idx] / wsum;
+        if (manualCost != null) { const mc = manualCost * weights[idx] / wsum; return { itemId: c.it.id, name: c.it.name, qty: c.it.qty, matched: c.matched, unmatched: 0, proceeds: share, cost: mc, profit: share - mc }; }
         const matchedFrac = c.it.qty ? c.matched / c.it.qty : 0;
         const proceeds = share * matchedFrac;
         return {
@@ -432,11 +435,11 @@
           proceeds, cost: c.cost, profit: c.cost == null ? null : proceeds - c.cost
         };
       });
-      const costUnknown = lines.some(l => l.profit == null && l.matched > 0);
+      const costUnknown = manualCost == null && lines.some(l => l.profit == null && l.matched > 0);
       const unmatched = lines.reduce((s, l) => s + l.unmatched, 0);
-      const profit = lines.some(l => l.matched > 0) && !costUnknown
-        ? lines.reduce((s, l) => s + (l.profit || 0), 0) : null;
-      flips.push({ tx, lines, profit, costUnknown, unmatched });
+      const profit = manualCost != null ? lines.reduce((s, l) => s + l.profit, 0)
+        : lines.some(l => l.matched > 0) && !costUnknown ? lines.reduce((s, l) => s + (l.profit || 0), 0) : null;
+      flips.push({ tx, lines, profit, costUnknown, unmatched, costManual: manualCost != null });
     }
     const total = flips.reduce((s, f) => s + (f.profit || 0), 0);
     return { flips, pending, converts, total, open: lots };
@@ -713,6 +716,7 @@
     Object.entries(other.txs).forEach(([id, t]) => {
       const m = mine.txs[id];
       if (!m) mine.txs[id] = t; // a record only the other copy has (a page with stale data must not drop it)
+      else if (t.costOverride != null && m.costOverride == null && !(valued(t) && !valued(m))) mine.txs[id] = Object.assign({}, m, { costOverride: t.costOverride });
       else if (valued(t) && !valued(m)) mine.txs[id] = Object.assign({}, m, { amount: t.amount, src: t.src, gift: t.gift, locked: t.locked, receiptUrl: t.receiptUrl, items: t.items && m.items && t.items.length === m.items.length ? t.items : m.items });
     });
     ['receipts', 'tradeEnd', 'tradeParts', 'sendParts', 'moneyEvents', 'listEvents', 'ack', 'names'].forEach(k => { if (other[k]) mine[k] = Object.assign({}, other[k], mine[k] || {}); });
@@ -764,7 +768,7 @@
     let obj; try { obj = JSON.parse(json); } catch (e) { throw new Error('This data could not be read. Copy it again on your other device.'); }
     return obj;
   }
-  const TX_KEEP = ['cp', 'tradeId', 'amount', 'src', 'locked', 'gift', 'free', 'each', 'fee', 'anon', 'title', 'receiptUrl', 'count', 'msg', 'pointsOut', 'sets', 'setName', 'logAmount', 'zeroFixed'];
+  const TX_KEEP = ['costOverride', 'cp', 'tradeId', 'amount', 'src', 'locked', 'gift', 'free', 'each', 'fee', 'anon', 'title', 'receiptUrl', 'count', 'msg', 'pointsOut', 'sets', 'setName', 'logAmount', 'zeroFixed'];
   // One incoming record, copied field by field. Anything odd and the whole record is skipped (null).
   function cleanTx(t) {
     if (!t || typeof t !== 'object') return null;
@@ -807,9 +811,12 @@
     Object.keys(pkg.txs).forEach(k => {
       const t = pkg.txs[k], m = mine.txs[k];
       if (!m) { if (!dry) mine.txs[k] = t; r.added++; return; }
+      const costFill = t.costOverride != null && m.costOverride == null; // a cost typed in on the other device for a sale
       if (valued(t) && !valued(m)) { if (!dry) mine.txs[k] = Object.assign({}, m, { amount: t.amount, src: t.src, gift: t.gift, locked: t.locked, receiptUrl: t.receiptUrl, items: t.items.length === (m.items || []).length ? t.items : m.items }); r.filled++; }
       else if (valued(t) && valued(m) && t.amount !== m.amount) r.conflicts++;
+      else if (costFill) r.filled++;
       else r.same++;
+      if (costFill && !dry) mine.txs[k] = Object.assign({}, mine.txs[k], { costOverride: t.costOverride });
     });
     if (dry) return r;
     ['receipts', 'tradeEnd', 'sendParts', 'moneyEvents', 'listEvents', 'ack', 'names'].forEach(k => { mine[k] = Object.assign({}, pkg[k] || {}, mine[k] || {}); });
@@ -1704,7 +1711,7 @@
       if (market && tx.fee != null && tx.each != null) d += dl('Listed at', fmt(tx.each) + ' each', true) + dl('Sold for', fmt(tx.amount + tx.fee)) + dl('Torn fee', '−' + fmt(tx.fee)) + dl('You received', '<b>' + fmt(tx.amount) + '</b>');
       else if (market) d += dl('You received', '<b>' + fmt(netAmt(tx)) + '</b>', true) + '<div class="tfp-sub">Listing price and fee are not stored for sales read before v0.1.129. Settings → Re-sync from start fills them in.</div>';
       else d += dl(gotWord(tx).replace(/^./, c => c.toUpperCase()), '<b>' + fmt(netAmt(tx)) + '</b>', true);
-      if (e.kind === 'sale') d += dl('Your cost', costOf(f) == null ? '?' : fmt(costOf(f))) + dl('Profit', `<b class="${pnlCls(f.profit)}">${sgn(f.profit)}</b>`) + (f.unmatched ? `<div class="tfp-sub tfp-warn">${f.unmatched} unit(s) had no matching buy</div>` : '');
+      if (e.kind === 'sale') d += dl('Your cost', costOf(f) == null ? '?' : fmt(costOf(f)) + (f.costManual ? ' (by hand)' : '')) + dl('Profit', `<b class="${pnlCls(f.profit)}">${sgn(f.profit)}</b>`) + (f.unmatched ? `<div class="tfp-sub tfp-warn">${f.unmatched} unit(s) had no matching buy</div>` : '');
     } else if (tx.amount != null) d += dl(e.kind === 'buy' ? 'You paid' : 'Amount', '<b>' + fmt(tx.amount) + '</b>', true);
     // who it was with
     const who = tx.channel === 'trade' ? 'With' : market ? 'Bought by' : tx.channel === 'bazaar' ? 'Seller' : tx.channel === 'send' ? 'Sent to' : tx.channel === 'recv' ? 'From' : null;
@@ -1715,7 +1722,7 @@
     else if (tx.src === 'receipt' && tx.channel !== 'send') d += dl('Receipt', '🧾 attached'); // PawnHub-valued sends are marked src receipt but have no receipt page
     if (e.kind === 'skip') d += skippedRowHtml(f, false);
     else if (e.kind === 'pend') d += pendingHtml([tx], false);
-    else d += `<div class="tfp-sub"><a href="#" data-act="edit" data-id="${esc(tx.id)}">✎ ${e.kind === 'gift' ? 'set value' : 'edit'}</a></div>` + (ui.editing === tx.id ? editBox(tx) : '');
+    else d += `<div class="tfp-sub"><a href="#" data-act="edit" data-id="${esc(tx.id)}">✎ ${e.kind === 'gift' ? 'set value' : 'edit'}</a></div>` + (ui.editing === tx.id ? editBox(tx) : '') + (e.kind === 'sale' ? costEditHtml(tx, f) : '');
     return h + '<div class="tfp-det">' + d + '</div>';
   }
   // Running profit over the chosen range: hourly for a day or two, daily after that, weekly for very long ranges.
@@ -1863,6 +1870,15 @@
     const listNote = listed != null ? `<div class="tfp-sub">Still listed on the item market: about ${listed}. Listing does not count as a sale; only units that sell are counted.</div>` : '';
     return `<div class="tfp-row"><div class="tfp-top"><b>${esc(nameOf(id))} history</b><a href="#" data-act="itemlogclose">close</a></div>${firstShort ? '<div class="tfp-sub tfp-warn">Stock first goes short at ' + fdate(firstShort.ts) + ' (' + esc(firstShort.what) + '): ' + firstShort.short + ' more went out than the tracker saw come in. Look for a missing buy just before that.</div>' : ''}${rows.length ? rows.slice(ui.ledgerAll ? 0 : -40).reverse().join('') : '<div class="tfp-sub">Nothing recorded for this item.</div>'}${rows.length > 40 ? (ui.ledgerAll ? '<a href="#" data-act="ledgermore">Show newest 40 only</a>' : '<div class="tfp-sub">(newest 40 of ' + rows.length + ') <a href="#" data-act="ledgermore">Show all ' + rows.length + '</a></div>') : ''}${listNote}<div class="tfp-sub">A negative number means more was sold or sent than the tracker saw coming in.</div></div>`;
   }
+  // "Change cost" on a sale: a cost typed in for this one sale replaces the matched cost.
+  function costEditHtml(tx, f) {
+    const cur = f && costOf(f) != null ? Math.round(costOf(f)) : '';
+    let h = `<div class="tfp-sub"><a href="#" data-act="editcost" data-id="${esc(tx.id)}">✎ change cost</a>${tx.costOverride != null ? ' · cost entered by hand' : ''}</div>`;
+    if (ui.costEditing === tx.id) h += `<div class="tfp-gap"></div><div class="tfp-sub">Cost for this sale ($). Use this if the cost shown is wrong, for example because it was matched to an older purchase. This only changes this sale.</div>
+      <input class="tfp-in" id="tfp-cost-${esc(tx.id)}" inputmode="numeric" value="${cur}"><div class="tfp-gap"></div>
+      <button class="tfp-b" data-act="savecost" data-id="${esc(tx.id)}">Save &amp; lock</button>${tx.costOverride != null ? ` <button class="tfp-b" data-act="clearcost" data-id="${esc(tx.id)}">Use automatic cost</button>` : ''}`;
+    return h;
+  }
   function editBox(tx) {
     const label = tx.dir === 'buy' ? 'Amount paid ($)' : 'Amount received ($)';
     return `<div class="tfp-gap"></div><div class="tfp-sub">${label}</div>
@@ -1892,7 +1908,7 @@
   function skippedRowHtml(f, dismissed) {
     const tx = f.tx;
     const why = f.unmatched ? f.unmatched + ' unit(s) have no matching buy: bought before the sync window, or got another way. A longer look-back (Settings, then Re-sync from start) may find the buy.' : 'The items came from a buy or receive with no value. Open the matching buy or send and set a value.';
-    return `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}${tradeTag(tx)}</span><span class="tfp-warn">not counted</span></div><div class="tfp-sub">${itemSummary(tx)} · ${gotWord(tx)} ${fmt(netAmt(tx))}</div><div class="tfp-sub tfp-warn">${why}</div>${f.lines.filter(l => l.unmatched > 0).map(l => `<div class="tfp-sub">${esc(itemTrail(f, l))} <a href="#" data-act="itemlog" data-id="${esc(l.itemId)}">history</a></div>`).join('')}<div class="tfp-gap"></div><button class="tfp-b" data-act="${dismissed ? 'unack' : 'ack'}" data-id="${esc(tx.id)}">${dismissed ? 'Show again' : 'Got it'}</button></div>`;
+    return `<div class="tfp-row"><div class="tfp-top"><span>${fdate(tx.ts)} · ${chanLabel(tx.channel)}${tradeTag(tx)}</span><span class="tfp-warn">not counted</span></div><div class="tfp-sub">${itemSummary(tx)} · ${gotWord(tx)} ${fmt(netAmt(tx))}</div><div class="tfp-sub tfp-warn">${why}</div>${f.lines.filter(l => l.unmatched > 0).map(l => `<div class="tfp-sub">${esc(itemTrail(f, l))} <a href="#" data-act="itemlog" data-id="${esc(l.itemId)}">history</a></div>`).join('')}<div class="tfp-gap"></div><button class="tfp-b" data-act="${dismissed ? 'unack' : 'ack'}" data-id="${esc(tx.id)}">${dismissed ? 'Show again' : 'Got it'}</button><div class="tfp-gap"></div>${costEditHtml(tx, f)}</div>`;
   }
   // Everything that needs a look, split into waiting and dismissed ("Got it").
   const getRes = () => ui._res || (ui._res = computeFlips(state.txs, flipOpts()));
@@ -2349,6 +2365,13 @@
       }
       else if (act === 'setting') { const d = document.getElementById('tfp-days'); if (d) sset('startDays', Number(d.value) || 30); }
       else if (act === 'edit') ui.editing = ui.editing === id ? null : id;
+      else if (act === 'editcost') ui.costEditing = ui.costEditing === id ? null : id;
+      else if (act === 'savecost') {
+        const n = firstNumber(val('tfp-cost-' + id));
+        if (n == null || n < 0) throw new Error('Enter a number.');
+        state.txs[id].costOverride = n; ui.costEditing = null; save();
+      }
+      else if (act === 'clearcost') { delete state.txs[id].costOverride; ui.costEditing = null; save(); }
       else if (act === 'dir') state.txs[id].dir = v, save();
       else if (act === 'saveval') {
         const n = firstNumber(val('tfp-val-' + id));

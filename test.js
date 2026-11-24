@@ -183,6 +183,41 @@ pending.push((async () => {
 }
 // A TornW3B key that was refused is treated as off until it changes
 eq('refused key is off, a new key is on again', [T.isW3bDenied('abc', 'abc'), T.isW3bDenied('abc', 'def'), T.isW3bDenied('', 'abc'), T.isW3bDenied('abc', '')], [true, false, false, false]);
+// Cost typed in for one sale
+{
+  const buys = { a: { id: 'a', ts: 1, dir: 'buy', channel: 'market', items: [{ id: 7, qty: 2, price: null }], amount: 200 }, b: { id: 'b', ts: 2, dir: 'buy', channel: 'market', items: [{ id: 7, qty: 1, price: null }], amount: 300 } };
+  const sale = over => Object.assign({ id: 's', ts: 3, dir: 'sell', channel: 'send', items: [{ id: 7, qty: 1, price: null }], amount: 350, src: 'receipt' }, over);
+  const auto = T.computeFlips(Object.assign({}, buys, { s: sale() }));
+  eq('without a typed cost the oldest buy is used', [auto.flips[0].profit, auto.flips[0].costManual], [350 - 100, false]);
+  const man = T.computeFlips(Object.assign({}, buys, { s: sale({ costOverride: 300 }) }));
+  eq('a typed cost replaces the matched cost', [man.flips[0].profit, man.flips[0].costManual, man.flips[0].lines[0].cost], [50, true, 300]);
+  const zero = T.computeFlips(Object.assign({}, buys, { s: sale({ costOverride: 0 }) }));
+  eq('a typed cost of zero is allowed', zero.flips[0].profit, 350);
+  // the stock is still used up: the next sale takes the next buy, not the same one again
+  const two = T.computeFlips(Object.assign({}, buys, { s: sale({ costOverride: 300 }), t: sale({ id: 't', ts: 4 }) }));
+  eq('stock is still used up by a sale with a typed cost', two.flips.find(f => f.tx.id === 't').profit, 350 - 100);
+  // a sale with no matching buy becomes counted once a cost is typed in
+  const none = T.computeFlips({ s: sale({ costOverride: 120 }) });
+  const none0 = T.computeFlips({ s: sale() });
+  eq('a sale with no matching buy is counted once a cost is typed in', [none.flips[0].profit, none.flips[0].unmatched, none0.flips[0].profit], [230, 0, null]);
+  // two items share the typed cost by their weight
+  const multi = T.computeFlips({ s: { id: 's', ts: 3, dir: 'sell', channel: 'send', items: [{ id: 1, qty: 1, price: 100 }, { id: 2, qty: 1, price: 300 }], amount: 400, costOverride: 200 } });
+  eq('the typed cost is shared across the items of a sale', [multi.flips[0].profit, multi.flips[0].lines.map(l => Math.round(l.cost))], [200, [50, 150]]);
+}
+// A typed cost survives moving data between devices
+pending.push((async () => {
+  const mk = extra => Object.assign({ id: 's', ts: 1790000000, dir: 'sell', channel: 'send', items: [{ id: 7, qty: 1, name: 'X', price: null }], amount: 350, src: 'receipt', locked: true }, extra || {});
+  const pkg = T.sanitizePackage(await T.unpackData(await T.packData({ me: { id: 7 }, txs: { s: mk({ costOverride: 300 }) } })));
+  eq('a typed cost is kept in copied data', pkg.txs.s.costOverride, 300);
+  const mine = { me: { id: 7 }, txs: { s: mk() }, ack: {}, names: {} };
+  eq('preview counts it as a fill', T.mergeDevice(mine, pkg, true), { added: 0, filled: 1, same: 0, conflicts: 0 });
+  T.mergeDevice(mine, pkg);
+  eq('merge brings the typed cost over', mine.txs.s.costOverride, 300);
+  const mine2 = { me: { id: 7 }, txs: { s: mk({ costOverride: 111 }) }, ack: {}, names: {} };
+  T.mergeDevice(mine2, pkg);
+  eq('this device keeps its own typed cost', mine2.txs.s.costOverride, 111);
+})().catch(e => { fail++; console.log('FAIL typed cost merge test', e.message); }));
+
 // multi-item sell with receipt prices, per-item lines
 const tx2 = {
   a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 384, qty: 13, price: null }, { id: 215, qty: 191, price: null }], amount: 13 * 60000 + 191 * 400 },
