@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.181-beta
+// @version      0.1.182-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -46,7 +46,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.181-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.182-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -371,7 +371,7 @@
     const net = tx => (tx.channel === 'market' && tx.dir === 'sell' && tx.src === 'log') ? tx.amount * (1 - fee) : tx.amount;
     const txs = Object.values(txsObj).sort((a, b) => (a.ts - b.ts) || String(a.id).localeCompare(String(b.id)));
     const lots = {};
-    const flips = [], pending = [], converts = [];
+    const flips = [], pending = [], converts = [], unvalued = [];
 
     function addLots(tx) {
       const allPriced = tx.items.every(i => i.price != null);
@@ -415,7 +415,7 @@
 
       const consumed = tx.items.map(it => Object.assign({ it }, consume(it.id, it.qty)));
       if (isGift(tx)) continue; // given away: leaves stock, not counted in profit
-      if (tx.amount == null) { if (opts && opts.skipUnvaluedSends && tx.channel === 'send') continue; /* sends the user does not track: leave empty, not counted */ pending.push(tx); continue; }
+      if (tx.amount == null) { if (opts && opts.skipUnvaluedSends && tx.channel === 'send') { unvalued.push(tx); continue; } /* sends the user does not track: not counted, no nagging; listed on the Sends screen */ pending.push(tx); continue; }
 
       const allPriced = tx.items.every(i => i.price != null);
       const mvW = tx.items.map(i => i.qty * (vals[i.id] || 0));
@@ -442,7 +442,7 @@
       flips.push({ tx, lines, profit, costUnknown, unmatched, costManual: manualCost != null });
     }
     const total = flips.reduce((s, f) => s + (f.profit || 0), 0);
-    return { flips, pending, converts, total, open: lots };
+    return { flips, pending, converts, unvalued, total, open: lots };
   }
 
   /* ===================== receipt <-> trade matching (pure) ===================== */
@@ -1587,6 +1587,7 @@
   .tfp-chip span{font-size:11px}
   #tfp-card a.tfp-chip{color:#e8b64a}
   .tfp-cat{background:#262626;border-radius:10px;margin:8px 0;padding:10px 12px}
+  .tfp-segs{display:flex;gap:4px;background:#242830;border-radius:10px;padding:4px}.tfp-seg{flex:1;border:0!important;background:transparent!important;min-height:44px}.tfp-seg.on{background:#2f61c4!important;color:#fff;font-weight:700}
   .tfp-cat .tfp-top{align-items:center}
   .tfp-cat-h{display:block;color:#eee!important;text-decoration:none}
   .tfp-cat-h b{font-size:15px}
@@ -1921,9 +1922,30 @@
     const p = ui.phPreview; if (!p) return '';
     return `<div class="tfp-msg" style="border:1px solid #3b6fd1"><b>PawnHub is ready</b><div class="tfp-sub" style="color:#ccc">PawnHub sent ${p.read} item payments. This would fill in <b>${p.n}</b> send${p.n === 1 ? '' : 's'}${p.from ? ' (' + dayLabel(p.from) + ' to ' + dayLabel(p.to) + ')' : ''}, ${fmt(p.total)} in all.${p.manual ? ' ' + p.manual + (p.manual === 1 ? ' of them has a value you entered, which would be replaced.' : ' of them have a value you entered, which would be replaced.') : ''}${p.loose ? ' ' + p.loose + ' PawnHub row' + (p.loose === 1 ? ' has' : 's have') + ' no matching send in your data.' : ''} Profit for past days will change. This check only happens the first time.</div><div class="tfp-gap"></div><button class="tfp-b" data-act="phapply">Apply</button> <button class="tfp-b" data-act="phcancel">Not now</button></div>`;
   }
+  // Item sends with no money attached (for people who do not use PawnHub), and the sends marked as gifts.
+  const giftSends = () => Object.values(state.txs).filter(t => t.channel === 'send' && t.dir === 'sell' && isGift(t)).sort((a, b) => b.ts - a.ts);
+  function sendsScreenHtml() {
+    const un = (getRes().unvalued || []).slice().sort((a, b) => b.ts - a.ts), gifts = giftSends(), tab = ui.sendsTab === 'gifts' ? 'gifts' : 'none';
+    const list = tab === 'gifts' ? gifts : un, lim = ui.sendsLimit || 20;
+    const segBtn = (v, label, n) => `<button class="tfp-b tfp-seg${tab === v ? ' on' : ''}" data-act="sendstab" data-v="${v}">${label} ${n.toLocaleString()}</button>`;
+    let h = `<div class="tfp-top"><a href="#" data-act="sendsclose">‹ Back</a><b>Sends</b><span></span></div><div class="tfp-gap"></div>
+      <div class="tfp-segs">${segBtn('none', 'No value', un.length)}${segBtn('gifts', 'Gifts', gifts.length)}</div><div class="tfp-gap"></div>
+      <div class="tfp-sub">${tab === 'gifts' ? 'Sends you marked as gifts. If someone pays you later, set the value and it becomes a normal sale.' : 'These sends left your stock but have no money attached, so they are not counted in profit.'}</div>`;
+    if (tab === 'none' && un.length > 1) h += `<div class="tfp-gap"></div><button class="tfp-b" data-act="giftallsends">${ui.armGiftSends ? 'Tap again to confirm: ' + un.length.toLocaleString() + ' set to $0' : 'Mark all ' + un.length.toLocaleString() + ' as gifts ($0)'}</button>`;
+    if (!list.length) h += `<div class="tfp-gap"></div><div class="tfp-sub">${tab === 'gifts' ? 'No gifts.' : 'Nothing to review.'}</div>`;
+    list.slice(0, lim).forEach(tx => {
+      h += `<div class="tfp-row"><div class="tfp-top"><b>${itemSummary(tx)}</b><span class="tfp-sub">${fdate(tx.ts)}${tab === 'gifts' ? ' · $0' : ''}</span></div>`;
+      if (ui.editing === tx.id) h += editBox(tx);
+      else h += `<div class="tfp-gap"></div>${tab === 'none' ? `<button class="tfp-b" data-act="gift" data-id="${esc(tx.id)}">Gift</button> <button class="tfp-b" data-act="edit" data-id="${esc(tx.id)}">Value</button>` : `<button class="tfp-b" data-act="edit" data-id="${esc(tx.id)}">Set value</button>`}`;
+      h += '</div>';
+    });
+    if (list.length > lim) h += `<a href="#" class="tfp-more" data-act="sendsmore">Show 20 more · ${lim} of ${list.length.toLocaleString()}</a>`;
+    return h;
+  }
   function inboxHtml() {
     const a = attention(), n = a.pend.length + a.skip.length, nd = a.dPend.length + a.dSkip.length;
     let h = `<div class="tfp-cat"><div class="tfp-top"><a href="#" class="tfp-cat-h" data-act="toggle" data-v="showInbox"><span class="tfp-chev">${ui.showInbox ? '▾' : '▸'}</span><b>Needs attention</b><div class="tfp-sub">${n ? (a.pend.length ? '<span class="tfp-warn">' + a.pend.length + ' need a value</span>' : '') + (a.pend.length && a.skip.length ? ' · ' : '') + (a.skip.length ? '<span class="tfp-warn">' + a.skip.length + ' not counted</span>' : '') : 'Nothing waiting'}${nd ? ' · ' + nd + ' dismissed' : ''}</div></a></div>`;
+    { const nu = (getRes().unvalued || []).length; if (nu) h += `<div class="tfp-dl" style="border-top:1px solid #343a46;margin-top:8px;padding-top:8px"><span>${nu.toLocaleString()} send${nu === 1 ? '' : 's'} without a value</span><a href="#" data-act="sendsopen">Review</a></div>`; }
     if (ui.showInbox) {
       if (n) h += `<div class="tfp-gap"></div><button class="tfp-b" data-act="ackall">${ui.armAck ? 'Tap again to dismiss all ' + n : 'Dismiss all ' + n}</button>`;
       h += pendingHtml(a.pend, false) + a.skip.map(f => skippedRowHtml(f, false)).join('');
@@ -1968,6 +1990,7 @@
     return h;
   }
   function settingsHtml() {
+    if (ui.sendsOpen) return sendsScreenHtml();
     const own = !!sget('apikey', '');
     const keyBox = `<div class="tfp-sub">${IN_PDA && !own ? 'Using your Torn PDA key by default.' : 'Torn API key.'} <a href="${esc(KEYURL)}">Create a custom key ↗</a> (read-only: your log and item names), then paste it here. Limited keys don't work.</div>${keyHelpHtml()}
       <input class="tfp-in" id="tfp-key" type="password" autocomplete="off" placeholder="${own ? 'Key saved (hidden). Paste a new one to replace.' : 'Paste your key'}"><div class="tfp-gap"></div>
@@ -2297,7 +2320,7 @@
     const el = e.target.closest('[data-act]');
     if (!el) return;
     const act = el.dataset.act, id = el.dataset.id, v = el.dataset.v;
-    if (act === 'edit' || act === 'toggle' || act === 'tab' || act === 'ledgermore' || act === 'more' || act === 'imore' || act === 'rmore' || act === 'pawnoff' || act === 'itemlog' || act === 'itemlogclose') e.preventDefault();
+    if (act === 'edit' || act === 'toggle' || act === 'tab' || act === 'ledgermore' || act === 'more' || act === 'imore' || act === 'rmore' || act === 'pawnoff' || act === 'itemlog' || act === 'itemlogclose' || act === 'sendsopen' || act === 'sendsclose' || act === 'sendsmore') e.preventDefault();
     ui.msg = ''; ui._res = null;
     if (/^sw(next|back|skip|custom|pda|check|ph|phcheck|days|done)$/.test(act)) { e.preventDefault(); try { await setupAction(act, v, el); } catch (err) { if (ui.setup) { ui.setup.busy = false; ui.setup.msg = String(err.message || err); } } render(); return; }
     if (act === 'runsetup') { e.preventDefault(); startSetup(true); render(); return; }
@@ -2306,7 +2329,7 @@
     if (act !== 'ackall') ui.armAck = false;
     try {
       if (act === 'close') ui.open = false, document.getElementById('tfp-wrap').classList.remove('open');
-      else if (act === 'tab') { if (v !== ui.tab) navPush(); ui.tab = v; ui.editing = null; ui.itemLog = null; ui.limit = 10; card0().scrollTop = 0; }
+      else if (act === 'tab') { if (v !== ui.tab) navPush(); ui.tab = v; ui.sendsOpen = false; ui.editing = null; ui.itemLog = null; ui.limit = 10; card0().scrollTop = 0; }
       else if (act === 'back') { const b = (ui.nav || []).pop(); if (b) { ui.tab = b.tab; ui.itemLog = b.itemLog; ui.editing = null; card0().scrollTop = 0; } }
       else if (act === 'home') { ui.nav = []; ui.tab = 'profit'; ui.itemLog = null; ui.editing = null; card0().scrollTop = 0; }
       else if (act === 'range') { ui.range = /^\d+$/.test(el.value) ? Number(el.value) : el.value; if (ui.range === 'custom' && !ui.from) { ui.from = ui.to = dayStr(Date.now() / 1000); sset('rangeFrom', ui.from); sset('rangeTo', ui.to); } sset('range', ui.range); }
@@ -2391,6 +2414,16 @@
         save();
       }
       else if (act === 'gift') { const tx = state.txs[id]; tx.amount = 0; tx.gift = true; tx.src = 'manual'; tx.locked = true; save(); }
+      else if (act === 'sendsopen') { ui.sendsOpen = true; ui.sendsTab = 'none'; ui.sendsLimit = 20; ui.editing = null; card0().scrollTop = 0; }
+      else if (act === 'sendsclose') { ui.sendsOpen = false; ui.editing = null; ui.armGiftSends = false; }
+      else if (act === 'sendstab') { ui.sendsTab = v; ui.sendsLimit = 20; ui.editing = null; ui.armGiftSends = false; }
+      else if (act === 'sendsmore') ui.sendsLimit = (ui.sendsLimit || 20) + 20;
+      else if (act === 'giftallsends') {
+        if (!ui.armGiftSends) { ui.armGiftSends = true; render(); return; }
+        ui.armGiftSends = false;
+        (getRes().unvalued || []).forEach(t => { const x = state.txs[t.id]; if (x) { x.amount = 0; x.gift = true; x.src = 'manual'; x.locked = true; } });
+        save();
+      }
       else if (act === 'usemoney') {
         const m = state.moneyEvents[v], tx = state.txs[id];
         if (!m || !tx) throw new Error('That payment is no longer available.');

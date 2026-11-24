@@ -218,6 +218,14 @@ pending.push((async () => {
   eq('this device keeps its own typed cost', mine2.txs.s.costOverride, 111);
 })().catch(e => { fail++; console.log('FAIL typed cost merge test', e.message); }));
 
+// Sends with no value are listed for people who do not use PawnHub, and still leave stock
+{
+  const txs = { b: { id: 'b', ts: 1, dir: 'buy', channel: 'market', items: [{ id: 3, qty: 5, price: null }], amount: 500 }, s: { id: 's', ts: 2, dir: 'sell', channel: 'send', items: [{ id: 3, qty: 2 }], amount: null }, g: { id: 'g', ts: 3, dir: 'sell', channel: 'send', items: [{ id: 3, qty: 1 }], amount: 0, gift: true, src: 'manual', locked: true } };
+  const plain = T.computeFlips(txs, { skipUnvaluedSends: true }), ph = T.computeFlips(txs, { skipUnvaluedSends: false });
+  eq('a plain send with no value is listed, not nagged about', [plain.unvalued.map(t => t.id), plain.pending.length], [['s'], 0]);
+  eq('PawnHub users keep these sends in Needs attention', [ph.unvalued.length, ph.pending.map(t => t.id)], [0, ['s']]);
+  eq('both kinds of send still leave stock', [plain.open[3].reduce((a, l) => a + l.qty, 0), ph.open[3].reduce((a, l) => a + l.qty, 0)], [2, 2]);
+}
 // multi-item sell with receipt prices, per-item lines
 const tx2 = {
   a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 384, qty: 13, price: null }, { id: 215, qty: 191, price: null }], amount: 13 * 60000 + 191 * 400 },
