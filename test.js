@@ -226,6 +226,17 @@ pending.push((async () => {
   eq('PawnHub users keep these sends in Needs attention', [ph.unvalued.length, ph.pending.map(t => t.id)], [0, ['s']]);
   eq('both kinds of send still leave stock', [plain.open[3].reduce((a, l) => a + l.qty, 0), ph.open[3].reduce((a, l) => a + l.qty, 0)], [2, 2]);
 }
+// Delete my data: every stored key goes, and a page that still holds old data cannot write it back
+pending.push((async () => {
+  const store = { tfp_state: '{"txs":{"a":1}}', tfp_apikey: '"KEY"', tfp_phkey: '"PH"', tfp_w3bkey: '"W3"', tfp_startDays: '30', tfp_inbox: '[1]', tfp_bglock: '123', other_site_key: 'keep' };
+  globalThis.localStorage = { get length() { return Object.keys(store).length; }, key: i => Object.keys(store)[i] || null, getItem: k => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); }, removeItem: k => { delete store[k]; } };
+  await T.deleteAllData();
+  await new Promise(r => setTimeout(r, 20)); // let the page's own start-up saves run: they may write an EMPTY record, never the old data
+  const left = Object.keys(store).filter(k => k.indexOf('tfp_') === 0).sort(), st = store.tfp_state ? JSON.parse(store.tfp_state) : { txs: {} };
+  eq('deleting my data removes every key and saved record, and leaves other sites alone', [left.filter(k => k !== 'tfp_state' && k !== 'tfp_wipedAt'), Object.keys(st.txs || {}).length, store.other_site_key], [[], 0, 'keep']);
+  eq('the in-memory data is empty after a delete', Object.keys(T.getStateForTest().txs).length, 0);
+  delete globalThis.localStorage;
+})());
 // multi-item sell with receipt prices, per-item lines
 const tx2 = {
   a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 384, qty: 13, price: null }, { id: 215, qty: 191, price: null }], amount: 13 * 60000 + 191 * 400 },

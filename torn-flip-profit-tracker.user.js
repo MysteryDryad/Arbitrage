@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.182-beta
+// @version      0.1.183-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -12,6 +12,8 @@
 // @match        https://z0cl.eu/PawnHub/*
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_deleteValue
+// @grant        GM_listValues
 // @grant        GM_xmlhttpRequest
 // @connect      api.torn.com
 // @connect      tornexchange.com
@@ -46,7 +48,7 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const IN_PDA = PDA_KEY[0] !== '#';
   const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.182-beta'; // keep equal to @version above (test.js checks this)
+  const VERSION = '0.1.183-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -827,10 +829,32 @@
     return r; // lastSync and any half-done read are left alone: this device keeps reading forward from where it was
   }
   let backupT = null;
+  /* ===================== delete everything ===================== */
+  // Arbitrage keeps data in several places (IndexedDB, script storage, the page's local storage, Torn PDA's storage), and all of it stays on the device when the script is removed.
+  // After a delete, a page that still holds the old data in memory (another open Torn tab) must not write it back: wipedAt is a timestamp every page checks before saving.
+  let wiping = false, bootMs = Date.now();
+  const saveBlocked = () => wiping || (Number(sget('wipedAt', 0)) || 0) > bootMs;
+  const PDA_KEYS = ['state', 'statez', 'inbox', 'phkeyset', 'w3bkeyset'];
+  const STORE_KEYS = ['apikey', 'btnpos2', 'inbox', 'items', 'itemvals', 'mvUndoAt', 'pawnhubAuto', 'phkey', 'phkeyset', 'range', 'rangeFrom', 'rangeTo', 'setupDone', 'setupStep', 'startDays', 'state', 'statez', 'syncRate', 'usePH', 'w3bDenied', 'w3bkey', 'w3bkeyset'];
+  async function deleteAllData() {
+    wiping = true;
+    try {
+      clearTimeout(backupT); backupT = null;
+      try { for (let i = localStorage.length - 1; i >= 0; i--) { const k = localStorage.key(i); if (k && k.indexOf(NS) === 0) localStorage.removeItem(k); } } catch (e) { /* no page storage */ }
+      if (hasGM) {
+        let keys = []; try { if (typeof GM_listValues === 'function') keys = GM_listValues() || []; } catch (e) { /* use the known list */ }
+        keys.concat(STORE_KEYS.map(k => NS + k)).filter((k, i, a) => String(k).indexOf(NS) === 0 && a.indexOf(k) === i).forEach(k => { try { if (typeof GM_deleteValue === 'function') GM_deleteValue(k); else GM_setValue(k, ''); } catch (e) { /* ignore */ } });
+      }
+      const n = nat(); if (n) for (const k of PDA_KEYS) { try { await n.set(k, k === 'inbox' ? [] : null); } catch (e) { /* ignore */ } }
+      if (hasIDB) { try { const db = await idb.db(); await new Promise(res => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').clear(); t.oncomplete = res; t.onerror = res; t.onabort = res; }); } catch (e) { /* ignore */ } }
+      state = STATE_DEFAULTS(); itemNames = {}; itemValues = {}; lastWrite = 0;
+      sset('wipedAt', Date.now()); bootMs = Date.now() + 1; // other open pages see this and stop saving; this page may save again
+    } finally { wiping = false; }
+  }
   function scheduleBackup() {
     if (backupT || !hasGM && typeof localStorage === 'undefined') return;
     backupT = setTimeout(async () => {
-      backupT = null;
+      backupT = null; if (saveBlocked()) return;
       try {
         const copy = Object.assign({}, state, { seenExamples: {} });
         if (hasZ) { const z = await gzip(JSON.stringify(copy)), n = nat(); let ok = false; if (n) { try { await n.set('statez', { at: state.savedAt, z }); ok = true; } catch (e) { /* quota or bridge error: use script storage */ } } if (sset('statez', { at: state.savedAt, z }) || ok) sset('state', null); }
@@ -839,11 +863,12 @@
     }, 15000);
   }
   const save = () => {
+    if (saveBlocked()) return;
     const prev = lastWrite; state.savedAt = Date.now(); lastWrite = state.savedAt;
     if (!hasIDB) { lastSaveOk = sset('state', state); return; }
     const mine = state.savedAt;
     idb.get('state').catch(() => null)
-      .then(v => { if (v && v.txs && (v.savedAt || 0) > prev && v.savedAt !== mine) mergeState(state, v); return idb.set('state', state); }) // another page saved newer data meanwhile: keep both
+      .then(v => { if (saveBlocked()) return null; if (v && v.txs && (v.savedAt || 0) > prev && v.savedAt !== mine) mergeState(state, v); return idb.set('state', state); }) // another page saved newer data meanwhile: keep both
       .then(() => { lastSaveOk = true; idbErr = null; })
       .catch(e => { idbErr = String(e && e.message || e); lastSaveOk = sset('state', state); });
     scheduleBackup();
@@ -1586,6 +1611,7 @@
   .tfp-chip b{display:block;font-size:16px}
   .tfp-chip span{font-size:11px}
   #tfp-card a.tfp-chip{color:#e8b64a}
+  .tfp-danger{background:#7a2b2b!important;border-color:#a04040!important;color:#fff!important}
   .tfp-cat{background:#262626;border-radius:10px;margin:8px 0;padding:10px 12px}
   .tfp-segs{display:flex;gap:4px;background:#242830;border-radius:10px;padding:4px}.tfp-seg{flex:1;border:0!important;background:transparent!important;min-height:44px}.tfp-seg.on{background:#2f61c4!important;color:#fff;font-weight:700}
   .tfp-cat .tfp-top{align-items:center}
@@ -2068,7 +2094,11 @@
   }
   function settingsMore() {
     return `${moveDataHtml()}
-      <div class="tfp-row"><b>Troubleshooting</b><div class="tfp-gap"></div><input class="tfp-in" id="tfp-tq" inputmode="numeric" placeholder="Look up a trade number"><div class="tfp-gap"></div><button class="tfp-b" data-act="tradelookup">Look up trade</button> <button class="tfp-b" data-act="profitaudit">Check profit</button>${ui.audit ? ui.audit.map(l => '<div class="tfp-sub" style="color:#ccc">' + esc(l) + '</div>').join('') : ''}${ui.tradeInfo ? ui.tradeInfo.map(l => '<div class="tfp-sub" style="color:#ccc">' + esc(l) + '</div>').join('') : ''}<div class="tfp-gap"></div><button class="tfp-b" data-act="debug">Copy debug sample</button> <button class="tfp-b" data-act="resync">Re-sync from start</button></div>`;
+      <div class="tfp-row"><b>Troubleshooting</b><div class="tfp-gap"></div><input class="tfp-in" id="tfp-tq" inputmode="numeric" placeholder="Look up a trade number"><div class="tfp-gap"></div><button class="tfp-b" data-act="tradelookup">Look up trade</button> <button class="tfp-b" data-act="profitaudit">Check profit</button>${ui.audit ? ui.audit.map(l => '<div class="tfp-sub" style="color:#ccc">' + esc(l) + '</div>').join('') : ''}${ui.tradeInfo ? ui.tradeInfo.map(l => '<div class="tfp-sub" style="color:#ccc">' + esc(l) + '</div>').join('') : ''}<div class="tfp-gap"></div><button class="tfp-b" data-act="debug">Copy debug sample</button> <button class="tfp-b" data-act="resync">Re-sync from start</button>
+      <div class="tfp-gap"></div><div class="tfp-sub" style="border-top:1px solid #3a3f4b;padding-top:10px"><b>Delete my data</b></div>
+      <div class="tfp-sub">Removing the script does not remove your data: it stays on this device until you delete it here. Use this before you uninstall.</div>
+      ${ui.armWipe ? '<div class="tfp-msg tfp-warn">This deletes everything Arbitrage keeps on this device: your records, receipts, saved keys (Torn, PawnHub, TornW3B), settings and backups. It cannot be undone. Your Torn account is not affected, nothing is sent anywhere, and other devices keep their own data. Tap Copy my data first if you want a copy.</div>' : ''}
+      <div class="tfp-gap"></div><button class="tfp-b tfp-danger" data-act="wipe">${ui.armWipe ? 'Tap again to delete everything' : 'Delete all my data'}</button>${ui.armWipe ? ' <button class="tfp-b" data-act="wipecancel">Cancel</button>' : ''}</div>`;
   }
 
   /* ===================== first-run setup ===================== */
@@ -2325,6 +2355,7 @@
     if (/^sw(next|back|skip|custom|pda|check|ph|phcheck|days|done)$/.test(act)) { e.preventDefault(); try { await setupAction(act, v, el); } catch (err) { if (ui.setup) { ui.setup.busy = false; ui.setup.msg = String(err.message || err); } } render(); return; }
     if (act === 'runsetup') { e.preventDefault(); startSetup(true); render(); return; }
     if (act !== 'giftall') ui.armGift = false;
+    if (act !== 'wipe') ui.armWipe = false;
     if (act !== 'giftolder') ui.armOlder = false;
     if (act !== 'ackall') ui.armAck = false;
     try {
@@ -2414,6 +2445,16 @@
         save();
       }
       else if (act === 'gift') { const tx = state.txs[id]; tx.amount = 0; tx.gift = true; tx.src = 'manual'; tx.locked = true; save(); }
+      else if (act === 'wipe') {
+        if (!ui.armWipe) { ui.armWipe = true; render(); return; }
+        ui.armWipe = false;
+        if (syncRunning) throw new Error('A sync is running. Try again when it has finished.');
+        await deleteAllData();
+        ui.mv = null; ui.sendsOpen = false; ui.editing = null; ui.itemLog = null; ui.phPreview = null; ui.audit = null; ui.tradeInfo = null; ui.tab = 'profit'; ui._res = null;
+        startSetup(false); updateBtn();
+        ui.msg = 'All your Arbitrage data was deleted from this device.';
+      }
+      else if (act === 'wipecancel') ui.armWipe = false;
       else if (act === 'sendsopen') { ui.sendsOpen = true; ui.sendsTab = 'none'; ui.sendsLimit = 20; ui.editing = null; card0().scrollTop = 0; }
       else if (act === 'sendsclose') { ui.sendsOpen = false; ui.editing = null; ui.armGiftSends = false; }
       else if (act === 'sendstab') { ui.sendsTab = v; ui.sendsLimit = 20; ui.editing = null; ui.armGiftSends = false; }
@@ -2686,7 +2727,7 @@
   }
 
   if (typeof module !== 'undefined') {
-    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, syncLog, getStateForTest: () => state, resetStateForTest: () => { state = STATE_DEFAULTS(); }, isW3bDenied, dataSummaryHtml, moveDataHtml, packData, unpackData, sanitizePackage, mergeDevice, sameAccount, autoSyncMode, migrateParsers, WATCH_IDS, logParams, useGainTx, museumTx, pointsTx, rateEstimate, ratePause, clampRate, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
+    module.exports = { mergeState, LOG_RULES, parsePawnHubBalance, matchPawnHubEvents, buildSendTxs, parsePawnHub, buildTradeTxs, tradeIdOf, computeFlips, deleteAllData, syncLog, getStateForTest: () => state, resetStateForTest: () => { state = STATE_DEFAULTS(); }, isW3bDenied, dataSummaryHtml, moveDataHtml, packData, unpackData, sanitizePackage, mergeDevice, sameAccount, autoSyncMode, migrateParsers, WATCH_IDS, logParams, useGainTx, museumTx, pointsTx, rateEstimate, ratePause, clampRate, crimeTx, parseCrimeItems, parseTornExchange, parseWeaver, roleFor, rankCandidates, parseLogEntry, firstNumber, parseTimeText };
   }
   if (typeof document !== 'undefined' && !globalThis.__TFP_TEST) init();
 })();
