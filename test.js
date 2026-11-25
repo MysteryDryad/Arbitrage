@@ -237,6 +237,8 @@ pending.push((async () => {
   eq('the in-memory data is empty after a delete', Object.keys(T.getStateForTest().txs).length, 0);
   delete globalThis.localStorage;
 })());
+// The script must never contain Torn PDA's key placeholder: PDA shows a key icon for it and would pass PDA's own key
+{ const src = require('fs').readFileSync(__dirname + '/torn-flip-profit-tracker.user.js', 'utf8'); eq('script does not contain the PDA key placeholder', [src.indexOf('###PDA-APIKEY###'), /PDA_KEY\b/.test(src)], [-1, false]); }
 // multi-item sell with receipt prices, per-item lines
 const tx2 = {
   a: { id: 'a', ts: 1, dir: 'buy', items: [{ id: 384, qty: 13, price: null }, { id: 215, qty: 191, price: null }], amount: 13 * 60000 + 191 * 400 },

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Arbitrage
 // @namespace    torn-flip-profit-tracker
-// @version      0.1.183-beta
+// @version      0.1.184-beta
 // @description  Flip profit for Torn: reads your own Torn log and works out profit per sale (FIFO), with Weaver, TornExchange and PawnHub receipts. Read-only, data stays on your device.
 // @author       MysteryDryad
 // @homepageURL  https://github.com/MysteryDryad/Arbitrage
@@ -45,10 +45,10 @@
 
   /* ===================== environment helpers ===================== */
   const NS = 'tfp_';
-  const PDA_KEY = '###PDA-APIKEY###';
-  const IN_PDA = PDA_KEY[0] !== '#';
-  const IS_PDA_ENV = IN_PDA || typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
-  const VERSION = '0.1.183-beta'; // keep equal to @version above (test.js checks this)
+  // Torn PDA is detected by its own helpers. This script deliberately never uses PDA's built-in API key (and never contains PDA's key placeholder, which makes PDA show a key icon): everyone uses their own custom key.
+  const IN_PDA = typeof PDA_httpGet === 'function' || (typeof window !== 'undefined' && !!window.flutter_inappwebview);
+  const IS_PDA_ENV = IN_PDA;
+  const VERSION = '0.1.184-beta'; // keep equal to @version above (test.js checks this)
   const hasGM = typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
   // Torn PDA's own app storage is shared by the pages of this script on every site, unlike its browser-backed GM storage: receipts travel through it.
   const nat = () => typeof PDA_storage !== 'undefined' ? PDA_storage : null;
@@ -904,7 +904,7 @@
   const nameOf = id => id === POINTS_ID ? 'Points' : (itemNames[id] || ('Item ' + id));
 
   /* ===================== Torn API ===================== */
-  function getKey() { return (sget('apikey', '') || '') || (IN_PDA ? PDA_KEY : ''); }
+  function getKey() { return sget('apikey', '') || ''; }
   // What the key needs and why, shown as a collapsed dropdown next to the "Create the key" link (setup and Settings).
   const keyHelpHtml = () => `<details class="tfp-why"><summary>What does this key need, and why?</summary><div class="tfp-sub">
     <p>The key is a Custom key with three things ticked. Nothing else is needed.</p>
@@ -915,7 +915,7 @@
   const KEYURL = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Arbitrage&user=basic,log&torn=items';
   async function apiUrl(url) {
     const key = getKey();
-    if (!key && !/[?&]key=/.test(url)) throw new Error('No API key set (Settings tab).');
+    if (!key && !/[?&]key=/.test(url)) throw Object.assign(new Error('No API key saved. Open Settings, tap "Create a custom key", then paste the key it gives you. (Arbitrage does not use Torn PDA\'s own key.)'), { code: 1 });
     const u = url + (url.includes('?') ? '&' : '?') + (/[?&]key=/.test(url) ? '' : 'key=' + encodeURIComponent(key));
     const r = await httpRetry(u);
     let j; try { j = JSON.parse(r.text); } catch (e) { throw new Error('Bad API response (HTTP ' + (r && r.status) + ')'); }
@@ -2018,7 +2018,7 @@
   function settingsHtml() {
     if (ui.sendsOpen) return sendsScreenHtml();
     const own = !!sget('apikey', '');
-    const keyBox = `<div class="tfp-sub">${IN_PDA && !own ? 'Using your Torn PDA key by default.' : 'Torn API key.'} <a href="${esc(KEYURL)}">Create a custom key ↗</a> (read-only: your log and item names), then paste it here. Limited keys don't work.</div>${keyHelpHtml()}
+    const keyBox = `<div class="tfp-sub">${own ? 'Torn API key.' : '<span class="tfp-warn">No key saved yet.</span>'} <a href="${esc(KEYURL)}">Create a custom key ↗</a> (read-only: your log and item names), then paste it here. Limited keys don't work.</div>${keyHelpHtml()}
       <input class="tfp-in" id="tfp-key" type="password" autocomplete="off" placeholder="${own ? 'Key saved (hidden). Paste a new one to replace.' : 'Paste your key'}"><div class="tfp-gap"></div>
       <button class="tfp-b" data-act="savekey">Save key</button> ${own ? '<button class="tfp-b" data-act="clearkey">Remove key</button>' : ''}
       <table class="tfp-disc"><tr><td>Your data</td><td>Stays on this device. Not shared with anyone.</td></tr>
@@ -2108,7 +2108,7 @@
   function migrateSetup() { if (!setupDone() && (sget('apikey', '') || Object.keys(state.txs || {}).length)) sset('setupDone', true); }
   function startSetup(again) {
     const d = Number(sget('startDays', 30)) || 30;
-    ui.setup = { i: again ? 0 : Math.min(6, Number(sget('setupStep', 0)) || 0), torn: again && sget('apikey', '') ? 'custom' : null, tornOk: !!again && (!!sget('apikey', '') || IN_PDA), tornName: '', msg: '', ph: again ? usesPH() : null, phOk: !!again && !!sget('phkey', ''), phMsg: '', days: again ? d : 90, wMsg: '', busy: false };
+    ui.setup = { i: again ? 0 : Math.min(6, Number(sget('setupStep', 0)) || 0), torn: again && sget('apikey', '') ? 'custom' : null, tornOk: !!again && !!sget('apikey', ''), tornName: '', msg: '', ph: again ? usesPH() : null, phOk: !!again && !!sget('phkey', ''), phMsg: '', days: again ? d : 90, wMsg: '', busy: false };
   }
   async function checkTornKey(key) {
     const enc = encodeURIComponent(key);
@@ -2141,8 +2141,7 @@
     } else if (cur === 'torn') {
       title = 'Your Torn API key';
       const custom = `<p>Arbitrage needs a key that can read your log. Make a <b>custom</b> key with only what it needs:</p><p><a href="${esc(KEYURL)}">Create the key for me ↗</a><br><span class="tfp-sub">Opens Torn already filled in. Tap Create, copy the key, then come back and paste it.</span></p>${keyHelpHtml()}<input class="tfp-in" id="tfp-swkey" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore style="-webkit-text-security:disc" placeholder="Paste your key"><div class="tfp-gap"></div><button class="tfp-b" data-act="swcheck">${S.busy ? 'Checking…' : 'Check key'}</button>`;
-      if (IN_PDA) body = `<p>You're in Torn PDA. Use PDA's key, or a custom one.</p>` + opt('swpda', 'pda', 'Use my PDA key', 'Nothing to paste.', S.torn === 'pda') + opt('swcustom', 'custom', 'Use a custom key instead', 'Safer: only your log and item names.', S.torn === 'custom') + (S.torn === 'custom' ? custom : '');
-      else body = custom;
+      body = custom;
       body += S.msg ? `<div class="tfp-msg ${S.tornOk ? 'tfp-pos' : 'tfp-warn'}">${esc(S.msg)}</div>` : (S.tornOk ? `<div class="tfp-msg tfp-pos">✓ Key saved${S.tornName ? ' for ' + esc(S.tornName) : ''}.</div>` : '');
       body += '<div class="tfp-sub">Limited keys do not work.</div>';
       foot = back + next(S.tornOk);
@@ -2181,13 +2180,6 @@
     if (act === 'swback') { go(-1); return true; }
     if (act === 'swskip') { go(1); return true; }
     if (act === 'swcustom') { S.torn = 'custom'; S.tornOk = false; S.msg = ''; return true; }
-    if (act === 'swpda') {
-      S.torn = 'pda'; S.tornOk = false; S.msg = 'Checking PDA\'s key…'; S.busy = true; render();
-      const r = await checkTornKey(PDA_KEY); S.busy = false;
-      if (r.ok) { sset('apikey', ''); S.tornOk = true; S.tornName = r.name; S.msg = '✓ PDA\'s key can read your log' + (r.name ? ' (' + r.name + ')' : '') + '.'; }
-      else S.msg = 'PDA\'s key cannot read your log (' + r.msg + '). Use a custom key instead.';
-      return true;
-    }
     if (act === 'swcheck') {
       const k = val('tfp-swkey').trim(); if (!k) { S.msg = 'Paste your key first.'; return true; }
       if (!/^[A-Za-z0-9]{12,32}$/.test(k)) { S.msg = 'That does not look like a Torn API key.'; return true; }
@@ -2709,6 +2701,7 @@
     } else {
       mountTornUI();
       setInterval(mountTornUI, 2500);
+      bootP.then(() => { if (IN_PDA && setupDone() && !getKey()) setTimeout(() => toast('Arbitrage: add your own Torn key in Settings. Torn PDA\'s key is no longer used.'), 4000); }); // people who relied on PDA\'s key before
       bootP.then(() => { if (sget('phkey', '')) phFlagSet(true); if (sget('w3bkey', '')) w3bFlagSet(true); setTimeout(autoInbox, 2500); setTimeout(importFromHash, 1200); });
       document.addEventListener('visibilitychange', () => { if (document.hidden) flushNow(); });
       window.addEventListener('pagehide', flushNow);
